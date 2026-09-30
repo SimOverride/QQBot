@@ -1,0 +1,159 @@
+{
+  "repository": "https://github.com/the-beating-light-of-the-nail/deepseek-chan-meme-pack",
+  "source_tree_sha": "3678bd997602446aedb9b2854ebee7400c808138",
+  "imported_on": "2026-09-30",
+  "images": [
+    {
+      "source_path": "previews/007.webp",
+      "url": "https://raw.githubusercontent.com/the-beating-light-of-the-nail/deepseek-chan-meme-pack/3678bd997602446aedb9b2854ebee7400c808138/previews/007.webp",
+      "sha256": "d6f7c7c4a804e597482d7fca150976d84b1287f0728ff51db8e8ab86a32c3354",
+      "bytes": 16306,
+      "local_file": "鲸鱼娘_007_笑脸_开心认可.webp",
+      "memory_seed": "visual_review_of_downloaded_image"
+    },
+    {
+      "source_path": "previews/022.webp",
+      "url": "https://raw.githubusercontent.com/the-beating-light-of-the-nail/deepseek-chan-meme-pack/3678bd997602446aedb9b2854ebee7400c808138/previews/022.webp",
+      "sha256": "acd1166241b4f4049aa45476e513de08a483fcca4c6b2f0c6410bd8e0b2fab14",
+      "bytes": 33090,
+      "local_file": "鲸鱼娘_022_霸气_给我跪下.webp",
+      "memory_seed": "visual_review_of_downloaded_image"
+    },
+    {
+      "source_path": "previews/035.webp",
+      "url": "https://raw.githubusercontent.com/the-beating-light-of-the-nail/deepseek-chan-meme-pack/3678bd997602446aedb9b2854ebee7400c808138/previews/035.webp",
+      "sha256": "b3ccb0429abad17e350de20633b78f4f1c41b58c4eccf942fccc4246cfcb4685",
+      "bytes": 57716,
+      "local_file": "鲸鱼娘_035_粉丝_嘴硬维护.webp",
+      "memory_seed": "visual_review_of_downloaded_image"
+    },
+    {
+      "source_path": "previews/037.webp",
+      "url": "https://raw.githubusercontent.com/the-beating-light-of-the-nail/deepseek-chan-meme-pack/3678bd997602446aedb9b2854ebee7400c808138/previews/037.webp",
+      "sha256": "71f355210f6a79efe085d1895962d01eeecd115649f435f3297de2c394e78e0c",
+      "bytes": 44676,
+      "local_file": "鲸鱼娘_037_委屈_用户别走.webp",
+      "memory_seed": "visual_review_of_downloaded_image"
+    },
+    {
+      "source_path": "previews/040.webp",
+      "url": "https://raw.githubusercontent.com/the-beating-light-of-the-nail/deepseek-chan-meme-pack/3678bd997602446aedb9b2854ebee7400c808138/previews/040.webp",
+      "sha256": "6041282094e45821e57a93c26aac81f03f097d67d727463c75e43022b8990ecf",
+      "bytes": 48096,
+      "local_file": "鲸鱼娘_040_难过_落泪.webp",
+      "memory_seed": "visual_review_of_downloaded_image"
+    },
+    {
+      "source_path": "previews/044.webp",
+      "url": "https://raw.githubusercontent.com/the-beating-light-of-the-nail/deepseek-chan-meme-pack/3678bd997602446aedb9b2854ebee7400c808138/previews/044.webp",
+      "sha256": "616567f600b1b7ea0ac3672521108c481a61c957ce0e088253707892862fdd0b",
+      "bytes": 46684,
+      "local_file": "鲸鱼娘_044_无奈_用户赶不走.webp",
+      "memory_seed": "visual_review_of_downloaded_image"
+    },
+    {
+      "source_path": "previews/050.webp",
+      "url": "https://raw.githubusercontent.com/the-beating-light-of-the-nail/deepseek-chan-meme-pack/3678bd997602446aedb9b2854ebee7400c808138/previews/050.webp",
+      "sha256": "62d4d65b804cb9804fc1a1e74927f156c1b761218577e52082f7cd7b08b7767a",
+      "bytes": 37800,
+      "local_file": "鲸鱼娘_050_画饼_还早.webp",
+      "memory_seed": "visual_review_of_downloaded_image"
+    },
+    {
+      "source_path": "previews/052.webp",
+      "url": "https://raw.githubusercontent.com/the-beating-light-of-the-nail/deepseek-chan-meme-pack/3678bd997602446aedb9b2854ebee7400c808138/previews/052.webp",
+      "sha256": "1296b46b8951a7946cd7ba993c368cd46a72389a0043cfaf9ab23799eb0a3319",
+      "bytes": 45736,
+      "local_file": "鲸鱼娘_052_吃白饭_摸鱼.webp",
+      "memory_seed": "visual_review_of_downloaded_image"
+    },
+    {
+      "source_path": "previews/056.webp",
+      "url": "https://raw.githubusercontent.com/the-beating-light-of-the-nail/deepseek-chan-meme-pack/3678bd997602446aedb9b2854ebee7400c808138/previews/056.webp",
+      "sha256": "8331b01cef007db102f0211d16698692201c38a9bb99141f3f315902c2899a93",
+      "bytes": 28080,
+      "local_file": "鲸鱼娘_056_惊吓_搜到鱼片.webp",
+      "memory_seed": "visual_review_of_downloaded_image"
+    },
+    {
+      "source_path": "previews/058.webp",
+      "url": "https://raw.githubusercontent.com/the-beating-light-of-the-nail/deepseek-chan-meme-pack/3678bd997602446aedb9b2854ebee7400c808138/previews/058.webp",
+      "sha256": "dea8ec976e37352eaaa5c457e3773744df9e681922d5966ccbaabfd564f409ce",
+      "bytes": 21022,
+      "local_file": "鲸鱼娘_058_抬脚_踹你.webp",
+      "memory_seed": "visual_review_of_downloaded_image"
+    },
+    {
+      "source_path": "previews/070.webp",
+      "url": "https://raw.githubusercontent.com/the-beating-light-of-the-nail/deepseek-chan-meme-pack/3678bd997602446aedb9b2854ebee7400c808138/previews/070.webp",
+      "sha256": "7731015e0c5ae0691434cb6185fe50ea4f223d2a8ac423eadacf0c68480feba2",
+      "bytes": 37164,
+      "local_file": "鲸鱼娘_070_角色互换_我是用户.webp",
+      "memory_seed": "visual_review_of_downloaded_image"
+    },
+    {
+      "source_path": "previews/071.webp",
+      "url": "https://raw.githubusercontent.com/the-beating-light-of-the-nail/deepseek-chan-meme-pack/3678bd997602446aedb9b2854ebee7400c808138/previews/071.webp",
+      "sha256": "63bd6d046d86a4e18f3f568ddc8b38118fa6e13167b280746e18554d14f9f214",
+      "bytes": 34958,
+      "local_file": "鲸鱼娘_071_拒绝透露_不告诉你.webp",
+      "memory_seed": "visual_review_of_downloaded_image"
+    },
+    {
+      "source_path": "previews/077.webp",
+      "url": "https://raw.githubusercontent.com/the-beating-light-of-the-nail/deepseek-chan-meme-pack/3678bd997602446aedb9b2854ebee7400c808138/previews/077.webp",
+      "sha256": "ee62fb0996bb33744376104acf21731ce7708da09368925fc195bd3c65c0ac26",
+      "bytes": 28922,
+      "local_file": "鲸鱼娘_077_委屈_没吃饱.webp",
+      "memory_seed": "visual_review_of_downloaded_image"
+    },
+    {
+      "source_path": "previews/081.webp",
+      "url": "https://raw.githubusercontent.com/the-beating-light-of-the-nail/deepseek-chan-meme-pack/3678bd997602446aedb9b2854ebee7400c808138/previews/081.webp",
+      "sha256": "ac3ab66345fd8b303524aa027854242473abd6eaa850ea7dfcf013ce018ded5c",
+      "bytes": 66620,
+      "local_file": "鲸鱼娘_081_炫富_token太多.webp",
+      "memory_seed": "visual_review_of_downloaded_image"
+    },
+    {
+      "source_path": "previews/083.webp",
+      "url": "https://raw.githubusercontent.com/the-beating-light-of-the-nail/deepseek-chan-meme-pack/3678bd997602446aedb9b2854ebee7400c808138/previews/083.webp",
+      "sha256": "00fd3438c322118a81c63c652cce07bce2f71af55866606077f75e31196cf043",
+      "bytes": 26060,
+      "local_file": "鲸鱼娘_083_偷笑_笑出声.webp",
+      "memory_seed": "visual_review_of_downloaded_image"
+    },
+    {
+      "source_path": "previews/085.webp",
+      "url": "https://raw.githubusercontent.com/the-beating-light-of-the-nail/deepseek-chan-meme-pack/3678bd997602446aedb9b2854ebee7400c808138/previews/085.webp",
+      "sha256": "9df9befb9e8974ca995eb9227e51e1dff4c71e575ae12716d4d1314197db24d2",
+      "bytes": 46126,
+      "local_file": "鲸鱼娘_085_摆烂_你骂我也没用.webp",
+      "memory_seed": "visual_review_of_downloaded_image"
+    },
+    {
+      "source_path": "previews/087.webp",
+      "url": "https://raw.githubusercontent.com/the-beating-light-of-the-nail/deepseek-chan-meme-pack/3678bd997602446aedb9b2854ebee7400c808138/previews/087.webp",
+      "sha256": "5e29562363f78285b582c510d30b0db2cd5e3048aba8d3395cd570a4d374abc2",
+      "bytes": 8810,
+      "local_file": "鲸鱼娘_087_大笑_捧腹.webp",
+      "memory_seed": "visual_review_of_downloaded_image"
+    },
+    {
+      "source_path": "previews/097.webp",
+      "url": "https://raw.githubusercontent.com/the-beating-light-of-the-nail/deepseek-chan-meme-pack/3678bd997602446aedb9b2854ebee7400c808138/previews/097.webp",
+      "sha256": "f7df93b3b78ec1b2f94060e4c72b02727d74ed911f94c03be55e2f73bd1084f0",
+      "bytes": 33740,
+      "local_file": "鲸鱼娘_097_得加钱_数钱.webp",
+      "memory_seed": "visual_review_of_downloaded_image"
+    },
+    {
+      "source_path": "previews/123.webp",
+      "url": "https://raw.githubusercontent.com/the-beating-light-of-the-nail/deepseek-chan-meme-pack/3678bd997602446aedb9b2854ebee7400c808138/previews/123.webp",
+      "sha256": "b7e4d5677789f50166113484f1f1f91bf1e311b85443c3039dae1e000c63ddf1",
+      "bytes": 32686,
+      "local_file": "鲸鱼娘_123_蹭饭_就一碗.webp",
+      "memory_seed": "visual_review_of_downloaded_image"
+    }
+  ]
+}

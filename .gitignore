@@ -1,0 +1,25 @@
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.pytest_cache/
+data/
+logs/
+*.log
+.idea/
+.vscode/
+
+# Local reaction images; keep usage instructions
+emotes/*
+!emotes/README.md
+
+!emotes/SOURCES.md
+!emotes/sources.json
+
+# Private runtime group configuration
+/group_chat.json
+/group_chat.tmp
+*.bundle
