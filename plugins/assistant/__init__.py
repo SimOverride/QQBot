@@ -78,7 +78,7 @@ def setup() -> None:
         nonlocal service, client, cleaner, archive, sharing, conversations
         config.validate_runtime()
         root = Path(__file__).resolve().parents[2]
-        profiles = ProfileStore(root / "persona.txt", root / "style.txt")
+        profiles = ProfileStore(root / "personas" / "默认.txt", root / "styles" / "默认.txt")
         archive = LongTermMemory(root / "data" / "memory.sqlite3", config)
         client = httpx.AsyncClient(follow_redirects=False)
         service = Assistant(config, LLM(client, config, Search(client, config)), profiles, archive)
@@ -91,6 +91,7 @@ def setup() -> None:
         sharing = Sharing(service, contacts)
         settings = GroupSettings(root / "group_chat.json")
         service.commands.group_settings = settings
+        profiles.group_settings = settings
         conversations = GroupConversation(service, contacts, settings)
 
         async def cleanup_loop():

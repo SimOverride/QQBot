@@ -24,6 +24,7 @@ class Commands:
     def __init__(self, config: Config, memory: Memory):
         self.config, self.memory = config, memory
         self.group_settings = None
+        self.profiles = None
         self.pending: dict[tuple[int, int, int], Confirmation] = {}
 
     async def level(self, user_id: int, lookup: RoleLookup | None) -> int:
@@ -54,6 +55,42 @@ class Commands:
         bot_id, group_id, user_id = key
         parts = text.split()
         command, args = parts[0], parts[1:]
+        if command in ("/人格", "/人设", "/风格"):
+            if group_id <= 0:
+                return "请在要调整的群中 @机器人 使用此指令，私聊不能修改群设定。"
+            if await self.level(user_id, lookup) < 1:
+                return "权限不足，仅本群管理员、群主或机器人所有者可管理本群人格和风格。"
+            if self.group_settings is None or self.profiles is None:
+                return "群配置未启用，未执行。"
+            field = "style" if command == "/风格" else "persona"
+            label = "风格" if field == "style" else "人格"
+            try:
+                if not args or args == ["列表"]:
+                    selection = self.group_settings.read().get("groups", {}).get(
+                        str(group_id), {}
+                    ).get(field, {"name": "默认"})
+                    return (
+                        f"本群{label}：{selection['name']}\n"
+                        + "可选：默认、" + "、".join(self.profiles.choices(field))
+                        + f"\n{command} 切换 本地文件名（不含.txt）"
+                        + f"\n{command} 默认 恢复本地默认"
+                    )
+                if args[0] == "设置":
+                    return "聊天不能新增或编辑提示词，请在本地人格、风格文件夹管理后切换。"
+                name = text.split(maxsplit=1)[1].strip()
+                if args[0] == "切换":
+                    values = text.split(maxsplit=2)
+                    if len(values) != 3:
+                        return f"用法：{command} 切换 本地文件名（不含.txt）。"
+                    name = values[2].strip()
+                if name != "默认":
+                    self.profiles.read_selection(field, name)
+                self.group_settings.set_profile(group_id, field, name)
+            except ValueError as error:
+                return str(error)
+            except (OSError, UnicodeError):
+                return "群设定保存或读取失败，未完成切换，请检查本地配置文件。"
+            return f"本群{label}已切换为{name}，后续请求生效；其他群和私聊不受影响。"
         if group_id < 0 and command == "/清空" and args:
             return "私聊仅支持 /清空 清除自己的私聊记录；群内操作请在对应群执行。"
         if command == "/积极性":
@@ -99,6 +136,7 @@ class Commands:
             if level >= 1:
                 result += (
                     "\n/积极性 0至100 调整本群主动参与程度"
+                    "\n/人格 列表、/风格 列表 查看本群设定及切换方式（仅群聊）"
                     "\n/清空 清除自己的会话\n/清空 @某人 清除其本群会话"
                     "\n/清空 本群 清除本群会话（需确认）\n/确认 确认码 执行待确认操作"
                 )

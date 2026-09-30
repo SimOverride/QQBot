@@ -12,11 +12,11 @@ class Notices:
         self.llm, self.profiles, self.limits = llm, profiles, limits
         self.cache = OrderedDict()
 
-    async def render(self, source):
+    async def render(self, source, group_id=None):
         # Structured help/fact rows remain verbatim; only their introduction is restyled.
         head, separator, tail = source.partition("\n")
         try:
-            personality = self.profiles.effective()
+            personality = self.profiles.effective(group_id)
             key = (source, json.dumps(personality, ensure_ascii=False, sort_keys=True))
             cached = self.cache.get(key)
             if cached and time.monotonic() - cached[0] < 300:

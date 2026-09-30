@@ -11,6 +11,7 @@ from nonebot.log import logger
 
 from .history_tools import HistoryTools
 from .message_context import event_metadata
+from .personality import LIMITS
 from .vision import image_segments
 
 
@@ -30,6 +31,14 @@ class GroupSettings:
             if not group.isdigit() or int(group) <= 0 or not isinstance(settings, dict):
                 raise ValueError("群聊配置群号错误")
             levels.append(settings.get("activity", data.get("default_activity", 50)))
+            for profile_field in LIMITS:
+                selection = settings.get(profile_field)
+                if selection is None:
+                    continue
+                if not isinstance(selection, dict) or not isinstance(selection.get("name"), str):
+                    raise ValueError("群人格或风格配置格式错误")
+                if set(selection) != {"name"}:
+                    raise ValueError("群设定只允许保存本地提示词名称")
             interests = settings.get("interests", [])
             if (
                 not isinstance(interests, list)
@@ -59,6 +68,18 @@ class GroupSettings:
             raise ValueError("积极性必须为0至100的整数")
         data = self.read()
         data.setdefault("groups", {}).setdefault(str(group), {})["activity"] = activity
+        self.write(data)
+
+    def set_profile(self, group, field, name):
+        if group <= 0 or field not in LIMITS:
+            raise ValueError("只能修改当前群的人格或风格")
+        selection = None if name == "默认" else {"name": name}
+        data = self.read()
+        settings = data.setdefault("groups", {}).setdefault(str(group), {})
+        if selection is None:
+            settings.pop(field, None)
+        else:
+            settings[field] = selection
         self.write(data)
 
 
@@ -207,7 +228,7 @@ class GroupConversation:
                             context,
                             config,
                             {"topic": state.topic, "active": state.active},
-                            self.service.profiles.effective(),
+                            self.service.profiles.effective(event.group_id),
                             event.message_id,
                             explicit,
                             int(bot.self_id),

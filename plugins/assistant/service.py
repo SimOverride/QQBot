@@ -39,6 +39,7 @@ class Assistant:
         self.memory = Memory(config, archive)
         self.profiles = profiles if profiles is not None else ProfileStore()
         self.commands = Commands(config, self.memory)
+        self.commands.profiles = self.profiles
         self.limits = Limits(config)
         self.notices = Notices(llm, self.profiles, self.limits)
 
@@ -87,7 +88,7 @@ class Assistant:
         async def send_notice(body: str):
             if passive:
                 return
-            await send(await self.notices.render(body))
+            await send(await self.notices.render(body, group_id))
 
         try:
             if not text:
@@ -128,7 +129,7 @@ class Assistant:
                                 self.memory.history(key),
                                 text,
                                 request_id,
-                                self.profiles.effective(),
+                                self.profiles.effective(group_id),
                                 (
                                     self.archive.context(key, text, self.archive.recent(key)[1])
                                     if self.archive
