@@ -82,9 +82,13 @@ def safe_path(root, name):
 
 
 def allowed(name):
-    return name in (".env", "group_chat.json", MEMORY, IDENTITY) or name.startswith(
-        ("emotes/", "personas/", "styles/")
-    )
+    return name in (
+        ".env",
+        "group_chat.json",
+        "data/console.json",
+        MEMORY,
+        IDENTITY,
+    ) or name.startswith(("emotes/", "personas/", "styles/"))
 
 
 def emote_dir(root):
@@ -130,6 +134,12 @@ def account(root, expected=None):
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
                 ).fetchone():
                     found.update(r[0] for r in db.execute(f'SELECT DISTINCT bot FROM "{table}"'))
+    if (root / "data/console.json").exists():
+        from plugins.assistant.prompt_store import validate_console
+
+        console = read_json(root / "data/console.json")
+        validate_console(console)
+        found.update(int(k.split(":")[0]) for k in console.get("groups", {}))
     if expected is not None:
         found.add(expected)
     if len(found) != 1 or any(type(x) is not int or x <= 0 for x in found):
@@ -206,7 +216,7 @@ def _export_data(root, output, bot_qq=None):
     with tempfile.TemporaryDirectory(prefix="qqbot-export-") as temporary:
         staging = Path(temporary)
         files = {}
-        for name in (".env", "group_chat.json", MEMORY):
+        for name in (".env", "group_chat.json", "data/console.json", MEMORY):
             source = root / name
             if source.is_file():
                 files[name] = source
@@ -460,6 +470,16 @@ def stage_merge(root, incoming, staged, qq, fresh):
             dest = safe_path(staged, name)
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, dest)
+    # 群认知及提示词覆盖与其他配置采用相同的目标优先合并规则。
+    console = staged / "data/console.json"
+    if console.exists():
+        from plugins.assistant.prompt_store import validate_console
+
+        value = read_json(console)
+        validate_console(value)
+        if (root / "data/console.json").exists():
+            value = fill_missing(read_json(root / "data/console.json"), value)
+        write_json(console, value)
     # 已有 .env 按键补齐；保留目标机器连接参数和既有密钥。
     env = staged / ".env"
     if (root / ".env").exists() and env.exists():

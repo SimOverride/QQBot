@@ -84,6 +84,15 @@ class Sharing:
             async with self.service.memory.locked(key):
                 if not self.archive.source_exists(key, source_id):
                     return
+                # 后台更正原文后，旧审核结果不得写回或触发分享。
+                current = db.execute(
+                    "SELECT content FROM messages WHERE id=?", (source_id,)
+                ).fetchone()
+                revoked = db.execute(
+                    "SELECT 1 FROM disclosure_reviews WHERE source_id=? AND safe=0", (source_id,)
+                ).fetchone()
+                if current is None or current[0] != text or revoked:
+                    return
                 with db:
                     db.execute(
                         "INSERT OR IGNORE INTO disclosure_reviews VALUES(?,?)",
@@ -112,6 +121,15 @@ class Sharing:
                     return
                 # Revalidate membership immediately before publication.
                 _, current_groups = await self.contacts.private_access(bot, key[2])
+                # 平台查询期间仍可能发生人工修正，发送前再次核对。
+                current = db.execute(
+                    "SELECT content FROM messages WHERE id=?", (source_id,)
+                ).fetchone()
+                revoked = db.execute(
+                    "SELECT 1 FROM disclosure_reviews WHERE source_id=? AND safe=0", (source_id,)
+                ).fetchone()
+                if current is None or current[0] != text or revoked:
+                    return
                 if target not in current_groups:
                     logger.info("share_skip source={} reason=membership_changed", source_id)
                     return

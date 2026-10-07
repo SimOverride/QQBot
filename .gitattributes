@@ -7,3 +7,6 @@
 # Windows 启动脚本保持 CRLF
 *.ps1 text eol=crlf
 *.bat text eol=crlf
+*.js text eol=crlf
+*.css text eol=crlf
+*.html text eol=crlf

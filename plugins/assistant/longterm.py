@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 from .config import Config
+from .prompt_store import group_knowledge
 
 FACT_FIELDS = {"称呼", "职业", "兴趣", "正在做的事", "交流偏好", "背景"}
 
@@ -76,13 +77,17 @@ class LongTermMemory:
             if source:
                 source_metadata = json.loads(source["metadata"]) if source["metadata"] else {}
                 reply = {
-                    "message_id": reply["message_id"], "sender": source["usr"],
+                    "message_id": reply["message_id"],
+                    "sender": source["usr"],
                     "sender_name": source_metadata.get("sender_name"),
                     "text": source["content"][:400],
                 }
         return {
-            "id": row["id"], "scope": row["grp"], "message_id": row["message_id"],
-            "sender": row["usr"], "qq": row["usr"],
+            "id": row["id"],
+            "scope": row["grp"],
+            "message_id": row["message_id"],
+            "sender": row["usr"],
+            "qq": row["usr"],
             "sender_name": metadata.get("sender_name"),
             "sender_role_at_send": metadata.get("sender_role_at_send"),
             "is_bot": row["usr"] == row["bot"],
@@ -90,7 +95,8 @@ class LongTermMemory:
             "reply_to": reply,
             "related_user": row["related_usr"],
             "response_to": metadata.get("response_to"),
-            "text": row["content"][:limit], "time": row["created"],
+            "text": row["content"][:limit],
+            "time": row["created"],
             "truncated": len(row["content"]) > limit,
         }
 
@@ -287,8 +293,7 @@ class LongTermMemory:
                 }
             )
         rows = self.db.execute(
-            "SELECT * FROM messages WHERE bot=? AND grp=? AND usr=? "
-            "ORDER BY id DESC LIMIT 1000",
+            "SELECT * FROM messages WHERE bot=? AND grp=? AND usr=? ORDER BY id DESC LIMIT 1000",
             key,
         ).fetchall()
         statements = [
@@ -305,15 +310,12 @@ class LongTermMemory:
             key=lambda item: item[:2],
             reverse=True,
         )
-        relevant = [
-            self.message_context(row)
-            for score, _, row in matches[:3]
-            if score > 0
-        ]
+        relevant = [self.message_context(row) for score, _, row in matches[:3] if score > 0]
         return json.dumps(
             {
                 "subject_qq": key[2],
                 "scope": key[1],
+                "group_knowledge": group_knowledge(key[0], key[1]) if key[1] > 0 else {},
                 "user_reported_facts": self.facts(key),
                 "shared_person_knowledge": self.shared_knowledge(key),
                 "related_history": older,
@@ -348,6 +350,18 @@ class LongTermMemory:
                 if not isinstance(item, dict):
                     continue
                 field, value, evidence = (item.get(k) for k in ("field", "value", "evidence"))
+                # 后台修正的认知固定保留，模型提取不能覆盖维护者确认的内容。
+                pinned = (
+                    self.db.execute(
+                        "SELECT 1 FROM facts WHERE bot=? AND grp=? AND usr=? AND field=? "
+                        "AND evidence LIKE '后台维护者修正%'",
+                        (*key, field),
+                    ).fetchone()
+                    if isinstance(field, str)
+                    else None
+                )
+                if pinned:
+                    continue
                 if not isinstance(field, str) or field not in FACT_FIELDS:
                     continue
                 if not isinstance(value, str) or not 1 <= len(value.strip()) <= 160:

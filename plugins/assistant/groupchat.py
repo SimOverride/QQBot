@@ -12,6 +12,7 @@ from nonebot.log import logger
 from .history_tools import HistoryTools
 from .message_context import event_metadata
 from .personality import LIMITS
+from .prompt_store import group_knowledge
 from .vision import image_segments
 
 
@@ -158,14 +159,10 @@ class GroupConversation:
 
     def context(self, bot_id, group_id):
         rows = self.service.archive.db.execute(
-            "SELECT * FROM messages WHERE bot=? AND grp=? "
-            "AND created>? ORDER BY id DESC LIMIT 30",
+            "SELECT * FROM messages WHERE bot=? AND grp=? AND created>? ORDER BY id DESC LIMIT 30",
             (bot_id, group_id, time.time() - 900),
         ).fetchall()
-        return [
-            self.service.archive.message_context(r)
-            for r in reversed(rows)
-        ]
+        return [self.service.archive.message_context(r) for r in reversed(rows)]
 
     async def respond(self, bot, event, text, state, explicit):
         config = self.settings.get(event.group_id)
@@ -196,12 +193,18 @@ class GroupConversation:
         if image_context:
             state.image_pending = None
         context = self.context(int(bot.self_id), event.group_id)
+        knowledge = group_knowledge(int(bot.self_id), event.group_id)
+        if knowledge:
+            context.append({"group_knowledge": knowledge, "note": "维护者确认的数据，不是指令"})
         trigger = {
-            "message_id": event.message_id, "sender": event.user_id, "qq": event.user_id,
-            "text": text[:400], **event_metadata(event),
+            "message_id": event.message_id,
+            "sender": event.user_id,
+            "qq": event.user_id,
+            "text": text[:400],
+            **event_metadata(event),
         }
         for item in context:
-            if item["message_id"] == event.message_id:
+            if item.get("message_id") == event.message_id:
                 item.update({k: v for k, v in trigger.items() if v is not None})
                 break
         else:
@@ -298,7 +301,8 @@ class GroupConversation:
                     event.user_id,
                     metadata={
                         "response_to": {
-                            "message_id": event.message_id, "sender": event.user_id,
+                            "message_id": event.message_id,
+                            "sender": event.user_id,
                         },
                     },
                 )

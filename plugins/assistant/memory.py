@@ -48,15 +48,23 @@ class Memory:
                 self.locks[key] = (lock, users - 1)
 
     def history(self, key: SessionKey) -> list[dict]:
+        # 使用持久记录使后台更正的历史立即可见，内存不覆盖数据库。
+        if self.archive:
+            return self.archive.recent(key)[0]
         session = self.sessions.get(key)
         if not session:
             return self.archive.recent(key)[0] if self.archive else []
         if time.monotonic() - session.touched >= self.config.session_ttl_seconds:
             self.sessions.pop(key, None)
             return self.archive.recent(key)[0] if self.archive else []
-        return [message for user, assistant in session.turns for message in (
-            {"role": "user", "content": user}, {"role": "assistant", "content": assistant}
-        )]
+        return [
+            message
+            for user, assistant in session.turns
+            for message in (
+                {"role": "user", "content": user},
+                {"role": "assistant", "content": assistant},
+            )
+        ]
 
     def save(self, key: SessionKey, user: str, assistant: str) -> None:
         session = self.sessions.setdefault(key, Session())

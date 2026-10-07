@@ -6,6 +6,8 @@ import re
 import time
 from collections import OrderedDict
 
+from .prompt_store import read_console
+
 
 class Notices:
     def __init__(self, llm, profiles, limits):
@@ -17,7 +19,11 @@ class Notices:
         head, separator, tail = source.partition("\n")
         try:
             personality = self.profiles.effective(group_id)
-            key = (source, json.dumps(personality, ensure_ascii=False, sort_keys=True))
+            key = (
+                source,
+                json.dumps(personality, ensure_ascii=False, sort_keys=True),
+                json.dumps(read_console().get("prompts", {}), ensure_ascii=False, sort_keys=True),
+            )
             cached = self.cache.get(key)
             if cached and time.monotonic() - cached[0] < 300:
                 return cached[1]
