@@ -23,3 +23,6 @@ emotes/*
 /group_chat.json
 /group_chat.tmp
 *.bundle
+
+# 私有迁移备份包含密钥和聊天数据
+/backups/

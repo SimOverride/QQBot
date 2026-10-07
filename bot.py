@@ -4,6 +4,8 @@ import nonebot
 from nonebot.adapters.onebot.v11 import Adapter
 from nonebot.log import logger
 
+from migration import ROOT, project_lock
+
 
 def configure_logging():
     import sys
@@ -17,10 +19,20 @@ def configure_logging():
 
     logger.remove()
     logger.add(sys.stderr, level="INFO", filter=safe_record, diagnose=False, backtrace=False)
-    logger.add("logs/qqbot.log", level="INFO", filter=safe_record,
-               rotation="5 MB", retention=5, encoding="utf-8", diagnose=False, backtrace=False)
+    logger.add(
+        "logs/qqbot.log",
+        level="INFO",
+        filter=safe_record,
+        rotation="5 MB",
+        retention=5,
+        encoding="utf-8",
+        diagnose=False,
+        backtrace=False,
+    )
 
-if __name__ == "__main__":
+
+def main():
+    """初始化并运行机器人，运行锁由入口持有。"""
     nonebot.init()
     configure_logging()
     nonebot.get_driver().register_adapter(Adapter)
@@ -29,3 +41,9 @@ if __name__ == "__main__":
         raise RuntimeError("无法加载机器人插件")
     plugin.module.setup()
     nonebot.run()
+
+
+if __name__ == "__main__":
+    # 与离线导入互斥；未完成恢复时不允许启动。
+    with project_lock(ROOT, runtime=True):
+        main()

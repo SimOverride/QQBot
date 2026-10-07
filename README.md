@@ -1,5 +1,13 @@
 # QQBot
 
+## 机器迁移
+
+使用 `migration.py export` 导出全部私有数据为普通 ZIP；停止目标机器人后，
+使用 `migration.py import "备份.zip"` 合并同一账号数据。新部署必须加
+`--bot-qq 目标机器人QQ`；不同账号拒绝导入。导入前自动备份，异常支持恢复。
+完整命令、合并规则和范围见 [迁移模块文档](docs/MIGRATION.md)。
+备份包含 `.env` 明文密钥与聊天记录，默认保存到 Git 忽略的 `backups/`。
+
 私人 QQ 小群 AI 助手：Python 3.12、NoneBot2、OneBot v11、HTTPX。
 
 已实现 DeepSeek / OpenAI 官方 API、自然语言意图理解、模型自主搜索、短期会话、显式 @、限流、去重和错误处理。已通过本地测试并连接 NapCat；搜索仍取决于本地搜索服务配置。
