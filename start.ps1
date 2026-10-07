@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $projectDirectory = $PSScriptRoot
 $pythonPath = Join-Path $projectDirectory '.venv\Scripts\python.exe'
 $botPath = Join-Path $projectDirectory 'bot.py'
@@ -12,9 +12,12 @@ try {
         throw 'Configuration file .env is missing. Configure it using .env.example first.'
     }
 
-    # Match this project's interpreter and entry point, not arbitrary Python processes.
-    # Windows venv Python may launch a child using the base interpreter; its parent
-    # retains the project-specific executable path and lives until the child exits.
+    . (Join-Path $projectDirectory 'scripts\napcat.ps1')
+    $napcatConfig = Read-NapCatConfig -ProjectDirectory $projectDirectory
+    Start-NapCat -Config $napcatConfig
+
+    # 只识别本项目解释器和入口，保留其他项目的 Python 进程。
+    # Windows 虚拟环境可能使用基础解释器子进程，父进程仍持有项目路径。
     $existing = @(Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" |
         Where-Object {
             $_.ExecutablePath -ieq $pythonPath -and
@@ -23,8 +26,7 @@ try {
         })
     if ($existing.Count -gt 0) {
         Write-Host "Restarting this project's QQBot. Temporary cache will be cleared. Saved history and facts are preserved."
-        # Stop only the verified project interpreter and its Python children.
-        # Do not kill unrelated Python processes, QQ, NapCat, or arbitrary port owners.
+        # 只停止已确认的项目进程及 Python 子进程，不停止 QQ 或 NapCat。
         $pythonProcesses = @(Get-CimInstance Win32_Process -Filter "Name = 'python.exe'")
         foreach ($root in $existing) {
             $children = @($pythonProcesses | Where-Object { $_.ParentProcessId -eq $root.ProcessId })
@@ -38,7 +40,7 @@ try {
     }
 
     Write-Host 'Starting QQBot...'
-    Write-Host 'Keep NapCat running and logged in.'
+    Write-Host 'NapCat 已启动或复用；登录后会通过 OneBot 自动连接。'
     Write-Host 'Keep this window open while using the bot. Press Ctrl+C to stop.'
     & $pythonPath $botPath
     $botExitCode = $LASTEXITCODE

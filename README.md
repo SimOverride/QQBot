@@ -42,9 +42,11 @@
 
 已配置好环境后，双击根目录的 `start.bat` 即可启动机器人。脚本自动切换到项目目录，
 检查虚拟环境和 `.env`，并保留控制台以查看运行状态或错误。运行期间保持窗口开启，
-按 `Ctrl+C` 停止。NapCat 需先启动并登录。
+按 `Ctrl+C` 停止。首次运行输入 NapCat 启动文件路径，之后自动启动或复用 NapCat；未登录时仍需扫码。
+启动路径和本机探测端口统一保存在 `.env` 的 `NAPCAT_LAUNCHER`、`NAPCAT_PORT`，可参考 `.env.example` 修改。默认探测端口为 6099，请与 NapCat WebUI 端口保持一致。
+详细配置和排查见 [联合启动说明](docs/STARTUP.md)。
 启动脚本会识别本项目已经运行的机器人；再次双击会停止旧机器人后重启，内存缓存和待确认操作清空，历史消息与长期认知仍保留。不会关闭QQ、NapCat或其他项目的Python进程。
-`start.bat` 调用同目录的 `start.ps1`，请将两个文件一起保留。
+`start.bat` 调用同目录的 `start.ps1` 和 `scripts/napcat.ps1`，请一并保留。
 
 ```powershell
 py -3.12 -m venv .venv

@@ -1,5 +1,9 @@
 * text=auto
-*.py text eol=lf
+*.py text eol=crlf
 *.md text eol=lf
 *.toml text eol=lf
 *.txt text eol=lf
+
+# Windows 启动脚本保持 CRLF
+*.ps1 text eol=crlf
+*.bat text eol=crlf
