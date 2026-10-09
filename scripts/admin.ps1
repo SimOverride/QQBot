@@ -1,10 +1,8 @@
-﻿$ErrorActionPreference = 'Stop'
-$projectDirectory = $PSScriptRoot
-$pythonPath = Join-Path $projectDirectory '.venv\Scripts\python.exe'
-$adminPath = Join-Path $projectDirectory 'admin_server.py'
-
-# 后台独立于机器人，停止机器人后仍可迁移数据；只复用已确认的后台实例。
-try {
+﻿# 启动或复用独立后台，失败时交由统一入口报告。
+function Start-Admin {
+    param([string]$ProjectDirectory)
+    $pythonPath = Join-Path $ProjectDirectory '.venv\Scripts\python.exe'
+    $adminPath = Join-Path $ProjectDirectory 'admin_server.py'
     $ready = $false
     try {
         $session = Invoke-RestMethod -Uri 'http://127.0.0.1:8090/api/session' -TimeoutSec 2
@@ -22,7 +20,4 @@ try {
     }
     if (-not $ready) { throw '后台未启动，请检查 8090 端口或运行 admin_server.py 查看错误。' }
     Start-Process 'http://127.0.0.1:8090'
-} catch {
-    Write-Host $_.Exception.Message
-    exit 1
 }

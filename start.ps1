@@ -12,6 +12,9 @@ try {
         throw 'Configuration file .env is missing. Configure it using .env.example first.'
     }
 
+    . (Join-Path $projectDirectory 'scripts\admin.ps1')
+    Start-Admin -ProjectDirectory $projectDirectory
+
     . (Join-Path $projectDirectory 'scripts\napcat.ps1')
     $napcatConfig = Read-NapCatConfig -ProjectDirectory $projectDirectory
     Start-NapCat -Config $napcatConfig

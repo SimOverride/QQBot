@@ -1,10 +1,13 @@
 """Deterministic command permissions and single-use, scoped confirmations."""
 
 import asyncio
+import re
 import secrets
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+
+from console_endpoint import URL
 
 from .config import Config
 from .identity import permission_level
@@ -26,6 +29,18 @@ class Commands:
         self.group_settings = None
         self.profiles = None
         self.pending: dict[tuple[int, int, int], Confirmation] = {}
+
+    @staticmethod
+    def entry_command(text: str) -> str:
+        """将明确的后台入口询问交给确定性指令处理，避免模型猜测地址。"""
+        if re.fullmatch(
+            r"(?:请问|请告诉我|告诉我)?(?:目前的?|当前的?|机器人(?:的)?)?"
+            r"(?:管理后台|后台)(?:入口|地址|链接)?"
+            r"(?:在哪(?:里)?|是什么|是多少|怎么(?:打开|进入|访问))?[？?。！! ]*",
+            text,
+        ):
+            return "/后台"
+        return text
 
     async def level(self, user_id: int, lookup: RoleLookup | None) -> int:
         if permission_level(self.config, user_id) == 2:
@@ -55,6 +70,17 @@ class Commands:
         bot_id, group_id, user_id = key
         parts = text.split()
         command, args = parts[0], parts[1:]
+        if command == "/后台":
+            if await self.level(user_id, lookup) < 2:
+                return "权限不足，仅机器人所有者可查询后台入口。"
+            if args:
+                return "用法：/后台"
+            return (
+                "本机后台入口：\n"
+                f"{URL}\n"
+                "仅能在运行机器人的电脑上用浏览器打开，手机或其他电脑无法访问。\n"
+                "双击 start.bat 会启动后台；链接无法打开时请检查启动窗口。"
+            )
         if command in ("/人格", "/人设", "/风格"):
             if group_id <= 0:
                 return "请在要调整的群中 @机器人 使用此指令，私聊不能修改群设定。"
@@ -142,6 +168,7 @@ class Commands:
                 )
                 result += "\n/记住 字段 内容 修正本人的认知\n/忘记 字段 删除本人的一项认知"
             if level == 2:
+                result += "\n/后台 查询本机后台入口（仅所有者）"
                 result += "\n/清空全部 清除本机器人所有群及私聊的会话（需确认）"
             return result
         if level < 1 or (command == "/清空全部" and level < 2):

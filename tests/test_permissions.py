@@ -37,6 +37,8 @@ class PermissionTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual("权限不足" not in result, allowed)
 
     async def test_help_visibility(self):
+        self.assertIn("/后台", await self.run_command(self.owner, "/帮助"))
+        self.assertNotIn("/后台", await self.run_command(self.admin, "/帮助", "admin"))
         self.assertNotIn("/清空", await self.run_command(self.member, "/help"))
         admin_help = await self.run_command(self.admin, "/帮助", "admin")
         self.assertIn("/清空", admin_help)
@@ -139,3 +141,20 @@ class PermissionTests(unittest.IsolatedAsyncioTestCase):
         event = SimpleNamespace(group_id=10, user_id=2, original_message=(
             MessageSegment.at(99) + Message(" /清空 ") + MessageSegment.at(3)))
         self.assertEqual(extract_text(bot, event).split(), ["/清空", "@3"])
+
+    async def test_console_entry_permissions_and_natural_queries(self):
+        llm = SimpleNamespace(reply=AsyncMock(), rephrase_notice=AsyncMock())
+        service = Assistant(self.config, llm)
+        for index, query in enumerate(("后台入口在哪里", "请问目前的后台地址是什么？", "/后台")):
+            for user in (1, 3):
+                send = AsyncMock()
+                await service.handle(99, 10, user, index * 10 + user, query, send)
+                self.assertEqual(send.await_count, 1)
+                self.assertEqual("http://127.0.0.1:8090" in send.call_args.args[0], user == 1)
+        llm.reply.assert_not_awaited()
+        llm.rephrase_notice.assert_not_awaited()
+        for key, role in ((self.admin, "admin"), (self.member, "owner"), ((99, -3, 3), "member")):
+            self.assertIn("权限不足", await self.run_command(key, "/后台", role))
+        self.assertIn("http://127.0.0.1:8090", await self.run_command((99, -1, 1), "/后台"))
+        self.assertIn("用法", await self.run_command(self.owner, "/后台 extra"))
+        self.assertEqual(Commands.entry_command("后台任务为什么失败"), "后台任务为什么失败")

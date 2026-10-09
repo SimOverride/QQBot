@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 import migration
+from console_endpoint import HOST, PORT
 from console_store import ConsoleStore
 from plugins.assistant.config import Config
 from plugins.assistant.history_tools import HistoryTools
@@ -29,7 +30,6 @@ from plugins.assistant.prompt_store import prompt_text
 from plugins.assistant.search import Search
 
 ROOT = Path(__file__).resolve().parent
-PORT = 8090
 
 
 def config_for(root):
@@ -328,4 +328,4 @@ def create_app(root=ROOT):
 if __name__ == "__main__":
     # 后台只有一个实例；不占用机器人的运行锁，便于停机后迁移。
     with migration.project_lock(ROOT, name=".console.lock"):
-        uvicorn.run(create_app(), host="127.0.0.1", port=PORT, access_log=False)
+        uvicorn.run(create_app(), host=HOST, port=PORT, access_log=False)

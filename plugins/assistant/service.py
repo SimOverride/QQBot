@@ -73,7 +73,7 @@ class Assistant:
         request_id = uuid.uuid4().hex[:12]
         started = time.monotonic()
         key = (bot_id, group_id, user_id)
-        text = text.strip()
+        text = self.commands.entry_command(text.strip())
         raw_send = send
         generating_reply = False
 
@@ -106,7 +106,12 @@ class Assistant:
             self.limits.pending += 1
             try:
                 if text.startswith("/"):
-                    await send_notice(await self.commands.run(key, text, role_lookup))
+                    result = await self.commands.run(key, text, role_lookup)
+                    if text.split()[0] == "/后台":
+                        # 入口及权限结果原样发送，不交给模型改写。
+                        await send(result)
+                    else:
+                        await send_notice(result)
                     return
                 async with self.memory.locked(key):
                     async with self.limits.slot():

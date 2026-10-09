@@ -10,12 +10,12 @@ from pathlib import Path
 
 @unittest.skipUnless(os.name == "nt", "仅适用于 Windows 启动入口")
 class StartupTests(unittest.TestCase):
-    def run_ps(self, body, root):
+    def run_ps(self, body, root, helper="napcat.ps1"):
         # 通过环境变量传递路径，避免将测试路径拼接进命令文本。
         env = dict(os.environ)
         env["QQBOT_TEST_ROOT"] = str(root)
         env["QQBOT_TEST_HELPER"] = str(
-            Path(__file__).resolve().parents[1] / "scripts" / "napcat.ps1"
+            Path(__file__).resolve().parents[1] / "scripts" / helper
         )
         code = "$ErrorActionPreference = 'Stop'; . $env:QQBOT_TEST_HELPER; " + body
         encoded = base64.b64encode(code.encode("utf-16le")).decode("ascii")
@@ -44,6 +44,51 @@ if ($d.launcher -ne $c.launcher) { throw '配置未持久化' }
             self.assertFalse((root / ".env").read_bytes().startswith(b"\xef\xbb\xbf"))
             self.assertIn("TEST_SECRET=keep-me", content)
             self.assertIn("NAPCAT_LAUNCHER=", content)
+
+    def test_admin_reuses_ready_service(self):
+        self.run_ps(r"""
+$script:opened = 0
+function Invoke-RestMethod { return @{ name = 'QQBot 本地控制台' } }
+function Start-Process {
+    param($FilePath)
+    if ($FilePath -ne 'http://127.0.0.1:8090') { throw '不应重复启动后台' }
+    $script:opened++
+}
+Start-Admin -ProjectDirectory $env:QQBOT_TEST_ROOT
+if ($script:opened -ne 1) { throw '未打开后台页面' }
+""", Path.cwd(), "admin.ps1")
+
+    def test_admin_launch_wait_and_failure(self):
+        self.run_ps(r"""
+$script:checks = 0
+$script:launched = 0
+$script:opened = 0
+$script:available = $true
+function Invoke-RestMethod {
+    $script:checks++
+    if ($script:checks -eq 1 -or -not $script:available) { throw '尚未启动' }
+    return @{ name = 'QQBot 本地控制台' }
+}
+function Start-Sleep { }
+function Start-Process {
+    param($FilePath, $ArgumentList, $WorkingDirectory, $WindowStyle)
+    if ($FilePath -eq 'http://127.0.0.1:8090') {
+        if ($script:checks -lt 2) { throw '未等待后台就绪' }
+        $script:opened++
+        return
+    }
+    if ($WindowStyle -ne 'Hidden') { throw '后台进程应隐藏窗口' }
+    if ($WorkingDirectory -ne $env:QQBOT_TEST_ROOT) { throw '工作目录错误' }
+    $script:launched++
+}
+Start-Admin -ProjectDirectory $env:QQBOT_TEST_ROOT
+if ($script:launched -ne 1 -or $script:opened -ne 1) { throw '启动次数错误' }
+$script:available = $false
+$failed = $false
+try { Start-Admin -ProjectDirectory $env:QQBOT_TEST_ROOT } catch { $failed = $true }
+if (-not $failed) { throw '后台不可用时应失败' }
+if ($script:opened -ne 1) { throw '后台不可用时不应打开浏览器' }
+""", Path.cwd(), "admin.ps1")
 
     def test_invalid_configuration(self):
         with tempfile.TemporaryDirectory() as directory:
