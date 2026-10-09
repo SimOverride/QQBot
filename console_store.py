@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -10,7 +11,13 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import migration
-from plugins.assistant.longterm import FACT_FIELDS
+from plugins.assistant.knowledge import (
+    KNOWLEDGE_LIMIT,
+    display_name,
+    person_value,
+    read_directory,
+    scope_name,
+)
 from plugins.assistant.prompt_store import catalog, read_console
 
 
@@ -32,6 +39,113 @@ class ConsoleStore:
     def __init__(self, root):
         self.root = Path(root).resolve()
         self.local = threading.local()
+
+    def file_target(self, kind, name):
+        """新增与删除只能操作资源目录中的普通文件。"""
+        if kind not in ("persona", "style", "emote"):
+            raise ValueError("只支持人格、风格和表情包")
+        if (
+            not isinstance(name, str)
+            or not 1 <= len(name) <= 100
+            or name != name.strip()
+            or name.startswith(".")
+            or re.search(r'[<>:"/\\|?*\x00-\x1f]', name)
+        ):
+            raise ValueError("名称须为 1 至 100 字，不能包含路径或特殊字符")
+        folder = {
+            "persona": self.root / "personas",
+            "style": self.root / "styles",
+            "emote": migration.emote_dir(self.root),
+        }[kind]
+        filename = name if kind == "emote" else name + ".txt"
+        if kind == "emote" and Path(filename).suffix.lower() not in (
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".gif",
+            ".webp",
+        ):
+            raise ValueError("仅支持 PNG、JPEG、GIF、WebP 图片")
+        return migration.safe_path(self.root, (folder / filename).relative_to(self.root).as_posix())
+
+    def create_file(self, kind, name, content):
+        """新资源不覆盖同名文件，与迁移及其他后台写入互斥。"""
+        path = self.file_target(kind, name)
+        if kind != "emote":
+            if not isinstance(content, str) or not 1 <= len(content.strip()) <= 4000:
+                raise ValueError("人格与风格须为 1 至 4000 字")
+            content = content.strip().encode("utf-8")
+        with migration.project_lock(self.root, name=".migration.lock"):
+            self.check_file_mutation()
+            if path.exists():
+                raise ValueError("同名资源已存在，请更换名称")
+            return self.publish_file(kind + ":" + name, path, content)
+
+    def check_file_mutation(self):
+        if (self.root / migration.JOURNAL).exists():
+            raise ValueError("有未恢复的导入，暂不能修改资源")
+
+    def publish_file(self, resource, path, content):
+        ident = uuid.uuid4().hex
+        audit = self.root / "backups/admin-edits" / (ident + ".json")
+        record = {
+            "id": ident,
+            "resource": resource,
+            "action": "create",
+            "before": None,
+            "after": "新增文件",
+            "created": time.time(),
+            "status": "pending",
+        }
+        atomic_json(audit, record)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # 独占创建，不能覆盖确认之后出现的同名文件。
+        with path.open("xb") as stream:
+            stream.write(content)
+        result = self.get(resource)
+        record.update(status="saved", after=result["value"], revision=result["revision"])
+        atomic_json(audit, record)
+        return result
+
+    def delete_file(self, resource, expected):
+        kind, _, name = resource.partition(":")
+        path = self.file_target(kind, name)
+        with migration.project_lock(self.root, name=".migration.lock"):
+            self.check_file_mutation()
+            current = self.get(resource)
+            if current["revision"] != expected:
+                raise ValueError("内容已被其他操作修改，请重新载入后再删除")
+            if kind in ("persona", "style"):
+                if name == "默认":
+                    raise ValueError("默认人格和风格不能删除")
+                settings_path = self.root / "group_chat.json"
+                settings = migration.read_json(settings_path) if settings_path.exists() else {}
+                if any(
+                    g.get(kind, {}).get("name", "").casefold() == name.casefold()
+                    for g in settings.get("groups", {}).values()
+                ):
+                    raise ValueError("仍有群正在使用此提示词，请先切换该群设定再删除")
+            ident = uuid.uuid4().hex
+            audit = self.root / "backups/admin-edits" / (ident + ".json")
+            audit.parent.mkdir(parents=True, exist_ok=True)
+            # 保留完整原文件；同图副本共享的表情认知不随单个文件删除。
+            backup = audit.with_suffix(".bin")
+            backup.write_bytes(path.read_bytes())
+            record = {
+                "id": ident,
+                "resource": resource,
+                "action": "delete",
+                "before": current["value"],
+                "after": None,
+                "created": time.time(),
+                "status": "pending",
+                "digest": migration.digest(backup),
+            }
+            atomic_json(audit, record)
+            path.unlink()
+            record["status"] = "saved"
+            atomic_json(audit, record)
+            return {"message": "已删除，原文件已备份，可在操作记录中撤销"}
 
     @contextmanager
     def db(self):
@@ -72,10 +186,8 @@ class ConsoleStore:
             return kind, path
         elif kind in ("person", "group"):
             ids = tuple(int(n) for n in key.split(":"))
-            if len(ids) != (3 if kind == "person" else 2) or ids[0] <= 0 or ids[1] == 0:
+            if len(ids) != 2 or ids[0] <= 0 or ids[1] <= 0:
                 raise ValueError("账号或会话无效")
-            if kind == "person" and (ids[2] <= 0 or (ids[1] < 0 and ids[1] != -ids[2])):
-                raise ValueError("个人会话无效")
             if kind == "group" and ids[1] < 0:
                 raise ValueError("仅支持群会话")
             migration.account(self.root, ids[0])
@@ -114,12 +226,10 @@ class ConsoleStore:
             }
         elif kind == "person":
             with self.db() as db:
-                rows = db.execute(
-                    "SELECT * FROM facts WHERE bot=? AND grp=? AND usr=?", key
-                ).fetchall()
-            value = {field: "" for field in sorted(FACT_FIELDS)}
-            value.update({r["field"]: r["value"] for r in rows})
-            extra["evidence"] = [dict(r) for r in rows]
+                value, extra["evidence"] = person_value(db, *key)
+                extra["title"] = (
+                    f"{display_name(db, *key, read_directory(self.root))} · QQ {key[1]}"
+                )
         elif kind == "message":
             with self.db() as db:
                 row = db.execute("SELECT * FROM messages WHERE id=?", (key,)).fetchone()
@@ -162,8 +272,18 @@ class ConsoleStore:
             if not 1 <= len(value.strip()) <= 4000:
                 raise ValueError("人格与风格须为 1 至 4000 字")
         elif kind == "person":
-            if any(not isinstance(v, str) or len(v) > 160 for v in value.values()):
-                raise ValueError("个人认知每项最多 160 字；留空表示清除")
+            if (
+                not isinstance(value["总体认知"], str)
+                or len(value["总体认知"]) > max(KNOWLEDGE_LIMIT, len(current["总体认知"]))
+                or not isinstance(value["会话印象"], dict)
+                or set(value["会话印象"]) != set(current["会话印象"])
+            ):
+                raise ValueError("须保留一段总体认知和全部会话印象，总体认知最多12000字")
+            if any(
+                not isinstance(v, str) or len(v) > max(KNOWLEDGE_LIMIT, len(current["会话印象"][g]))
+                for g, v in value["会话印象"].items()
+            ):
+                raise ValueError("每个会话印象须为文本，最多12000字")
         elif kind == "group":
             if any(
                 not isinstance(value[f], str) or len(value[f]) > 6000
@@ -210,6 +330,11 @@ class ConsoleStore:
             if old["revision"] != expected:
                 raise ValueError("内容已被其他操作修改，请重新载入后再保存")
             self.validate(resource, value)
+            if self.resolve(resource)[0] in ("person", "group"):
+                path = self.proposal_path(resource)
+                proposal = migration.read_json(path) if path.exists() else None
+                if proposal and proposal.get("value") == value and not self.proposal(resource):
+                    raise ValueError("建议依据已变化，请重新载入并生成")
             if old["value"] == value:
                 return old
             ident = uuid.uuid4().hex
@@ -222,6 +347,12 @@ class ConsoleStore:
                 "created": time.time(),
                 "status": "pending",
             }
+            if self.resolve(resource)[0] in ("person", "group"):
+                record["before_evidence"] = old.get("evidence", [])
+                proposal = self.proposal(resource)
+                if proposal and proposal.get("value") == value:
+                    record["basis"] = proposal.get("explanation", "")
+                    record["history"] = proposal.get("history")
             atomic_json(audit, record)
             self._write(resource, value)
             result = self.get(resource)
@@ -259,23 +390,48 @@ class ConsoleStore:
                 if not db.in_transaction:
                     db.execute("BEGIN IMMEDIATE")
                 if kind == "person":
-                    for field, text in value.items():
-                        # 空值也保存修正标记，避免旧消息或模型把清除的字段重新写回。
-                        db.execute(
-                            "INSERT INTO facts VALUES(?,?,?,?,?,?,NULL,?) "
-                            "ON CONFLICT(bot,grp,usr,field) DO UPDATE SET "
-                            "value=excluded.value,evidence=excluded.evidence,source_id=NULL,updated=excluded.updated",
-                            (*key, field, text, "后台维护者修正（固定）", time.time()),
-                        )
-                    latest = db.execute(
-                        "SELECT COALESCE(MAX(id),0) FROM messages WHERE bot=? AND grp=? AND usr=?",
+                    bot, user = key
+                    # 只替换实际修改的段落，保留其他会话的来源与自动处理状态。
+                    previous, _ = person_value(db, *key)
+                    old_layers = {"0": previous["总体认知"], **previous["会话印象"]}
+                    changed = set()
+                    layers = {
+                        "0": {"总体认知": value["总体认知"]},
+                        **{g: {"会话印象": v} for g, v in value["会话印象"].items()},
+                    }
+                    for group, fields in layers.items():
+                        for field, text in fields.items():
+                            if old_layers.get(group, "") == text:
+                                continue
+                            changed.add(int(group))
+                            db.execute(
+                                "DELETE FROM facts WHERE bot=? AND grp=? AND usr=?",
+                                (bot, int(group), user),
+                            )
+                            db.execute(
+                                "INSERT INTO facts VALUES(?,?,?,?,?,?,NULL,?)",
+                                (
+                                    bot,
+                                    int(group),
+                                    user,
+                                    field,
+                                    text,
+                                    "后台维护者修正（固定）",
+                                    time.time(),
+                                ),
+                            )
+                    for row in db.execute(
+                        "SELECT grp,MAX(id) AS latest FROM messages WHERE bot=? AND usr=? "
+                        "GROUP BY grp",
                         key,
-                    ).fetchone()[0]
-                    db.execute(
-                        "INSERT INTO profile_cursor VALUES(?,?,?,?) ON CONFLICT(bot,grp,usr) "
-                        "DO UPDATE SET last_id=MAX(last_id,excluded.last_id)",
-                        (*key, latest),
-                    )
+                    ).fetchall():
+                        if 0 not in changed and row["grp"] not in changed:
+                            continue
+                        db.execute(
+                            "INSERT INTO profile_cursor VALUES(?,?,?,?) ON CONFLICT(bot,grp,usr) "
+                            "DO UPDATE SET last_id=MAX(last_id,excluded.last_id)",
+                            (bot, row["grp"], user, row["latest"]),
+                        )
                 else:
                     row = db.execute("SELECT * FROM messages WHERE id=?", (key,)).fetchone()
                     db.execute("UPDATE messages SET content=? WHERE id=?", (value["content"], key))
@@ -336,34 +492,76 @@ class ConsoleStore:
         record = migration.read_json(self.root / "backups/admin-edits" / (ident + ".json"))
         if record["status"] != "saved":
             raise ValueError("该记录未完成保存，请人工核对")
+        if record.get("action") == "create":
+            return self.delete_file(record["resource"], record["revision"])
+        if record.get("action") == "delete":
+            kind, _, name = record["resource"].partition(":")
+            path = self.file_target(kind, name)
+            with migration.project_lock(self.root, name=".migration.lock"):
+                self.check_file_mutation()
+                if path.exists():
+                    raise ValueError("同名资源已存在，不能覆盖恢复")
+                backup = self.root / "backups/admin-edits" / (ident + ".bin")
+                if migration.digest(backup) != record["digest"]:
+                    raise ValueError("原文件备份校验失败")
+                return self.publish_file(record["resource"], path, backup.read_bytes())
         return self.put(record["resource"], record["before"], record["revision"])
 
     def inventory(self):
         people, groups = [], []
+        directory = read_directory(self.root)
         if (self.root / migration.MEMORY).exists():
             with self.db() as db:
                 for row in db.execute(
-                    "SELECT bot,grp,usr,COUNT(*) AS count,MAX(id) AS latest "
-                    "FROM messages WHERE usr<>bot "
-                    "GROUP BY bot,grp,usr ORDER BY latest DESC"
+                    "SELECT p.bot,p.usr,COUNT(m.id) AS count,MAX(m.id) AS latest,"
+                    "COUNT(DISTINCT m.grp) AS scopes FROM "
+                    "(SELECT bot,usr FROM messages UNION SELECT bot,usr FROM facts) p "
+                    "LEFT JOIN messages m ON m.bot=p.bot AND m.usr=p.usr "
+                    "WHERE p.usr<>p.bot GROUP BY p.bot,p.usr ORDER BY latest DESC"
                 ):
-                    metadata = db.execute(
-                        "SELECT metadata FROM messages WHERE id=?", (row["latest"],)
-                    ).fetchone()[0]
-                    name = json.loads(metadata or "{}").get("sender_name") or str(row["usr"])
+                    name = display_name(db, row["bot"], row["usr"], directory)
+                    value, _ = person_value(db, row["bot"], row["usr"])
+                    sessions = [
+                        {"scope": int(g), "name": scope_name(db, row["bot"], int(g), directory)}
+                        for g in value["会话印象"]
+                    ]
+                    member_groups = {
+                        int(g)
+                        for g, data in directory.get(str(row["bot"]), {}).get("groups", {}).items()
+                        if row["usr"] in data.get("members", [])
+                    }
+                    member_groups.update(s["scope"] for s in sessions if s["scope"] > 0)
                     people.append(
                         {
                             **dict(row),
                             "name": name,
-                            "resource": f"person:{row['bot']}:{row['grp']}:{row['usr']}",
+                            "sessions": sessions,
+                            "groups": sorted(member_groups),
+                            "resource": f"person:{row['bot']}:{row['usr']}",
                         }
                     )
-                groups = [
-                    dict(r)
+                group_keys = {
+                    (r["bot"], r["grp"])
                     for r in db.execute(
-                        "SELECT bot,grp,COUNT(*) AS count FROM messages "
-                        "WHERE grp>0 GROUP BY bot,grp"
+                        "SELECT bot,grp FROM messages WHERE grp>0 "
+                        "UNION SELECT bot,grp FROM facts WHERE grp>0"
                     )
+                }
+                group_keys.update(
+                    (int(bot), int(g))
+                    for bot, data in directory.items()
+                    for g in data.get("groups", {})
+                )
+                groups = [
+                    {
+                        "bot": bot,
+                        "grp": group,
+                        "name": scope_name(db, bot, group, directory),
+                        "count": db.execute(
+                            "SELECT COUNT(*) FROM messages WHERE bot=? AND grp=?", (bot, group)
+                        ).fetchone()[0],
+                    }
+                    for bot, group in sorted(group_keys)
                 ]
         return {
             "people": people,
@@ -380,6 +578,118 @@ class ConsoleStore:
                 for p in (self.root / "styles").glob("*.txt")
             ],
         }
+
+    def knowledge_context(self, resource, cutoff=None):
+        """按会话均衡抽取全时间段与近期消息，并说明实际覆盖范围。"""
+        kind, key = self.resolve(resource)
+        if kind not in ("person", "group"):
+            return []
+        bot, subject = key
+        with self.db() as db:
+            groups = (
+                [subject]
+                if kind == "group"
+                else [
+                    r[0]
+                    for r in db.execute(
+                        "SELECT DISTINCT grp FROM messages WHERE bot=? AND usr=? ORDER BY grp", key
+                    )
+                    if r[0] > 0 or r[0] == -subject
+                ]
+            )
+            if len(groups) > 180:
+                raise ValueError("会话过多，请先缩小历史资料范围后整理")
+            limit = max(1, min(120, 180 // max(1, len(groups))))
+            result = []
+            for group in groups:
+                clause = "bot=? AND grp=?"
+                args = [bot, group]
+                if kind == "person":
+                    clause += " AND (usr=? OR related_usr=?)"
+                    args.extend([subject, subject])
+                if cutoff is not None:
+                    clause += " AND id<=?"
+                    args.append(cutoff)
+                ids = [
+                    r[0]
+                    for r in db.execute(f"SELECT id FROM messages WHERE {clause} ORDER BY id", args)
+                ]
+                if not ids:
+                    continue
+                if len(ids) <= limit:
+                    chosen = ids
+                else:
+                    recent = max(1, limit // 2)
+                    older = limit - recent
+                    chosen = [
+                        ids[i * (len(ids) - recent) // max(1, older)] for i in range(older)
+                    ] + ids[-recent:]
+                messages = []
+                for ident in chosen:
+                    row = dict(db.execute("SELECT * FROM messages WHERE id=?", (ident,)).fetchone())
+                    metadata = json.loads(row["metadata"] or "{}")
+                    messages.append(
+                        {
+                            "id": ident,
+                            "qq": row["usr"],
+                            "time": row["created"],
+                            "text": row["content"][:600],
+                            "truncated": len(row["content"]) > 600,
+                            "name": metadata.get("sender_name"),
+                            "role": metadata.get("sender_role_at_send"),
+                            "mentions": metadata.get("mentions"),
+                            "reply_to": metadata.get("reply_to"),
+                            "response_to": metadata.get("response_to"),
+                        }
+                    )
+                result.append(
+                    {
+                        "scope": group,
+                        "total": len(ids),
+                        "selected": len(messages),
+                        "sampling": "全时间段均匀抽样与最近记录；不足上限时全量",
+                        "messages": messages,
+                    }
+                )
+            return result
+
+    def proposal_path(self, resource):
+        self.resolve(resource)
+        return self.root / "backups/knowledge-proposals" / (revision(resource) + ".json")
+
+    def proposal(self, resource):
+        path = self.proposal_path(resource)
+        if not path.exists():
+            return None
+        data = migration.read_json(path)
+        history = data.get("history")
+        if (
+            data.get("revision") != self.get(resource)["revision"]
+            or not history
+            or history != self.history_version(resource, history["last_id"])
+        ):
+            return None
+        return data
+
+    def history_version(self, resource, cutoff=None):
+        """只检查生成时已有的依据，新增聊天不使待确认建议失效。"""
+        kind, key = self.resolve(resource)
+        if not (self.root / migration.MEMORY).exists():
+            return {"last_id": 0, "digest": revision([])}
+        with self.db() as db:
+            clause = "bot=? AND grp=?" if kind == "group" else "bot=? AND (usr=? OR related_usr=?)"
+            args = key if kind == "group" else (*key, key[1])
+            if cutoff is None:
+                cutoff = db.execute(
+                    f"SELECT COALESCE(MAX(id),0) FROM messages WHERE {clause}", args
+                ).fetchone()[0]
+            digest = hashlib.sha256()
+            for row in db.execute(
+                f"SELECT id,content,metadata FROM messages WHERE {clause} AND id<=? ORDER BY id",
+                (*args, cutoff),
+            ):
+                digest.update(json.dumps(tuple(row), ensure_ascii=False).encode())
+            return {"last_id": cutoff, "digest": digest.hexdigest()}
 
     def messages(self, group=None, user=None, query="", offset=0):
         clause, args = ["1=1"], []

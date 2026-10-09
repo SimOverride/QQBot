@@ -46,7 +46,7 @@ class SharingTests(unittest.IsolatedAsyncioTestCase):
             (99, -2, 2),
             source,
             "我喜欢研究天文摄影",
-            [{"field": "兴趣", "value": "天文摄影", "evidence": "喜欢研究天文摄影"}],
+            [{"field": "总体认知", "value": "天文摄影", "evidence": "喜欢研究天文摄影"}],
         )
         self.assertEqual(self.archive.facts((99, 10, 2)), [])
         await self.sharing.review(self.bot, source)

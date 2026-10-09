@@ -19,6 +19,7 @@ def event_metadata(event):
     quoted_message = getattr(reply, "message", None)
     return {
         "sender_name": getattr(sender, "card", None) or getattr(sender, "nickname", None),
+        "sender_nickname": getattr(sender, "nickname", None),
         "sender_role_at_send": getattr(sender, "role", None),
         "mentions": mentions,
         "reply_to": {
@@ -28,5 +29,7 @@ def event_metadata(event):
                 getattr(quoted_sender, "card", None) or getattr(quoted_sender, "nickname", None)
             ),
             "text": quoted_message.extract_plain_text()[:400] if quoted_message else None,
-        } if reply is not None or reply_id is not None else None,
+        }
+        if reply is not None or reply_id is not None
+        else None,
     }

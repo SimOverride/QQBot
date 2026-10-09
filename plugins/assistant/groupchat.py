@@ -67,21 +67,38 @@ class GroupSettings:
     def set_activity(self, group, activity):
         if type(activity) is not int or not 0 <= activity <= 100:
             raise ValueError("积极性必须为0至100的整数")
-        data = self.read()
-        data.setdefault("groups", {}).setdefault(str(group), {})["activity"] = activity
-        self.write(data)
+        import migration
+
+        # 群配置整体写回也须互斥，避免把已经切换或删除的模板引用写回。
+        with migration.project_lock(self.path.parent, name=".migration.lock"):
+            if (self.path.parent / migration.JOURNAL).exists():
+                raise ValueError("有未恢复的导入，暂不能修改群配置")
+            data = self.read()
+            data.setdefault("groups", {}).setdefault(str(group), {})["activity"] = activity
+            self.write(data)
 
     def set_profile(self, group, field, name):
         if group <= 0 or field not in LIMITS:
             raise ValueError("只能修改当前群的人格或风格")
-        selection = None if name == "默认" else {"name": name}
-        data = self.read()
-        settings = data.setdefault("groups", {}).setdefault(str(group), {})
-        if selection is None:
-            settings.pop(field, None)
-        else:
-            settings[field] = selection
-        self.write(data)
+        import migration
+
+        # 与后台删除共用锁，不能选中刚刚被移除的提示词。
+        with migration.project_lock(self.path.parent, name=".migration.lock"):
+            if (self.path.parent / migration.JOURNAL).exists():
+                raise ValueError("有未恢复的导入，暂不能切换提示词")
+            selection = None if name == "默认" else {"name": name}
+            if selection is not None:
+                folder = "personas" if field == "persona" else "styles"
+                path = migration.safe_path(self.path.parent, f"{folder}/{name}.txt")
+                if not path.is_file():
+                    raise ValueError("提示词已移除，请重新查看列表")
+            data = self.read()
+            settings = data.setdefault("groups", {}).setdefault(str(group), {})
+            if selection is None:
+                settings.pop(field, None)
+            else:
+                settings[field] = selection
+            self.write(data)
 
 
 @dataclass

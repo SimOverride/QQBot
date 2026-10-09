@@ -69,15 +69,20 @@ def setup() -> None:
     service: Assistant | None = None
     client: httpx.AsyncClient | None = None
     cleaner: asyncio.Task | None = None
+    directory_worker: asyncio.Task | None = None
     archive: LongTermMemory | None = None
     sharing: Sharing | None = None
     conversations: GroupConversation | None = None
 
     @driver.on_startup
     async def startup():
-        nonlocal service, client, cleaner, archive, sharing, conversations
+        nonlocal service, client, cleaner, archive, sharing, conversations, directory_worker
         config.validate_runtime()
         root = Path(__file__).resolve().parents[2]
+        from .knowledge import read_directory
+
+        contacts.directory_path = root / "data/contacts.json"
+        contacts.directory = read_directory(root)
         profiles = ProfileStore(root / "personas" / "默认.txt", root / "styles" / "默认.txt")
         archive = LongTermMemory(root / "data" / "memory.sqlite3", config)
         client = httpx.AsyncClient(follow_redirects=False)
@@ -107,8 +112,30 @@ def setup() -> None:
 
         cleaner = asyncio.create_task(cleanup_loop())
 
+        async def directory_loop():
+            while True:
+                for connected_bot in get_bots().values():
+                    try:
+                        await contacts.sync_directory(connected_bot)
+                    except Exception as error:
+                        logger.warning("directory_refresh_failure={}", type(error).__name__)
+                await asyncio.sleep(30)
+
+        directory_worker = asyncio.create_task(directory_loop())
+
+    @driver.on_bot_connect
+    async def sync_on_connect(bot: Bot):
+        try:
+            await contacts.sync_directory(bot, force=True)
+        except Exception as error:
+            logger.warning("directory_refresh_failure={}", type(error).__name__)
+
     @driver.on_shutdown
     async def shutdown():
+        if directory_worker:
+            directory_worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await directory_worker
         if cleaner:
             cleaner.cancel()
             with suppress(asyncio.CancelledError):
@@ -206,7 +233,9 @@ def setup() -> None:
 
         async def send_to_group(group, body):
             review = await service.llm.review_group_send(
-                text, {"id": group, "name": group_names.get(group, "")}, body,
+                text,
+                {"id": group, "name": group_names.get(group, "")},
+                body,
                 history=service.memory.history((bot_id, scope, user_id)),
             )
             if not review["allowed"]:

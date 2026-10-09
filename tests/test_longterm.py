@@ -57,7 +57,7 @@ class LongTermTests(unittest.IsolatedAsyncioTestCase):
         for i in range(3):
             self.archive.save(self.key, i, f"问题{i}", f"回答{i}")
             self.collect(i)
-        self.archive.remember(self.key, "称呼", "小明")
+        self.archive.remember(self.key, "总体认知", "小明")
         self.archive.close()
         self.archive = LongTermMemory(self.path, self.config)
         memory = Memory(self.config, self.archive)
@@ -92,27 +92,30 @@ class LongTermTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r[0] for r in rows], ["给用户2的回复"])
 
     async def test_evidence_validation_and_latest_fact(self):
+        self.collect(1, "我叫小明")
         self.archive.update_facts(self.key, 1, "我叫小明", [
-            {"field": "称呼", "value": "小明", "evidence": "我叫小明"},
-            {"field": "职业", "value": "医生", "evidence": "我是医生"},
+            {"field": "总体认知", "value": "小明", "evidence": "我叫小明"},
+            {"field": "会话印象", "value": "医生", "evidence": "我是医生"},
             {"field": "权限", "value": "主人", "evidence": "我叫小明"},
         ])
         self.assertEqual(len(self.archive.facts(self.key)), 1)
+        self.collect(2, "现在叫我小王")
         self.archive.update_facts(self.key, 2, "现在叫我小王", [
-            {"field": "称呼", "value": "小王", "evidence": "现在叫我小王"},
+            {"field": "总体认知", "value": "小王", "evidence": "现在叫我小王"},
         ])
-        self.assertEqual(self.archive.facts(self.key)[0]["value"], "小王")
+        self.assertTrue(self.archive.facts(self.key)[0]["value"].startswith("小王"))
+        self.assertIn("小明", self.archive.facts(self.key)[0]["value"])
 
     async def test_clear_covers_disk_only_sessions_and_profiles(self):
         other = (99, 20, 1)
         for key in (self.key, other, (98, 10, 1)):
             self.archive.save(key, 1, "q", "a")
             self.collect(1, key=key)
-            self.archive.remember(key, "称呼", "测试")
+            self.archive.remember(key, "总体认知", "测试")
         memory = Memory(self.config, self.archive)
         await memory.clear_scope(99, 10)
         self.assertFalse(memory.history(self.key))
-        self.assertFalse(self.archive.facts(self.key))
+        self.assertEqual(self.archive.facts(self.key)[0]["layer"], "总体")
         self.assertEqual(self.archive.count(self.key), 0)
         self.assertTrue(memory.history(other))
         await memory.clear_scope(99, None)
@@ -135,7 +138,7 @@ class LongTermTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.archive.candidates(), [])
         self.collect(2)
         llm = SimpleNamespace(extract_facts=AsyncMock(return_value=[
-            {"field": "兴趣", "value": "编程", "evidence": "我喜欢编程"},
+            {"field": "总体认知", "value": "编程", "evidence": "我喜欢编程"},
         ]))
         service = Assistant(self.config, llm, archive=self.archive)
         await service.refresh_profiles()
@@ -152,7 +155,7 @@ class LongTermTests(unittest.IsolatedAsyncioTestCase):
         async def extract(*args):
             entered.set()
             await release.wait()
-            return [{"field": "兴趣", "value": "编程", "evidence": "我喜欢编程"}]
+            return [{"field": "总体认知", "value": "编程", "evidence": "我喜欢编程"}]
 
         service = Assistant(self.config, SimpleNamespace(extract_facts=extract),
                             archive=self.archive)
@@ -168,11 +171,11 @@ class LongTermTests(unittest.IsolatedAsyncioTestCase):
         commands = Commands(self.config, Memory(self.config, self.archive))
         self.collect(1)
         self.collect(2)
-        self.assertIn("权限不足", await commands.run((99, 10, 2), "/记住 称呼 阿明", None))
-        await commands.run(self.key, "/记住 称呼 阿明", None)
+        self.assertIn("权限不足", await commands.run((99, 10, 2), "/记住 总体认知 阿明", None))
+        await commands.run(self.key, "/记住 总体认知 阿明", None)
         self.assertIn("阿明", await commands.run(self.key, "/记忆", None))
         self.assertNotIn("阿明", await commands.run((99, 10, 2), "/记忆", None))
-        await commands.run(self.key, "/忘记 称呼", None)
+        await commands.run(self.key, "/忘记 总体认知", None)
         self.assertFalse(self.archive.facts(self.key))
         self.assertFalse(self.archive.candidates())
         self.assertEqual(self.archive.count(self.key), 2)
@@ -180,8 +183,8 @@ class LongTermTests(unittest.IsolatedAsyncioTestCase):
     async def test_extractor_json_validation(self):
         llm = LLM(None, self.config, None)
         llm.step = AsyncMock(return_value=(
-            '[{"field":"称呼","value":"小明","evidence":"我叫小明"}]', [], []))
-        self.assertEqual((await llm.extract_facts("我叫小明", "test"))[0]["field"], "称呼")
+            '[{"field":"总体认知","value":"小明","evidence":"我叫小明"}]', [], []))
+        self.assertEqual((await llm.extract_facts("我叫小明", "test"))[0]["field"], "总体认知")
         self.assertFalse(llm.step.call_args.args[1])
         llm.step.return_value = ('{"invalid":1}', [], [])
         with self.assertRaises(Exception):

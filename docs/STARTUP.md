@@ -6,7 +6,7 @@ Windows 上一次启动操作即可拉起本机后台、消息接入服务与机
 
 ## 开发
 
-`start.bat` 调用 `start.ps1`，后者先通过 `scripts/admin.ps1` 启动或复用后台并打开浏览器，后台不可用则报告失败；再通过 `scripts/napcat.ps1` 调用 `scripts/startup_config.py` 通过 python-dotenv 读取 `.env` 中的启动字段、探测本机 TCP 端口并启动 NapCat，再沿用原有机器人重启流程。NapCat 启动器的工作目录为启动文件所在目录，支持 `.bat`、`.cmd` 和 `.exe`，批处理通过系统 cmd 执行。脚本使用 UTF-8 BOM，兼容 Windows PowerShell 5.1 的中文解析，代码行尾为 CRLF。
+`start.bat` 调用 `start.ps1`，后者先通过 `scripts/admin.ps1` 重启本项目后台并打开浏览器，保证代码更新生效，后台不可用则报告失败；再通过 `scripts/napcat.ps1` 调用 `scripts/startup_config.py` 通过 python-dotenv 读取 `.env` 中的启动字段、探测本机 TCP 端口并启动 NapCat，再沿用原有机器人重启流程。NapCat 启动器的工作目录为启动文件所在目录，支持 `.bat`、`.cmd` 和 `.exe`，批处理通过系统 cmd 执行。脚本使用 UTF-8 BOM，兼容 Windows PowerShell 5.1 的中文解析，代码行尾为 CRLF。
 
 首次启动交互获取路径，验证后保存至根目录 `.env` 的 `NAPCAT_LAUNCHER`；已有配置直接读取。相对路径以项目根目录为基准，支持环境变量。路径不能含百分号（环境变量展开后）、双引号、换行或感叹号。配置不接受任意命令字符串或附加参数；如需参数，可指向用户自己的启动批处理。
 

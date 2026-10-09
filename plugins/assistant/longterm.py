@@ -1,5 +1,6 @@
 """SQLite conversation archive and source-backed, self-reported user facts."""
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -7,9 +8,10 @@ import time
 from pathlib import Path
 
 from .config import Config
+from .knowledge import GLOBAL_FIELDS, KNOWLEDGE_LIMIT, SCENE_FIELDS, prose
 from .prompt_store import group_knowledge
 
-FACT_FIELDS = {"称呼", "职业", "兴趣", "正在做的事", "交流偏好", "背景"}
+FACT_FIELDS = set(GLOBAL_FIELDS) | set(SCENE_FIELDS)
 
 
 class LongTermMemory:
@@ -239,27 +241,53 @@ class LongTermMemory:
 
     def facts(self, key: tuple) -> list[dict]:
         rows = self.db.execute(
-            "SELECT f.* FROM facts f WHERE f.bot=? AND f.usr=? ORDER BY f.updated DESC",
+            "SELECT f.* FROM facts f WHERE f.bot=? AND f.usr=? "
+            "ORDER BY (f.grp=0) DESC,f.updated DESC",
             (key[0], key[2]),
         ).fetchall()
-        result = {}
+        accepted = []
         for row in rows:
-            if row["grp"] != key[1]:
-                if row["grp"] <= 0 and row["grp"] != -key[2]:
+            source_group = row["grp"]
+            if (
+                source_group == 0
+                and row["source_id"] is None
+                and not row["evidence"].startswith(("后台维护者修正", "本人通过管理指令设置"))
+            ):
+                continue
+            if source_group == 0 and row["source_id"] is not None:
+                source = self.db.execute(
+                    "SELECT grp FROM messages WHERE id=? AND bot=? AND usr=?",
+                    (row["source_id"], key[0], key[2]),
+                ).fetchone()
+                if source is None:
                     continue
+                source_group = source[0]
+            if row["grp"] != 0 and row["grp"] != key[1]:
+                continue
+            if source_group not in (0, key[1]):
                 approved = self.db.execute(
                     "SELECT 1 FROM messages m JOIN disclosure_reviews r ON r.source_id=m.id "
                     "AND r.safe=1 WHERE m.bot=? AND m.grp=? AND m.usr=? "
                     "AND instr(m.content,?)>0 LIMIT 1",
-                    (key[0], row["grp"], key[2], row["evidence"]),
+                    (key[0], source_group, key[2], row["evidence"]),
                 ).fetchone()
                 if approved is None:
                     continue
-            if row["field"] not in result:
-                result[row["field"]] = {
-                    k: row[k] for k in ("field", "value", "evidence", "updated")
-                }
-        return list(result.values())
+            accepted.append(row)
+        result = []
+        for general, label, field in ((True, "总体", "总体认知"), (False, "当前会话", "会话印象")):
+            selected = [r for r in accepted if (r["grp"] == 0) == general]
+            if selected:
+                result.append(
+                    {
+                        "field": field,
+                        "value": prose(selected),
+                        "layer": label,
+                        "evidence": "\n".join(dict.fromkeys(r["evidence"] for r in selected)),
+                        "updated": max(r["updated"] for r in selected),
+                    }
+                )
+        return result
 
     def context(self, key: tuple, query: str, exclude: set[int]) -> str:
         # Bounded lexical retrieval works with Chinese without another service or model.
@@ -311,12 +339,16 @@ class LongTermMemory:
             reverse=True,
         )
         relevant = [self.message_context(row) for score, _, row in matches[:3] if score > 0]
+        facts = self.facts(key)
         return json.dumps(
             {
                 "subject_qq": key[2],
                 "scope": key[1],
                 "group_knowledge": group_knowledge(key[0], key[1]) if key[1] > 0 else {},
-                "user_reported_facts": self.facts(key),
+                "person_knowledge": {
+                    "总体": [f for f in facts if f["layer"] == "总体"],
+                    "当前会话": [f for f in facts if f["layer"] == "当前会话"],
+                },
                 "shared_person_knowledge": self.shared_knowledge(key),
                 "related_history": older,
                 "recent_user_group_messages": statements,
@@ -350,12 +382,17 @@ class LongTermMemory:
                 if not isinstance(item, dict):
                     continue
                 field, value, evidence = (item.get(k) for k in ("field", "value", "evidence"))
+                target = (
+                    (key[0], 0, key[2])
+                    if isinstance(field, str) and field in GLOBAL_FIELDS
+                    else key
+                )
                 # 后台修正的认知固定保留，模型提取不能覆盖维护者确认的内容。
                 pinned = (
                     self.db.execute(
-                        "SELECT 1 FROM facts WHERE bot=? AND grp=? AND usr=? AND field=? "
+                        "SELECT 1 FROM facts WHERE bot=? AND grp=? AND usr=? "
                         "AND evidence LIKE '后台维护者修正%'",
-                        (*key, field),
+                        target,
                     ).fetchone()
                     if isinstance(field, str)
                     else None
@@ -374,38 +411,49 @@ class LongTermMemory:
                     "INSERT INTO facts VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(bot,grp,usr,field) "
                     "DO UPDATE SET value=excluded.value,evidence=excluded.evidence,"
                     "source_id=excluded.source_id,updated=excluded.updated",
-                    (*key, field, value.strip(), evidence, source_id, time.time()),
+                    (
+                        *target,
+                        field + ":" + hashlib.sha256(f"{key[1]}:{evidence}".encode()).hexdigest(),
+                        value.strip(),
+                        evidence,
+                        source_id,
+                        time.time(),
+                    ),
                 )
 
     def remember(self, key: tuple, field: str, value: str):
-        if field not in FACT_FIELDS or not 1 <= len(value.strip()) <= 160:
-            raise ValueError("字段：称呼、职业、兴趣、正在做的事、交流偏好、背景。内容1至160字。")
+        if field not in FACT_FIELDS or not 1 <= len(value.strip()) <= KNOWLEDGE_LIMIT:
+            raise ValueError("使用 总体认知 或 会话印象，内容1至12000字。")
+        target = (key[0], 0, key[2]) if field in GLOBAL_FIELDS else key
         with self.db:
+            self.db.execute("DELETE FROM facts WHERE bot=? AND grp=? AND usr=?", target)
             self.db.execute(
-                "INSERT INTO facts VALUES(?,?,?,?,?,?,NULL,?) ON CONFLICT(bot,grp,usr,field) "
-                "DO UPDATE SET value=excluded.value,evidence=excluded.evidence,"
-                "source_id=NULL,updated=excluded.updated",
-                (*key, field, value.strip(), "本人通过管理指令设置", time.time()),
+                "INSERT INTO facts VALUES(?,?,?,?,?,?,NULL,?)",
+                (*target, field, value.strip(), "本人通过管理指令设置", time.time()),
             )
-        last = self.db.execute(
-            "SELECT COALESCE(MAX(id),0) FROM messages WHERE bot=? AND grp=? AND usr=?",
-            key,
-        ).fetchone()[0]
-        self.advance(key, last)
+        self.advance_managed(key, field)
 
     def forget(self, key: tuple, field: str):
         if field not in FACT_FIELDS:
-            raise ValueError("未知认知字段。")
+            raise ValueError("使用 总体认知 或 会话印象。")
+        target = (key[0], 0, key[2]) if field in GLOBAL_FIELDS else key
         with self.db:
-            self.db.execute(
-                "DELETE FROM facts WHERE bot=? AND grp=? AND usr=? AND field=?", (*key, field)
-            )
-        # Skip existing unprocessed archive: only future messages may refresh the field.
-        last = self.db.execute(
-            "SELECT COALESCE(MAX(id),0) FROM messages WHERE bot=? AND grp=? AND usr=?",
-            key,
-        ).fetchone()[0]
-        self.advance(key, last)
+            self.db.execute("DELETE FROM facts WHERE bot=? AND grp=? AND usr=?", target)
+        self.advance_managed(key, field)
+
+    def advance_managed(self, key, field):
+        """总体资料的显式修正阻止各会话在途提取重新写回旧值。"""
+        if field in GLOBAL_FIELDS:
+            for row in self.db.execute(
+                "SELECT grp,MAX(id) FROM messages WHERE bot=? AND usr=? GROUP BY grp",
+                (key[0], key[2]),
+            ).fetchall():
+                self.advance((key[0], row[0], key[2]), row[1])
+        else:
+            last = self.db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM messages WHERE bot=? AND grp=? AND usr=?", key
+            ).fetchone()[0]
+            self.advance(key, last)
 
     def delete(self, bot: int, group: int | None = None, user: int | None = None):
         clause, values = "bot=?", [bot]
@@ -416,6 +464,11 @@ class LongTermMemory:
             clause += " AND usr=?"
             values.append(user)
         with self.db:
+            # 清除会话时同步移除来源于其中消息的总体认知。
+            self.db.execute(
+                f"DELETE FROM facts WHERE source_id IN (SELECT id FROM messages WHERE {clause})",
+                values,
+            )
             for table in ("turns", "facts", "messages", "profile_cursor"):
                 target_clause, target_values = clause, values
                 if table == "messages" and user is not None:

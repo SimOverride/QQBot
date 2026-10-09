@@ -145,6 +145,42 @@ def create_app(root=ROOT):
             raise ValueError("分页位置无效")
         return store.messages(group, user, q, offset)
 
+    @app.post("/api/profiles")
+    async def create_profile(request: Request):
+        data = await body(request)
+        if data.get("kind") not in ("persona", "style"):
+            raise ValueError("请选择人格或风格")
+        return await run_in_threadpool(store.create_file, data["kind"], data["name"], data["value"])
+
+    @app.post("/api/resource/delete")
+    async def delete_resource(request: Request):
+        data = await body(request)
+        return await run_in_threadpool(store.delete_file, data["resource"], data["revision"])
+
+    @app.post("/api/emotes/upload")
+    async def upload_emote(request: Request, name: str):
+        from plugins.assistant.emote_collect import image_data
+
+        store.file_target("emote", name)
+        limit = config_for(store.root).emotes_max_bytes
+        chunks, size = [], 0
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > limit:
+                raise HTTPException(413, f"图片超过大小上限（{limit // 1024} KiB）")
+            chunks.append(chunk)
+        content = b"".join(chunks)
+        try:
+            suffix, _ = image_data(content)
+        except ServiceError:
+            raise ValueError("文件不是支持的图片") from None
+        extension = Path(name).suffix.lower()
+        if extension == ".jpeg":
+            extension = ".jpg"
+        if extension != suffix:
+            raise ValueError("图片内容与文件扩展名不一致")
+        return await run_in_threadpool(store.create_file, "emote", name, content)
+
     @app.get("/api/emotes")
     def emotes():
         return store.emotes()
@@ -185,21 +221,59 @@ def create_app(root=ROOT):
         ):
             raise ValueError("对话最多 16 条，每条不超过 30000 字")
         context = []
+        history = None
         kind, key = store.resolve(data["resource"])
+        scope = data.get("scope") if kind == "person" else None
+        model_value = current["value"]
+        evidence = current.get("evidence", [])
+        if scope is not None:
+            if scope == "general":
+                model_value = {"总体认知": current["value"]["总体认知"]}
+            elif isinstance(scope, str) and scope in current["value"]["会话印象"]:
+                model_value = {"会话印象": {scope: current["value"]["会话印象"][scope]}}
+                evidence = [r for r in evidence if r["grp"] == int(scope)]
+            else:
+                raise ValueError("请选择有效的个人子菜单")
         if kind in ("person", "group"):
-            context = store.messages(key[1], key[2] if kind == "person" else None)[:30]
-            # 只提供选中会话最近的原文和身份，不发送其他人的私聊。
-            context = [{k: r[k] for k in ("usr", "content", "created")} for r in reversed(context)]
+            history = store.history_version(data["resource"])
+            context = store.knowledge_context(data["resource"], history["last_id"])
+            if scope is not None and scope != "general":
+                context = [r for r in context if r["scope"] == int(scope)]
         messages = [
             {"role": "system", "content": prompt_text("admin.edit", root=store.root)},
             {
                 "role": "user",
                 "content": json.dumps(
-                    {"current": current["value"], "context": context}, ensure_ascii=False
+                    {
+                        "current": model_value,
+                        "context": context,
+                        "subject": {"kind": kind, "ids": key if isinstance(key, tuple) else None},
+                        "existing_evidence": evidence,
+                    },
+                    ensure_ascii=False,
                 ),
             },
             *[{"role": m["role"], "content": m["content"]} for m in chat],
         ]
+        if kind in ("person", "group"):
+            messages.insert(
+                1,
+                {
+                    "role": "system",
+                    "content": (
+                        "根据有来源的聊天重新整理认知。个人档案只有一段总体认知，以及按会话"
+                        "保存的会话印象。使用自然连贯的文字，不按职业、兴趣、角色等类别分栏。"
+                        "总体认知只包含跨会话适用的稳定信息；会话印象描述该私聊或群中的表现。"
+                        "相同QQ始终是同一个人；平台昵称不是总结目标，不用模型生成显示名称。"
+                        "冲突优先明确的新自述；旧后台固定值优先保留，有矛盾在说明中标出。"
+                        "关系须注明对象QQ，不把玩笑、转述、引用当本人事实。无依据留空，"
+                        "不推断敏感信息。总体认知及各会话印象分别最多12000字。"
+                        "群只整理该群主题、规则和互动氛围，不把个人意见当全群共识；"
+                        "群activity、interests、persona、style保持current原值，除非维护者明确要求修改。"
+                        "explanation列出关键依据的scope和消息id、冲突及抽样限制，不能声称读完未提供记录。"
+                    ),
+                },
+            )
         cfg = config_for(store.root)
         cfg.validate_runtime()
         cfg.llm_max_output_tokens = max(cfg.llm_max_output_tokens, 8192)
@@ -219,23 +293,85 @@ def create_app(root=ROOT):
             )
         async with asyncio.timeout(180), ai_slot:
             async with httpx.AsyncClient() as client:
-                text, calls, _ = await LLM(client, cfg, Search(client, cfg)).step(
-                    messages, False, "admin-edit"
-                )
-        try:
-            parsed = json.loads(
-                text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-            )
-            if calls or not isinstance(parsed, dict) or set(parsed) != {"value", "explanation"}:
-                raise ValueError()
-            store.validate(data["resource"], parsed["value"])
-        except (ValueError, KeyError, TypeError):
-            raise ValueError("模型未返回合法修改方案，未保存任何内容；可补充要求后重试") from None
-        return {
+                model = LLM(client, cfg, Search(client, cfg))
+                for attempt in range(2):
+                    text, calls, _ = await model.step(messages, False, "admin-edit")
+                    error_message = (
+                        "仅输出一个合法JSON对象，顶层包含value与explanation；检查括号配对。"
+                    )
+                    try:
+                        parsed = json.loads(
+                            text.strip()
+                            .removeprefix("```json")
+                            .removeprefix("```")
+                            .removesuffix("```")
+                            .strip()
+                        )
+                        if (
+                            calls
+                            or not isinstance(parsed, dict)
+                            or set(parsed) != {"value", "explanation"}
+                            or not isinstance(parsed["explanation"], str)
+                        ):
+                            raise ValueError()
+                        try:
+                            if scope is not None:
+                                value = parsed["value"]
+                                if not isinstance(value, dict) or set(value) != set(model_value):
+                                    raise ValueError("只返回当前子菜单的字段")
+                                merged = json.loads(json.dumps(current["value"]))
+                                if scope == "general":
+                                    merged["总体认知"] = value["总体认知"]
+                                else:
+                                    if not isinstance(value["会话印象"], dict) or set(
+                                        value["会话印象"]
+                                    ) != {scope}:
+                                        raise ValueError("只返回当前会话印象")
+                                    merged["会话印象"][scope] = value["会话印象"][scope]
+                                parsed["value"] = merged
+                            store.validate(data["resource"], parsed["value"])
+                        except ValueError as error:
+                            error_message = str(error)
+                            raise
+                        break
+                    except (ValueError, KeyError, TypeError):
+                        if attempt:
+                            raise ValueError(
+                                "模型未返回合法修改方案，未保存任何内容；可补充要求后重试"
+                            ) from None
+                        # 修正格式仍禁用工具，只有校验通过的完整方案可以进入差异预览。
+                        messages.extend(
+                            [
+                                {"role": "assistant", "content": text},
+                                {
+                                    "role": "user",
+                                    "content": "修正上次输出格式："
+                                    + error_message
+                                    + "完整保留current全部字段和会话编号，"
+                                    "包括空字段，不添加对象层级。",
+                                },
+                            ]
+                        )
+        proposal = {
+            "scope": scope,
             "value": parsed["value"],
             "explanation": str(parsed["explanation"])[:4000],
             "revision": current["revision"],
+            "history": history,
         }
+        if store.get(data["resource"])["revision"] != current["revision"]:
+            raise ValueError("生成期间内容已变化，请重新载入后再生成")
+        if history and history != store.history_version(data["resource"], history["last_id"]):
+            raise ValueError("生成期间聊天依据已变化，请重新生成")
+        if kind in ("person", "group"):
+            from console_store import atomic_json
+
+            atomic_json(store.proposal_path(data["resource"]), proposal)
+        return proposal
+
+    @app.get("/api/knowledge-proposal")
+    def knowledge_proposal(resource: str):
+        return store.proposal(resource)
 
     @app.post("/api/preview")
     async def preview(request: Request):

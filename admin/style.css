@@ -4,3 +4,6 @@
 
 /* 管理页面直接展示操作区，不添加页面标题和用途介绍。 */
 header{justify-content:flex-end;margin-bottom:8px}#status:empty{display:none}#status{margin-bottom:12px}.panel-title .search{margin-top:0}
+
+/* 个人按昵称列出，会话印象在其子菜单中选择。 */
+.person-submenu{padding:0 12px 12px 28px;display:flex;flex-direction:column;gap:5px}.person-submenu[hidden]{display:none}.person-submenu button{background:transparent;color:#23323a;text-align:left;padding:8px 10px;font-size:12px}.person-submenu button.selected{background:#e7f3f5;color:#176b87}#people-group{width:100%;margin-bottom:10px}

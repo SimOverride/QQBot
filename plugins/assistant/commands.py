@@ -143,8 +143,8 @@ class Commands:
             if archive is None:
                 return "长期记忆未启用。"
             facts = archive.facts(key)
-            lines = [f"已保存你在本群的 {archive.count(key)} 条消息。认知仅代表用户自述："]
-            lines.extend(f"{f['field']}：{f['value']}" for f in facts)
+            lines = [f"已保存你在本群的 {archive.count(key)} 条消息。以下为总体及当前会话认知："]
+            lines.extend(f"[{f['layer']}]{f['field']}：{f['value']}" for f in facts)
             if not facts:
                 lines.append("尚未形成长期认知。")
             return "\n".join(lines)
@@ -166,7 +166,10 @@ class Commands:
                     "\n/清空 清除自己的会话\n/清空 @某人 清除其本群会话"
                     "\n/清空 本群 清除本群会话（需确认）\n/确认 确认码 执行待确认操作"
                 )
-                result += "\n/记住 字段 内容 修正本人的认知\n/忘记 字段 删除本人的一项认知"
+                result += (
+                    "\n/记住 总体认知或会话印象 内容 修正本人的认知"
+                    "\n/忘记 总体认知或会话印象 删除对应认知"
+                )
             if level == 2:
                 result += "\n/后台 查询本机后台入口（仅所有者）"
                 result += "\n/清空全部 清除本机器人所有群及私聊的会话（需确认）"
@@ -180,7 +183,10 @@ class Commands:
             if (command == "/记住" and len(values) != 3) or (
                 command == "/忘记" and len(values) != 2
             ):
-                return "用法：/记住 字段 内容，或 /忘记 字段；只作用于你自己在本群的认知。"
+                return (
+                    "用法：/记住 字段 内容，或 /忘记 字段；"
+                    "字段仅支持 总体认知 或 会话印象；前者跨会话，后者仅当前会话。"
+                )
             try:
                 async with self.memory.locked(key):
                     if command == "/记住":
