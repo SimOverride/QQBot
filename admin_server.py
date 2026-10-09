@@ -6,6 +6,7 @@ import json
 import mimetypes
 import secrets
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -13,7 +14,7 @@ import httpx
 import uvicorn
 from dotenv import dotenv_values
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 import migration
@@ -27,6 +28,7 @@ from plugins.assistant.llm import LLM
 from plugins.assistant.longterm import LongTermMemory
 from plugins.assistant.personality import ProfileStore
 from plugins.assistant.prompt_store import prompt_text
+from plugins.assistant.runtime import status as runtime_status
 from plugins.assistant.search import Search
 
 ROOT = Path(__file__).resolve().parent
@@ -47,6 +49,7 @@ def create_app(root=ROOT):
     store = ConsoleStore(root)
     token = secrets.token_urlsafe(32)
     ai_slot = asyncio.Semaphore(1)
+    avatar_cache = {}
     app.state.token = token
     app.state.store = store
 
@@ -125,6 +128,40 @@ def create_app(root=ROOT):
     @app.get("/api/session")
     async def session():
         return {"token": token, "name": "QQBot 本地控制台", "service": "qqbot-console"}
+
+    @app.get("/api/runtime")
+    def runtime():
+        return runtime_status(root)
+
+    @app.get("/api/bot-avatar")
+    async def bot_avatar():
+        # 固定 QQ 头像服务与当前机器人账号，不允许客户端指定任意地址。
+        qq = runtime_status(root)["qq"]
+        if not qq:
+            raise HTTPException(404, "尚未识别机器人账号")
+        cached = avatar_cache.get(qq)
+        if not cached or time.monotonic() - cached[0] > 300:
+            try:
+                async with httpx.AsyncClient(timeout=8, follow_redirects=False) as client:
+                    async with client.stream(
+                        "GET", "https://q1.qlogo.cn/g", params={"b": "qq", "nk": qq, "s": "100"}
+                    ) as response:
+                        response.raise_for_status()
+                        mime = response.headers.get("content-type", "").split(";", 1)[0]
+                        if mime not in {"image/png", "image/jpeg", "image/gif", "image/webp"}:
+                            raise ValueError("头像格式无效")
+                        content = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            content.extend(chunk)
+                            if len(content) > 512 * 1024:
+                                raise ValueError("头像过大")
+                        cached = (time.monotonic(), bytes(content), mime)
+                        avatar_cache.clear()
+                        avatar_cache[qq] = cached
+            except (httpx.HTTPError, ValueError):
+                if not cached:
+                    raise HTTPException(404, "头像暂时不可用") from None
+        return Response(cached[1], media_type=cached[2], headers={"Cache-Control": "max-age=300"})
 
     @app.get("/api/inventory")
     def inventory():
@@ -262,12 +299,12 @@ def create_app(root=ROOT):
                     "role": "system",
                     "content": (
                         "根据有来源的聊天重新整理认知。个人档案只有一段总体认知，以及按会话"
-                        "保存的会话印象。使用自然连贯的文字，不按职业、兴趣、角色等类别分栏。"
-                        "总体认知只包含跨会话适用的稳定信息；会话印象描述该私聊或群中的表现。"
+                        "保存的会话印象。总体认知与私聊印象使用一段自然文字；群内个人认知必须保留"
+                        "角色、互动习惯、互动关系、补充认知四项结构，每项为文本，无依据留空。总体认知只包含跨会话适用的稳定信息。"
                         "相同QQ始终是同一个人；平台昵称不是总结目标，不用模型生成显示名称。"
                         "冲突优先明确的新自述；旧后台固定值优先保留，有矛盾在说明中标出。"
                         "关系须注明对象QQ，不把玩笑、转述、引用当本人事实。无依据留空，"
-                        "不推断敏感信息。总体认知及各会话印象分别最多12000字。"
+                        "不推断敏感信息。总体认知、私聊印象及每项群内分类分别最多12000字。"
                         "群只整理该群主题、规则和互动氛围，不把个人意见当全群共识；"
                         "群activity、interests、persona、style保持current原值，除非维护者明确要求修改。"
                         "explanation列出关键依据的scope和消息id、冲突及抽样限制，不能声称读完未提供记录。"

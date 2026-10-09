@@ -64,6 +64,13 @@ class Contacts:
             complete = True
             seen = set()
             try:
+                login = await asyncio.wait_for(bot.get_login_info(), 8)
+                if int(login.get("user_id", 0)) == bot_id:
+                    self.observe_nickname(bot_id, bot_id, login.get("nickname"))
+                    self.save_directory()
+            except Exception:
+                complete = False
+            try:
                 groups = await asyncio.wait_for(bot.get_group_list(no_cache=True), 8)
             except Exception:
                 groups = []

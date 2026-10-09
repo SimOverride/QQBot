@@ -12,6 +12,7 @@ from pathlib import Path
 
 import migration
 from plugins.assistant.knowledge import (
+    GROUP_FIELDS,
     KNOWLEDGE_LIMIT,
     display_name,
     person_value,
@@ -279,11 +280,20 @@ class ConsoleStore:
                 or set(value["会话印象"]) != set(current["会话印象"])
             ):
                 raise ValueError("须保留一段总体认知和全部会话印象，总体认知最多12000字")
-            if any(
-                not isinstance(v, str) or len(v) > max(KNOWLEDGE_LIMIT, len(current["会话印象"][g]))
-                for g, v in value["会话印象"].items()
-            ):
-                raise ValueError("每个会话印象须为文本，最多12000字")
+            for group, entry in value["会话印象"].items():
+                old = current["会话印象"][group]
+                if int(group) > 0:
+                    if not isinstance(entry, dict) or set(entry) != set(GROUP_FIELDS):
+                        raise ValueError("群内个人认知须保留角色、互动习惯、互动关系、补充认知")
+                    fields = entry.items()
+                else:
+                    fields = [("会话印象", entry)]
+                    old = {"会话印象": old}
+                for field, content in fields:
+                    if not isinstance(content, str) or len(content) > max(
+                        KNOWLEDGE_LIMIT, len(old[field])
+                    ):
+                        raise ValueError("每项认知须为文本，最多12000字")
         elif kind == "group":
             if any(
                 not isinstance(value[f], str) or len(value[f]) > 6000
@@ -393,21 +403,39 @@ class ConsoleStore:
                     bot, user = key
                     # 只替换实际修改的段落，保留其他会话的来源与自动处理状态。
                     previous, _ = person_value(db, *key)
-                    old_layers = {"0": previous["总体认知"], **previous["会话印象"]}
+
+                    def layers(data):
+                        return {
+                            "0": {"总体认知": data["总体认知"]},
+                            **{
+                                g: v if int(g) > 0 else {"会话印象": v}
+                                for g, v in data["会话印象"].items()
+                            },
+                        }
+
+                    old_layers = layers(previous)
                     changed = set()
-                    layers = {
-                        "0": {"总体认知": value["总体认知"]},
-                        **{g: {"会话印象": v} for g, v in value["会话印象"].items()},
-                    }
-                    for group, fields in layers.items():
-                        for field, text in fields.items():
-                            if old_layers.get(group, "") == text:
+                    for group, fields in layers(value).items():
+                        for field, content in fields.items():
+                            if old_layers[group][field] == content:
                                 continue
                             changed.add(int(group))
-                            db.execute(
-                                "DELETE FROM facts WHERE bot=? AND grp=? AND usr=?",
+                            # 每项独立修正；其余分类保留来源与固定状态。
+                            rows = db.execute(
+                                "SELECT field FROM facts WHERE bot=? AND grp=? AND usr=?",
                                 (bot, int(group), user),
-                            )
+                            ).fetchall()
+                            for row in rows:
+                                source_field = row["field"].split(":", 1)[0]
+                                target_field = (
+                                    source_field if source_field in GROUP_FIELDS else "补充认知"
+                                )
+                                if int(group) <= 0 or target_field == field:
+                                    db.execute(
+                                        "DELETE FROM facts WHERE bot=? AND grp=? "
+                                        "AND usr=? AND field=?",
+                                        (bot, int(group), user, row["field"]),
+                                    )
                             db.execute(
                                 "INSERT INTO facts VALUES(?,?,?,?,?,?,NULL,?)",
                                 (
@@ -415,7 +443,7 @@ class ConsoleStore:
                                     int(group),
                                     user,
                                     field,
-                                    text,
+                                    content,
                                     "后台维护者修正（固定）",
                                     time.time(),
                                 ),

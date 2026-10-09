@@ -7,3 +7,9 @@ header{justify-content:flex-end;margin-bottom:8px}#status:empty{display:none}#st
 
 /* 个人按昵称列出，会话印象在其子菜单中选择。 */
 .person-submenu{padding:0 12px 12px 28px;display:flex;flex-direction:column;gap:5px}.person-submenu[hidden]{display:none}.person-submenu button{background:transparent;color:#23323a;text-align:left;padding:8px 10px;font-size:12px}.person-submenu button.selected{background:#e7f3f5;color:#176b87}#people-group{width:100%;margin-bottom:10px}
+
+#selection{display:block;font-size:12px;color:#526d79;line-height:1.7;overflow-wrap:anywhere;min-width:0;margin-bottom:14px}header{gap:18px;flex-wrap:nowrap;align-items:center}header>button{flex-shrink:0}
+
+.diff[hidden]{display:none}
+
+#runtime-status{flex:1;min-width:0;padding:11px 15px;margin:0;border:1px solid var(--line);border-radius:8px;background:#fff;color:#6d7c86;font-size:12px}#runtime-status::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:#84959e;margin-right:9px}#runtime-status[data-state="connected"]{color:#267858}#runtime-status[data-state="connected"]::before{background:#2ba287}#runtime-status[data-state="waiting"]::before,#runtime-status[data-state="stale"]::before,#runtime-status[data-state="unknown"]::before{background:#d49a39}#bot-avatar{width:44px;height:44px;object-fit:cover;border-radius:50%;flex-shrink:0}#bot-avatar[hidden],#bot-fallback[hidden]{display:none}#bot-name{display:block;font-size:16px;overflow-wrap:anywhere}.brand>div{min-width:0}

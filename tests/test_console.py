@@ -208,8 +208,12 @@ class ConsoleTests(unittest.TestCase):
 
     def test_person_inventory_unifies_names_and_scopes(self):
         self.archive.collect(
-            (123, -20, 20), 2, "我叫小明", ["text"], 101,
-            metadata={"sender_name": "小明", "sender_nickname": "小明"}
+            (123, -20, 20),
+            2,
+            "我叫小明",
+            ["text"],
+            101,
+            metadata={"sender_name": "小明", "sender_nickname": "小明"},
         )
         self.archive.collect((123, 11, 20), 3, "你好", ["text"], 102)
         people = self.store.inventory()["people"]
@@ -226,10 +230,10 @@ class ConsoleTests(unittest.TestCase):
             )
         self.archive.collect((123, -20, 20), 2, "私聊", ["text"], 101)
         old = self.store.get("person:123:20")
-        self.assertIn("兴趣：游戏", old["value"]["会话印象"]["10"])
+        self.assertIn("兴趣：游戏", old["value"]["会话印象"]["10"]["补充认知"])
         value = old["value"]
         value["总体认知"] = "游戏"
-        value["会话印象"]["10"] = "组织者"
+        value["会话印象"]["10"]["补充认知"] = "组织者"
         value["会话印象"]["-20"] = "只在私聊倾诉"
         saved = self.store.put(old["resource"], value, old["revision"])
         self.assertEqual(
@@ -240,13 +244,16 @@ class ConsoleTests(unittest.TestCase):
         )
         current = self.archive.facts((123, 10, 20))
         other = self.archive.facts((123, 11, 20))
-        self.assertIn("组织者", [r["value"] for r in current])
+        self.assertIn("补充认知：组织者", [r["value"] for r in current])
         self.assertNotIn("只在私聊倾诉", [r["value"] for r in current])
         self.assertNotIn("组织者", [r["value"] for r in other])
         self.assertIn("游戏", [r["value"] for r in other])
         self.assertEqual(saved["value"], value)
         self.store.undo(self.store.changes()[0]["id"])
-        self.assertIn("兴趣：游戏", self.store.get(old["resource"])["value"]["会话印象"]["10"])
+        self.assertIn(
+            "兴趣：游戏",
+            self.store.get(old["resource"])["value"]["会话印象"]["10"]["补充认知"],
+        )
 
     def test_person_suggestion_uses_all_own_scopes_without_other_private(self):
         self.archive.collect((123, -20, 20), 2, "本人私聊", ["text"], 101)
@@ -413,7 +420,7 @@ class ConsoleTests(unittest.TestCase):
     def test_export_import_includes_console_configuration(self):
         person = self.store.get("person:123:20")["value"]
         person["总体认知"] = "游戏"
-        person["会话印象"]["10"] = "组织者"
+        person["会话印象"]["10"]["角色"] = "组织者"
         self.save("person:123:20", person)
         self.save("prompt:search.enabled", "按需检索事实")
         group = self.store.get("group:123:10")["value"]
@@ -477,7 +484,11 @@ class ConsoleTests(unittest.TestCase):
 
     def test_unverified_name_never_becomes_person_title(self):
         self.archive.collect(
-            (123, 10, 20), 99, "测试", ["text"], 110,
+            (123, 10, 20),
+            99,
+            "测试",
+            ["text"],
+            110,
             metadata={"sender_name": "历史别名"},
         )
         with self.archive.db:
@@ -497,7 +508,8 @@ class ConsoleTests(unittest.TestCase):
         )
         old = self.store.get("person:123:20")
         source = self.archive.db.execute("SELECT * FROM facts WHERE grp=0").fetchone()
-        proposal = {"value": {"会话印象": {"10": "群内参与讨论"}}, "explanation": "依据群发言"}
+        scene = dict(old["value"]["会话印象"]["10"], 互动习惯="群内参与讨论")
+        proposal = {"value": {"会话印象": {"10": scene}}, "explanation": "依据群发言"}
         fake = AsyncMock(return_value=(json.dumps(proposal), [], []))
         with patch.object(LLM, "step", fake):
             response = self.client.post(
@@ -519,3 +531,45 @@ class ConsoleTests(unittest.TestCase):
             dict(self.archive.db.execute("SELECT * FROM facts WHERE grp=0").fetchone()),
             dict(source),
         )
+
+    def test_group_categories_preserve_sources_and_pin_independently(self):
+        with self.archive.db:
+            self.archive.db.execute(
+                "INSERT INTO facts VALUES(123,10,20,'角色','组织者','本人说明',1,100)"
+            )
+            self.archive.db.execute(
+                "INSERT INTO facts VALUES(123,10,20,'会话印象','原有整段印象','本人说明',1,101)"
+            )
+        before = self.store.get("person:123:20")
+        scene = before["value"]["会话印象"]["10"]
+        self.assertEqual(set(scene), {"角色", "互动习惯", "互动关系", "补充认知"})
+        self.assertEqual(scene["角色"], "组织者")
+        self.assertEqual(scene["补充认知"], "原有整段印象")
+        source = dict(self.archive.db.execute("SELECT * FROM facts WHERE field='角色'").fetchone())
+        scene["互动习惯"] = "固定修正"
+        self.store.put(before["resource"], before["value"], before["revision"])
+        self.assertEqual(
+            source,
+            dict(self.archive.db.execute("SELECT * FROM facts WHERE field='角色'").fetchone()),
+        )
+        self.archive.update_facts(
+            (123, 10, 20),
+            1,
+            "喜欢游戏",
+            [
+                {"field": "互动习惯", "value": "不应覆盖", "evidence": "喜欢游戏"},
+                {"field": "互动关系", "value": "一起游戏", "evidence": "喜欢游戏"},
+            ],
+        )
+        current = self.store.get(before["resource"])["value"]["会话印象"]["10"]
+        self.assertEqual(current["互动习惯"], "固定修正")
+        self.assertEqual(current["互动关系"], "一起游戏")
+        self.archive.remember((123, 10, 20), "角色", "参与者")
+        self.assertEqual(
+            self.store.get(before["resource"])["value"]["会话印象"]["10"]["互动习惯"], "固定修正"
+        )
+
+        self.archive.forget((123, 10, 20), "补充认知")
+        scene = self.store.get(before["resource"])["value"]["会话印象"]["10"]
+        self.assertEqual(scene["补充认知"], "")
+        self.assertEqual(scene["角色"], "参与者")

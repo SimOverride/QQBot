@@ -24,6 +24,7 @@ async function navigate(next){
   try{await renderPage();}catch(e){status(e.message,true);}
 }
 async function renderPage(){
+  showSelection();
   const container=$('#content');
   if(page==='migration'){renderMigration();return;}
   if(page==='changes'){await renderChanges();return;}
@@ -67,10 +68,40 @@ async function selectResource(id,scope='general'){
     const savedProposal=await api('/api/knowledge-proposal?resource='+encodeURIComponent(id));if(version!==selectionVersion)return;proposal=savedProposal;if(proposal&&proposal.scope&&proposal.scope!==personScope)proposal=null;if(proposal){chat=[{role:'assistant',content:JSON.stringify(proposal)}];showChat();$('#review-proposal').hidden=false;}status(proposal?'已载入认知整理建议，查看差异后确认保存':'已载入保存版本');
   }catch(e){if(version===selectionVersion)status(e.message,true);}
 }
+function showSelection(){
+  const el=$('#selection');
+  if(!current){el.textContent='尚未选择资源';el.removeAttribute('title');return;}
+  const [kind]=current.resource.split(':');
+  const names={person:'个人认知',group:'群记忆管理',message:'聊天记录管理',emote:'表情包管理',persona:'人格',style:'风格',prompt:'提示词'};
+  let name=current.title||current.resource.substring(current.resource.indexOf(':')+1),scope='';
+  if(kind==='person'){
+    const person=(inventory.people||[]).find(p=>p.resource===current.resource);
+    name=person?.name||name;
+    scope=personScope==='general'?'总体认知':person?.sessions?.find(s=>String(s.scope)===personScope)?.name||'当前会话';
+  }else if(kind==='group')name=(inventory.groups||[]).find(g=>g.resource===current.resource)?.name||name;
+  el.textContent='当前选择：'+[names[kind]||kind,name,scope].filter(Boolean).join(' / ');
+  el.title=current.resource;
+}
+async function saveManual(){
+  if(busy||!current)return;
+  if(!dirty()){status('内容没有变化');return;}
+  busy=true;
+  const controls=[...$('#editor').querySelectorAll('input,textarea,select,button')];
+  controls.forEach(el=>el.disabled=true);
+  status('正在保存…');
+  try{
+    const saved=await api('/api/resource',{resource:current.resource,value:structuredClone(draft),revision:current.revision});
+    current=saved;draft=structuredClone(saved.value);proposal=null;chat=[];
+    await refreshResources(saved.resource);
+    status('已保存；原值可在操作记录中恢复');
+  }catch(e){status(e.message,true);}
+  finally{busy=false;controls.forEach(el=>el.disabled=false);}
+}
 function renderEditor(){
   const kind=current.resource.split(':')[0];
   const title=current.title||current.resource.substring(current.resource.indexOf(':')+1);
-  $('#editor').innerHTML=`<div class="panel-title"><h2>${esc(title)}</h2></div><div class="panel-body"><div id="fields"></div><div id="evidence"></div><div class="actions">${current.default!==undefined?'<button class="quiet" id="reset-default">载入默认值</button>':''}<button class="quiet" id="reload-resource">重新载入</button><button id="review-manual">查看修改差异</button></div><p class="note">修改仅在确认保存后生效。正在生成的回答仍使用当时的内容。</p></div>`;
+  showSelection();
+  $('#editor').innerHTML=`<div class="panel-body"><div id="fields"></div><div id="evidence"></div><div class="actions">${current.default!==undefined?'<button class="quiet" id="reset-default">载入默认值</button>':''}<button id="save-manual">保存</button></div><p class="note">手动修改点击保存即生效；模型建议须确认差异后保存。</p></div>`;
   if(kind==='emote')$('#fields').innerHTML=`<img class="image-preview" src="/api/image?name=${encodeURIComponent(title)}" alt="当前表情">`;
   function fields(data, parent, path=[]){
     const entries=typeof data==='string'?[['__text',data]]:Object.entries(data);
@@ -88,23 +119,25 @@ function renderEditor(){
     }
   }
   if(kind==='person'){
-    const session=(inventory.people||[]).find(p=>p.resource===current.resource)?.sessions?.find(g=>String(g.scope)===personScope);
-    const label=document.createElement('label');label.className='field';const title=document.createElement('span');
-    title.textContent=personScope==='general'?'总体认知':`${session?.name||'当前会话'} · 会话印象`;
-    const input=document.createElement('textarea');input.className='long';
-    input.value=personScope==='general'?draft['总体认知']:draft['会话印象'][personScope]||'';
-    input.oninput=()=>{if(personScope==='general')draft['总体认知']=input.value;else draft['会话印象'][personScope]=input.value;status('草稿尚未保存');};
-    label.append(title,input);$('#fields').append(label);
+    const contents=personScope==='general'?{'总体认知':draft['总体认知']}:draft['会话印象'][personScope];
+    const entries=typeof contents==='string'?[['会话印象',contents]]:Object.entries(contents);
+    for(const [field,value] of entries){
+      const label=document.createElement('label');label.className='field';const title=document.createElement('span');
+      title.textContent=field;
+      const input=document.createElement('textarea');if(personScope==='general'||Number(personScope)<0)input.className='long';input.value=value;
+      input.oninput=()=>{if(personScope==='general')draft['总体认知']=input.value;else if(typeof contents==='string')draft['会话印象'][personScope]=input.value;else draft['会话印象'][personScope][field]=input.value;status('草稿尚未保存');};
+      label.append(title,input);$('#fields').append(label);
+    }
   }else fields(draft,$('#fields'));
   if(kind==='person'||kind==='group'){
     const rebuild=document.createElement('button');rebuild.className='quiet';rebuild.textContent='根据聊天重新整理';
-    rebuild.onclick=()=>{if(busy)return;$('#instruction').value='根据提供的聊天记录重新整理当前认知，合并重复信息，使用一段总体认知和各会话的一段印象，不按职业、兴趣等类别分类，说明依据与不确定之处。';suggest();};$('#editor .actions').append(rebuild);
+    rebuild.onclick=()=>{if(busy)return;$('#instruction').value='根据提供的聊天记录重新整理当前认知，合并重复信息，总体认知与私聊印象各用一段文字，群内个人认知保留角色、互动习惯、互动关系、补充认知四类，说明依据与不确定之处。';suggest();};$('#editor .actions').append(rebuild);
   }
   if(current.placeholders?.length){const p=document.createElement('p');p.className='note';p.textContent='请保留动态占位符：'+current.placeholders.map(s=>'{'+s+'}').join('、');$('#fields').append(p);}
   const evidence=current.resource.startsWith('person:')?current.evidence?.filter(r=>r.grp===(personScope==='general'?0:Number(personScope))):current.evidence;
   if(evidence?.length)$('#evidence').innerHTML=`<details><summary>查看认知依据与来源</summary><pre>${esc(text(evidence))}</pre></details>`;
-  $('#review-manual').onclick=()=>review(draft);$('#reload-resource').onclick=()=>selectResource(current.resource,personScope);
-  if($('#reset-default'))$('#reset-default').onclick=()=>{draft=current.default;renderEditor();status('默认值已载入草稿，确认保存后生效');};
+  $('#save-manual').onclick=saveManual;
+  if($('#reset-default'))$('#reset-default').onclick=()=>{draft=current.default;renderEditor();status('默认值已载入草稿，点击保存后生效');};
   if(['persona','style','emote'].includes(kind)&&!(kind!=='emote'&&title==='默认')){
     const remove=document.createElement('button');remove.className='quiet';remove.textContent='删除';
     remove.onclick=()=>{if(!busy)review(null,true);};$('#editor .actions').append(remove);
@@ -148,7 +181,9 @@ function openCreate(emote){
   };
 }
 function review(value, remove=false){
+  if(busy||!current)return;
   deleting=remove;pending=structuredClone(value);
+  $('#confirm .diff').hidden=remove;
   $('#confirm h2').textContent=remove?'确认删除 '+current.resource:'确认这次修改';
   $('#confirm p').textContent=remove?'原文件会备份，可在操作记录中撤销。未保存草稿将丢弃。':'只修改当前选中的资源。保存前会保留原值。';
   $('#apply-confirm').textContent=remove?'确认删除':'确认并保存';
@@ -158,7 +193,7 @@ function review(value, remove=false){
     if(value['总体认知']!==current.value['总体认知']){before.push({总体认知:current.value['总体认知']});after.push({总体认知:value['总体认知']});}
     const sessions=(inventory.people||[]).find(p=>p.resource===current.resource)?.sessions||[];
     for(const [scope,content] of Object.entries(value['会话印象'])){
-      if(content===current.value['会话印象'][scope])continue;
+      if(text(content)===text(current.value['会话印象'][scope]))continue;
       const name=sessions.find(s=>String(s.scope)===scope)?.name||'当前会话';
       before.push({会话:name,印象:current.value['会话印象'][scope]});after.push({会话:name,印象:content});
     }
@@ -176,6 +211,7 @@ $('#apply-confirm').onclick=async()=>{
 };
 $('#confirm').addEventListener('cancel',e=>{if(busy)e.preventDefault();});
 async function suggest(){
+  if(busy)return;
   const instruction=$('#instruction').value.trim();if(!instruction||!current)return;
   if(dirty()){status('请先保存或放弃手动草稿，再让模型基于保存版本提出建议',true);return;}
   busy=true;$('#suggest').disabled=true;chat.push({role:'user',content:instruction});chat=chat.slice(-14);$('#instruction').value='';showChat();status('模型正在提出修改建议，尚未保存…');
@@ -195,6 +231,26 @@ function renderMigration(){
 }
 async function renderChanges(){const rows=await api('/api/changes');$('#content').innerHTML='<div class="panel">'+(rows.length?'<table><thead><tr><th>时间</th><th>资源与差异</th><th>操作</th></tr></thead><tbody>'+rows.map(r=>`<tr><td>${esc(new Date(r.created*1000).toLocaleString())}</td><td>${esc(r.resource)}<details><summary>查看前后内容</summary><pre>${esc(text(r.before))}</pre><pre>${esc(text(r.after))}</pre></details></td><td><button class="quiet" data-undo="${r.id}" ${r.status==='saved'?'':'disabled'}>撤销此修改</button></td></tr>`).join('')+'</tbody></table>':'<div class="empty">尚无后台操作记录</div>')+'</div>';document.querySelectorAll('[data-undo]').forEach(b=>b.onclick=async()=>{if(!window.confirm('恢复这条记录的修改前内容？后续已修改的资源会拒绝撤销。'))return;try{await api('/api/undo',{id:b.dataset.undo});inventory=await api('/api/inventory');await renderChanges();status('已撤销，并记录本次恢复');}catch(e){status(e.message,true);}});}
 $('#nav').querySelectorAll('button').forEach(b=>b.onclick=()=>navigate(b.dataset.page));
-$('#refresh').onclick=async()=>{try{inventory=await api('/api/inventory');await navigate(page);}catch(e){status(e.message,true);}};
+$('#refresh').onclick=async()=>{if(busy)return;try{inventory=await api('/api/inventory');await navigate(page);}catch(e){status(e.message,true);}};
 window.addEventListener('beforeunload',e=>{if(dirty()||busy){e.preventDefault();e.returnValue='';}});
 (async()=>{try{token=(await api('/api/session')).token;inventory=await api('/api/inventory');await navigate('people');}catch(e){status(e.message,true);}})();
+
+async function refreshRuntime(){
+  try{
+    const data=await api('/api/runtime');
+    const states={connected:'运行中 · QQ 接入已连接',waiting:'运行中 · 等待 QQ 连接',stopped:'机器人已停止',stale:'机器人心跳中断，可能已停止'};
+    const duration=data.uptime===null?'':` · 已运行 ${Math.floor(data.uptime/3600)}小时${Math.floor(data.uptime%3600/60)}分钟`;
+    const el=$('#runtime-status');el.dataset.state=data.state;el.textContent=(states[data.state]||'状态未知')+duration;
+    $('#bot-name').textContent=data.nickname;$('#bot-name').title=data.qq?'QQ '+data.qq:'';
+    const avatar=$('#bot-avatar'),fallback=$('#bot-fallback');
+    const url=data.qq?`/api/bot-avatar?v=${Math.floor(Date.now()/300000)}&qq=${encodeURIComponent(data.qq)}`:'';
+    if(avatar.dataset.url!==url){
+      avatar.dataset.url=url;avatar.hidden=true;fallback.hidden=false;
+      avatar.onload=()=>{avatar.hidden=false;fallback.hidden=true;};
+      avatar.onerror=()=>{avatar.hidden=true;fallback.hidden=false;};
+      if(url)avatar.src=url;else avatar.removeAttribute('src');
+    }
+  }catch{const el=$('#runtime-status');el.dataset.state='unknown';el.textContent='无法读取运行状态，请检查后台连接';}
+}
+refreshRuntime();
+setInterval(refreshRuntime,5000);

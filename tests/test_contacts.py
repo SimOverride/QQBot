@@ -19,6 +19,7 @@ class DirectoryTests(unittest.IsolatedAsyncioTestCase):
             contacts.directory_path = Path(directory) / "contacts.json"
             bot = SimpleNamespace(
                 self_id="99",
+                get_login_info=AsyncMock(return_value={"user_id": 99, "nickname": "机器人昵称"}),
                 get_group_list=AsyncMock(return_value=[{"group_id": 10, "group_name": "同好群"}]),
                 get_group_member_list=AsyncMock(
                     return_value=[{"user_id": 2, "nickname": "QQ昵称", "card": "群内别名"}]
@@ -49,9 +50,10 @@ class DirectoryTests(unittest.IsolatedAsyncioTestCase):
             contacts.directory_path = root / "contacts.json"
             bot = SimpleNamespace(
                 self_id="99",
-                get_group_list=AsyncMock(side_effect=[RuntimeError(), [
-                    {"group_id": 10, "group_name": "真实群名"}
-                ]]),
+                get_login_info=AsyncMock(return_value={"user_id": 99, "nickname": "机器人昵称"}),
+                get_group_list=AsyncMock(
+                    side_effect=[RuntimeError(), [{"group_id": 10, "group_name": "真实群名"}]]
+                ),
                 get_friend_list=AsyncMock(return_value=[]),
                 get_group_member_list=AsyncMock(return_value=[]),
                 get_stranger_info=AsyncMock(return_value={"user_id": 22, "nickname": "当前昵称"}),
@@ -80,10 +82,13 @@ class DirectoryTests(unittest.IsolatedAsyncioTestCase):
 
             bot = SimpleNamespace(
                 self_id="99",
-                get_group_list=AsyncMock(return_value=[
-                    {"group_id": 10, "group_name": "第一群"},
-                    {"group_id": 11, "group_name": "第二群"},
-                ]),
+                get_login_info=AsyncMock(return_value={"user_id": 99, "nickname": "机器人昵称"}),
+                get_group_list=AsyncMock(
+                    return_value=[
+                        {"group_id": 10, "group_name": "第一群"},
+                        {"group_id": 11, "group_name": "第二群"},
+                    ]
+                ),
                 get_friend_list=AsyncMock(return_value=[]),
                 get_group_member_list=AsyncMock(side_effect=members),
             )

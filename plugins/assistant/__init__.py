@@ -20,6 +20,7 @@ from .llm import LLM
 from .longterm import LongTermMemory
 from .message_context import event_metadata
 from .personality import ProfileStore
+from .runtime import Runtime
 from .search import Search
 from .service import Assistant
 from .sharing import Sharing
@@ -70,6 +71,8 @@ def setup() -> None:
     client: httpx.AsyncClient | None = None
     cleaner: asyncio.Task | None = None
     directory_worker: asyncio.Task | None = None
+    heartbeat_worker: asyncio.Task | None = None
+    runtime = Runtime(Path(__file__).resolve().parents[2])
     archive: LongTermMemory | None = None
     sharing: Sharing | None = None
     conversations: GroupConversation | None = None
@@ -77,6 +80,7 @@ def setup() -> None:
     @driver.on_startup
     async def startup():
         nonlocal service, client, cleaner, archive, sharing, conversations, directory_worker
+        nonlocal heartbeat_worker
         config.validate_runtime()
         root = Path(__file__).resolve().parents[2]
         from .knowledge import read_directory
@@ -123,15 +127,41 @@ def setup() -> None:
 
         directory_worker = asyncio.create_task(directory_loop())
 
+        async def heartbeat_loop():
+            while True:
+                try:
+                    runtime.publish(get_bots())
+                except OSError:
+                    logger.warning("runtime_heartbeat_write_failed")
+                await asyncio.sleep(5)
+
+        heartbeat_worker = asyncio.create_task(heartbeat_loop())
+
     @driver.on_bot_connect
     async def sync_on_connect(bot: Bot):
         try:
+            runtime.publish(set(get_bots()) | {bot.self_id})
             await contacts.sync_directory(bot, force=True)
         except Exception as error:
             logger.warning("directory_refresh_failure={}", type(error).__name__)
 
+    @driver.on_bot_disconnect
+    async def record_disconnect(bot: Bot):
+        try:
+            runtime.publish(set(get_bots()) - {bot.self_id})
+        except OSError:
+            logger.warning("runtime_heartbeat_write_failed")
+
     @driver.on_shutdown
     async def shutdown():
+        if heartbeat_worker:
+            heartbeat_worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await heartbeat_worker
+        try:
+            runtime.publish([], stopped=True)
+        except OSError:
+            logger.warning("runtime_heartbeat_write_failed")
         if directory_worker:
             directory_worker.cancel()
             with suppress(asyncio.CancelledError):

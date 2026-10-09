@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 from .config import Config
-from .knowledge import GLOBAL_FIELDS, KNOWLEDGE_LIMIT, SCENE_FIELDS, prose
+from .knowledge import GLOBAL_FIELDS, GROUP_FIELDS, KNOWLEDGE_LIMIT, SCENE_FIELDS, prose
 from .prompt_store import group_knowledge
 
 FACT_FIELDS = set(GLOBAL_FIELDS) | set(SCENE_FIELDS)
@@ -387,15 +387,25 @@ class LongTermMemory:
                     if isinstance(field, str) and field in GLOBAL_FIELDS
                     else key
                 )
-                # 后台修正的认知固定保留，模型提取不能覆盖维护者确认的内容。
-                pinned = (
-                    self.db.execute(
-                        "SELECT 1 FROM facts WHERE bot=? AND grp=? AND usr=? "
-                        "AND evidence LIKE '后台维护者修正%'",
-                        target,
-                    ).fetchone()
-                    if isinstance(field, str)
-                    else None
+                if isinstance(field, str) and field in GROUP_FIELDS and key[1] <= 0:
+                    continue
+                if field == "会话印象" and key[1] > 0:
+                    field = "补充认知"
+                # 群内分类分别固定，不能因修改一项而停止其他分类的自动提取。
+                pinned_rows = self.db.execute(
+                    "SELECT field FROM facts WHERE bot=? AND grp=? AND usr=? "
+                    "AND evidence LIKE '后台维护者修正%'",
+                    target,
+                ).fetchall()
+                pinned = any(
+                    target[1] <= 0
+                    or (
+                        r["field"].split(":", 1)[0]
+                        if r["field"].split(":", 1)[0] in GROUP_FIELDS
+                        else "补充认知"
+                    )
+                    == field
+                    for r in pinned_rows
                 )
                 if pinned:
                     continue
@@ -423,10 +433,28 @@ class LongTermMemory:
 
     def remember(self, key: tuple, field: str, value: str):
         if field not in FACT_FIELDS or not 1 <= len(value.strip()) <= KNOWLEDGE_LIMIT:
-            raise ValueError("使用 总体认知 或 会话印象，内容1至12000字。")
+            raise ValueError(
+                "使用 总体认知、会话印象，或群内的角色、互动习惯、互动关系、补充认知，"
+                "内容1至12000字。"
+            )
         target = (key[0], 0, key[2]) if field in GLOBAL_FIELDS else key
         with self.db:
-            self.db.execute("DELETE FROM facts WHERE bot=? AND grp=? AND usr=?", target)
+            if field in GROUP_FIELDS:
+                if key[1] <= 0:
+                    raise ValueError("分类认知仅用于群会话")
+                rows = self.db.execute(
+                    "SELECT field FROM facts WHERE bot=? AND grp=? AND usr=?", target
+                ).fetchall()
+                for row in rows:
+                    source = row["field"].split(":", 1)[0]
+                    category = source if source in GROUP_FIELDS else "补充认知"
+                    if category == field:
+                        self.db.execute(
+                            "DELETE FROM facts WHERE bot=? AND grp=? AND usr=? AND field=?",
+                            (*target, row["field"]),
+                        )
+            else:
+                self.db.execute("DELETE FROM facts WHERE bot=? AND grp=? AND usr=?", target)
             self.db.execute(
                 "INSERT INTO facts VALUES(?,?,?,?,?,?,NULL,?)",
                 (*target, field, value.strip(), "本人通过管理指令设置", time.time()),
@@ -435,10 +463,27 @@ class LongTermMemory:
 
     def forget(self, key: tuple, field: str):
         if field not in FACT_FIELDS:
-            raise ValueError("使用 总体认知 或 会话印象。")
+            raise ValueError(
+                "使用 总体认知、会话印象，或群内的角色、互动习惯、互动关系、补充认知。"
+            )
         target = (key[0], 0, key[2]) if field in GLOBAL_FIELDS else key
         with self.db:
-            self.db.execute("DELETE FROM facts WHERE bot=? AND grp=? AND usr=?", target)
+            if field in GROUP_FIELDS:
+                if key[1] <= 0:
+                    raise ValueError("分类认知仅用于群会话")
+                rows = self.db.execute(
+                    "SELECT field FROM facts WHERE bot=? AND grp=? AND usr=?", target
+                ).fetchall()
+                for row in rows:
+                    source = row["field"].split(":", 1)[0]
+                    category = source if source in GROUP_FIELDS else "补充认知"
+                    if category == field:
+                        self.db.execute(
+                            "DELETE FROM facts WHERE bot=? AND grp=? AND usr=? AND field=?",
+                            (*target, row["field"]),
+                        )
+            else:
+                self.db.execute("DELETE FROM facts WHERE bot=? AND grp=? AND usr=?", target)
         self.advance_managed(key, field)
 
     def advance_managed(self, key, field):
