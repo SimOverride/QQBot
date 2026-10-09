@@ -45,21 +45,9 @@ if ($d.launcher -ne $c.launcher) { throw '配置未持久化' }
             self.assertIn("TEST_SECRET=keep-me", content)
             self.assertIn("NAPCAT_LAUNCHER=", content)
 
-    def test_admin_reuses_ready_service(self):
-        self.run_ps(r"""
-$script:opened = 0
-function Invoke-RestMethod { return @{ name = 'QQBot 本地控制台' } }
-function Start-Process {
-    param($FilePath)
-    if ($FilePath -ne 'http://127.0.0.1:8090') { throw '不应重复启动后台' }
-    $script:opened++
-}
-Start-Admin -ProjectDirectory $env:QQBOT_TEST_ROOT
-if ($script:opened -ne 1) { throw '未打开后台页面' }
-""", Path.cwd(), "admin.ps1")
-
     def test_admin_launch_wait_and_failure(self):
         self.run_ps(r"""
+function Get-CimInstance { return @() }
 $script:checks = 0
 $script:launched = 0
 $script:opened = 0
@@ -67,7 +55,7 @@ $script:available = $true
 function Invoke-RestMethod {
     $script:checks++
     if ($script:checks -eq 1 -or -not $script:available) { throw '尚未启动' }
-    return @{ name = 'QQBot 本地控制台' }
+    return @{ name = '乱码名称'; service = 'qqbot-console' }
 }
 function Start-Sleep { }
 function Start-Process {

@@ -25,7 +25,8 @@ function Start-Admin {
         Start-Sleep -Milliseconds 500
         try {
             $session = Invoke-RestMethod -Uri 'http://127.0.0.1:8090/api/session' -TimeoutSec 1
-            if ($session.name -eq 'QQBot 本地控制台') { $ready = $true; break }
+            # 使用 ASCII 服务标识，避免 Windows PowerShell 5.1 解码中文导致误判。
+            if ($session.service -eq 'qqbot-console') { $ready = $true; break }
         } catch { }
     }
     if (-not $ready) { throw '后台未启动，请检查 8090 端口或运行 admin_server.py 查看错误。' }

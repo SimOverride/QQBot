@@ -124,7 +124,7 @@ def create_app(root=ROOT):
 
     @app.get("/api/session")
     async def session():
-        return {"token": token, "name": "QQBot 本地控制台"}
+        return {"token": token, "name": "QQBot 本地控制台", "service": "qqbot-console"}
 
     @app.get("/api/inventory")
     def inventory():

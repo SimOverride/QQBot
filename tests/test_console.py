@@ -47,6 +47,11 @@ class ConsoleTests(unittest.TestCase):
         self.addCleanup(self.client.close)
         self.headers = {"X-Console-Token": self.app.state.token}
 
+    def test_session_service_identifier(self):
+        response = self.client.get("/api/session")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["service"], "qqbot-console")
+
     def save(self, resource, value):
         before = self.store.get(resource)
         return self.store.put(resource, value, before["revision"])
