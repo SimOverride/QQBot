@@ -60,7 +60,7 @@ class ConfigAndRoutingTests(unittest.TestCase):
         event.original_message = MessageSegment.at("all") + Message("你好")
         self.assertFalse(addressed(bot, event, config()))
 
-    def test_render_bounds_and_verified_sources(self):
+    def test_render_bounds_without_reference_links(self):
         cfg = config(reply_chunk_chars=300, reply_max_messages=3)
         reply = Reply("观点[1][99] https://invented.invalid\n" * 100,
                       [SearchResult("来源", "https://example.com", "资料")])
@@ -70,7 +70,18 @@ class ConfigAndRoutingTests(unittest.TestCase):
         self.assertTrue(all(len(c) <= 300 for c in chunks))
         self.assertNotIn("[99]", text)
         self.assertNotIn("invented.invalid", text)
-        self.assertIn("https://example.com", text)
+        self.assertNotIn("https://example.com", text)
+        self.assertNotIn("[1]", text)
+        self.assertNotIn("来源：", text)
+
+    def test_search_reply_keeps_explanation_without_markdown_links(self):
+        reply = Reply("根据[官方说明](https://example.com)，可以使用[1]。",
+                      [SearchResult("来源", "https://example.com", "资料")])
+        self.assertEqual(render_reply(reply, config()), ["根据官方说明，可以使用。"])
+
+    def test_non_search_reply_preserves_urls_and_indices(self):
+        text = "访问 https://example.com，读取 items[1]。"
+        self.assertEqual(render_reply(Reply(text), config()), [text])
 
 
 class MemoryTests(unittest.IsolatedAsyncioTestCase):

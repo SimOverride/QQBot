@@ -224,7 +224,7 @@ class LLM:
             raise ServiceError("已达到本次搜索上限，请缩小问题范围后重试。")
         except ServiceError as error:
             if sources:
-                return Reply(f"{error}以下为本次已获取的来源，未完成总结。", sources, False)
+                return Reply(f"{error}已获取搜索资料，但未完成总结，请稍后重试。", sources, False)
             raise
 
     async def approve_group_send(self, request, group, body, history=None):
@@ -665,32 +665,21 @@ class LLM:
 
 
 def render_reply(reply: Reply, config: Config) -> list[str]:
-    """Limit output and append only program-owned source URLs with stable numbering."""
-    body = re.sub(
-        r"\[(\d+)\]", lambda m: m[0] if 1 <= int(m[1]) <= len(reply.sources) else "", reply.text
-    )
+    """限制回复长度，联网回答只保留解释正文，不展示引用编号和链接。"""
+    body = reply.text
     if reply.sources:
-        body = re.sub(r"https?://[^\s<>]+", "（链接见来源）", body)
+        body = re.sub(r"\[([^\]]+)\]\(https?://[^\s<>]+\)", r"\1", body)
+        body = re.sub(r"https?://[^\s<>]+", "", body)
+        body = re.sub(r"\[\d+\]", "", body)
     limit = config.reply_chunk_chars * config.reply_max_messages
-    suffix = ""
-    for number, source in enumerate(reply.sources, 1):
-        line = f"\n[{number}] {source.title}\n{source.url}\n"
-        if len(suffix) + len(line) > limit // 2:
-            # Ensure retained citations always have a corresponding visible source.
-            body = re.sub(r"\[(\d+)\]", lambda m: m[0] if int(m[1]) < number else "", body)
-            break
-        suffix += line
-    if suffix:
-        suffix = "\n\n来源：" + suffix
-    budget = limit - len(suffix)
-    if len(body) > budget:
+    if len(body) > limit:
         note = "\n（回复过长，已截断；可追问细节。）"
-        body = body[: budget - len(note)] + note
-    remaining = (body + suffix).strip()
+        body = body[: limit - len(note)] + note
+    remaining = body.strip()
     chunks = []
     while remaining:
         end = min(config.reply_chunk_chars, len(remaining))
-        # Split at a paragraph when there is spare capacity in remaining messages.
+        # 剩余消息容量充足时优先按段落拆分。
         boundary = remaining.rfind("\n", end // 2, end)
         capacity = (config.reply_max_messages - len(chunks) - 1) * config.reply_chunk_chars
         if boundary > 0 and len(remaining) - boundary <= capacity:
