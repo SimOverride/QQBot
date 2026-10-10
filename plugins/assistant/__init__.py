@@ -102,7 +102,11 @@ def setup() -> None:
         from ..tasks.manager import Manager as TaskManager
 
         load_generated(extensions, root)
-        tasks = TaskManager(root, service.commands, archive, extensions)
+        async def task_result(record):
+            async with service.limits.slot():
+                return await service.llm.task_result(record)
+
+        tasks = TaskManager(root, service.commands, archive, extensions, task_result)
         service.commands.tasks = tasks
 
         async def plugin_loop():

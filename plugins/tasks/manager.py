@@ -18,6 +18,8 @@ FUNCTION = {
         "管理机器人本机 dsh 任务。仅用户明确要求执行或开发时申请；咨询方案不申请。"
         "非主人申请须主人私聊审批，不能声称已开始。补充现有任务无需重新审批。"
         "查询依据真实事件，不猜测完成度。"
+        "创建后只简短确认任务内容和必要的待审批状态，不罗列编号、流程、格式或验收。"
+        "只在确实缺少信息时询问关键细节；完成时直接给结果，技术细节等用户追问。"
     ),
     "parameters": {
         "type": "object",
@@ -50,9 +52,10 @@ class Session:
 
 
 class Manager:
-    def __init__(self, root, commands, archive=None, extensions=None):
+    def __init__(self, root, commands, archive=None, extensions=None, result_writer=None):
         self.root, self.commands, self.config = root, commands, commands.config
         self.archive, self.extensions = archive, extensions
+        self.result_writer = result_writer
         self.store, self.runner = Store(root), Runner(root, self.config)
         self.running = {}
         self.closed = False
@@ -231,7 +234,7 @@ class Manager:
                 return "已拒绝申请。"
             task = self.store.approve(record, key[2])
             self.record(task["id"], "approved", {"owner": key[2], "application": record["id"]})
-            return f"已批准，任务 {task['id']} 已进入全局队列。"
+            return "已批准，我会处理这个任务。"
         if len(parts) == 1 or (len(parts) == 3 and parts[1] == "查看"):
             result = await self.action(
                 key, lookup, {"action": "status", "task_id": parts[2] if len(parts) == 3 else None}
@@ -261,6 +264,16 @@ class Manager:
                 "/任务 [查看 编号]；/任务 执行|开发 需求；/任务 补充 编号 内容；"
                 "/任务 取消 编号；主人私聊 /任务 批准|拒绝 申请号"
             )
+        if len(parts) >= 3 and parts[1] in ("执行", "开发", "补充", "取消"):
+            if result.get("status") == "pending":
+                return "好，我会申请这个任务，等主人确认。"
+            if result.get("id"):
+                if parts[1] == "取消":
+                    return "已取消。" if result["status"] == "cancelled" else "这个任务已经结束。"
+                if parts[1] == "补充":
+                    return "好，我会按补充要求继续处理。"
+                return "好，我会处理这个任务。"
+            return result.get("hint", "暂时无法处理这个请求。")
         return json.dumps(result, ensure_ascii=False, indent=2)[:5000]
 
     def record(self, identity, kind, data):
@@ -367,6 +380,11 @@ class Manager:
             )
 
     async def notify(self, record, bot):
+        # 创建请求已有即时回复，不再重复播报排队及启动细节。
+        if record["status"] in ("queued", "running", "testing"):
+            record["notification"] = "sent"
+            self.store.save(record)
+            return
         if record["id"].startswith("a_") and record["status"] == "pending":
             targets = list(self.config.bot_owners)
             message = (
@@ -377,10 +395,25 @@ class Manager:
             )
         else:
             targets = [record["user"]] if record["group"] < 0 else [None]
-            message = (
-                f"任务 {record['id']}：{record['phase']}\n{record['summary'][:1200]}"
-                f"\n/任务 查看 {record['id']}"
-            )
+            message = {
+                "completed": "已经处理好了。",
+                "failed": "这次任务没能完成。",
+                "interrupted": "任务中断了，还没有完成。",
+                "cancelled": "任务已取消。",
+                "rejected": "主人没有批准这个任务。",
+            }.get(record["status"], "任务状态已更新。")
+            if record["status"] == "completed" and self.result_writer:
+                try:
+                    async with asyncio.timeout(8):
+                        body = await self.result_writer(record)
+                    if isinstance(body, str) and body.strip():
+                        message = "这是结果：\n" + body.strip()
+                except Exception:
+                    # 不直接兜底发送执行器的技术报告，详细记录仍可查询。
+                    message = "任务已完成，但暂时没能整理出结果说明。"
+                current = self.store.get(record["id"])
+                if current["updated"] != record["updated"]:
+                    return
         record["notification"] = "attempting"
         self.store.save(record)
 

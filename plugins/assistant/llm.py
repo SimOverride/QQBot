@@ -389,6 +389,7 @@ class LLM:
         tasks = getattr(history_tools, "tasks", None)
         if not planning and tasks is not None and tasks.functions() and messages:
             messages[0]["content"] += prompt_text("llm.tasks.0")
+            messages[0]["content"] += prompt_text("llm.task_reply.0")
         if not planning and extensions is not None and extensions.functions() and messages:
             messages[0]["content"] += prompt_text("llm.extensions.0")
         for used in range(self.config.history_max_calls + 1):
@@ -665,6 +666,28 @@ class LLM:
             messages.append({"type": "function_call_output", "call_id": call_id, "output": content})
         else:
             messages.append({"role": "tool", "tool_call_id": call_id, "content": content})
+
+    @scoped("task_result")
+    async def task_result(self, record):
+        text, _, _ = await self.step(
+            [
+                {"role": "system", "content": prompt_text("llm.task_result.0")},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "request": record["text"],
+                            "result": record["summary"],
+                            "plugin_available": bool(record.get("plugin")),
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            False,
+            "task-result-" + record["id"],
+        )
+        return text
 
     @scoped("notice")
     async def rephrase_notice(self, source, personality):

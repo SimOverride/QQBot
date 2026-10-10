@@ -46,6 +46,39 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
             request_id,
         )
 
+    async def test_concise_creation_and_no_duplicate_start_notice(self):
+        reply = await self.commands.run((123, 10, 1), "/任务 执行 整理资料", None)
+        self.assertEqual(reply, "好，我会处理这个任务。")
+        task = self.manager.store.all()[0]
+        for state in ("queued", "running", "testing"):
+            task.update(status=state, notification="pending")
+            self.manager.store.save(task)
+            await self.manager.notify(task, self.bot)
+        self.bot.send_group_msg.assert_not_awaited()
+
+    async def test_completion_sends_result_only_and_keeps_details(self):
+        task = await self.request((123, 10, 1))
+        record = self.manager.store.get(task["id"])
+        record.update(status="completed", summary="文件格式 Markdown，验收通过，详细技术报告")
+        self.manager.store.save(record)
+        self.manager.result_writer = AsyncMock(return_value="整理后的结论是：优先完成登录功能。")
+        await self.manager.notify(record, self.bot)
+        message = str(self.bot.send_group_msg.call_args.kwargs["message"])
+        self.assertEqual(message, "这是结果：\n整理后的结论是：优先完成登录功能。")
+        self.assertIn("验收", self.manager.store.get(task["id"])["summary"])
+        self.assertNotIn(task["id"], message)
+
+    async def test_result_summary_failure_does_not_dump_technical_report(self):
+        task = await self.request((123, 10, 1))
+        record = self.manager.store.get(task["id"])
+        record.update(status="completed", summary="内部路径，文件格式，测试验收细节")
+        self.manager.store.save(record)
+        self.manager.result_writer = AsyncMock(side_effect=ValueError())
+        await self.manager.notify(record, self.bot)
+        message = str(self.bot.send_group_msg.call_args.kwargs["message"])
+        self.assertNotIn("验收", message)
+        self.assertIn("暂时没能整理", message)
+
     async def test_application_approval_is_private_owner_only_and_single_use(self):
         application = await self.request()
         self.assertTrue(application["id"].startswith("a_"))
