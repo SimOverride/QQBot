@@ -18,6 +18,7 @@ from .longterm import LongTermMemory
 from .memory import Memory
 from .notices import Notices
 from .personality import ProfileStore
+from .trace import emit, scoped
 
 
 class SendFailure(Exception):
@@ -43,6 +44,7 @@ class Assistant:
         self.limits = Limits(config)
         self.notices = Notices(llm, self.profiles, self.limits)
 
+    @scoped("request")
     async def handle(
         self,
         bot_id: int,
@@ -63,14 +65,26 @@ class Assistant:
         send_emote=None,
     ) -> None:
         cfg = self.config
+        emit(
+            cfg,
+            "request_received",
+            bot_id=bot_id,
+            group_id=group_id,
+            user_id=user_id,
+            message_id=message_id,
+            passive=passive,
+        )
         if (group_id <= 0 and not (private_allowed and group_id == -user_id)) or bot_id == user_id:
             return
         self.cleanup()
         if self.limits.duplicate((bot_id, group_id, message_id)):
+            emit(cfg, "request_skipped", reason="duplicate")
             return
         if self.archive and self.archive.seen(bot_id, group_id, message_id):
+            emit(cfg, "request_skipped", reason="already_sent")
             return
         request_id = uuid.uuid4().hex[:12]
+        emit(cfg, "request_link", request_id=request_id)
         started = time.monotonic()
         key = (bot_id, group_id, user_id)
         text = self.commands.entry_command(text.strip())
@@ -79,10 +93,13 @@ class Assistant:
 
         async def send(text: str):
             if passive and not generating_reply:
+                emit(cfg, "send_skipped", reason="passive_notice")
                 return
             try:
                 await asyncio.wait_for(raw_send(text), 30)
-            except Exception:
+                emit(cfg, "send_result", status="sent", text=text, chars=len(text))
+            except Exception as error:
+                emit(cfg, "send_result", status="failed", error_type=type(error).__name__)
                 raise SendFailure from None
 
         async def send_notice(body: str):
@@ -95,12 +112,15 @@ class Assistant:
                 await send_notice("目前没有可读取的文字内容，请发送文字消息。")
                 return
             if len(text) > cfg.input_max_chars:
+                emit(cfg, "request_skipped", reason="input_too_long", chars=len(text))
                 await send_notice(f"输入过长，请缩短到 {cfg.input_max_chars} 字以内或拆分发送。")
                 return
             if self.limits.pending >= cfg.max_pending_requests:
+                emit(cfg, "request_skipped", reason="queue_full")
                 await send_notice("当前请求较多，请稍后重试。")
                 return
             if not text.startswith("/") and self.limits.cooling(key):
+                emit(cfg, "request_skipped", reason="cooldown")
                 await send_notice("提问太快了，请稍等几秒再试。")
                 return
             self.limits.pending += 1
@@ -157,6 +177,14 @@ class Assistant:
                                 ),
                             )
                     chunks = render_reply(reply, cfg)
+                    emit(
+                        cfg,
+                        "reply_rendered",
+                        original_chars=len(reply.text),
+                        output_chars=sum(map(len, chunks)),
+                        chunks=len(chunks),
+                        truncated=any("回复过长，已截断" in chunk for chunk in chunks),
+                    )
                     generating_reply = True
                     for chunk in chunks:
                         await send(chunk)
@@ -166,7 +194,15 @@ class Assistant:
                             raise ServiceError("当前会话无法发送表情包。")
                         try:
                             await asyncio.wait_for(send_emote(reply.emote_id), 30)
-                        except Exception:
+                            emit(cfg, "send_result", status="sent", emote_id=reply.emote_id)
+                        except Exception as error:
+                            emit(
+                                cfg,
+                                "send_result",
+                                status="failed",
+                                emote_id=reply.emote_id,
+                                error_type=type(error).__name__,
+                            )
                             raise SendFailure from None
                         saved_reply += f"\n[已发送表情包：{reply.emote_id}]"
                     if reply.save:
@@ -188,16 +224,19 @@ class Assistant:
             finally:
                 self.limits.pending -= 1
         except ServiceError as error:
+            emit(cfg, "request_error", error_type=type(error).__name__, reason=str(error))
             generating_reply = False
             await self.safe_send(
                 send if "模型" in str(error) else send_notice, str(error), request_id
             )
         except TimeoutError:
+            emit(cfg, "request_error", error_type="TimeoutError")
             generating_reply = False
             await self.safe_send(send_notice, "等待或处理超时，请稍后重试。", request_id)
         except SendFailure:
             logger.warning("request={} send_failure", request_id)
         except Exception as error:
+            emit(cfg, "request_error", error_type=type(error).__name__)
             generating_reply = False
             # Do not log exception text: it can contain full QQ events or HTTP headers.
             logger.warning("request={} failure={}", request_id, type(error).__name__)

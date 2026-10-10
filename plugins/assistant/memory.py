@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 from .config import Config
 from .longterm import LongTermMemory
+from .trace import emit
 
 SessionKey = tuple[int, int, int]  # bot, group, user
 
@@ -69,11 +70,22 @@ class Memory:
     def save(self, key: SessionKey, user: str, assistant: str) -> None:
         session = self.sessions.setdefault(key, Session())
         session.turns.append((user, assistant))
+        before = len(session.turns)
         while session.turns and (
             len(session.turns) > self.config.session_max_turns
             or sum(len(u) + len(a) for u, a in session.turns) > self.config.session_max_chars
         ):
             session.turns.pop(0)
+        if before != len(session.turns):
+            emit(
+                self.config,
+                "context_trim",
+                source="session",
+                removed_turns=before - len(session.turns),
+                remaining_turns=len(session.turns),
+                max_turns=self.config.session_max_turns,
+                max_chars=self.config.session_max_chars,
+            )
         session.touched = time.monotonic()
 
     def clear(self, key: SessionKey) -> None:

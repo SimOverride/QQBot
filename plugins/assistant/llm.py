@@ -2,6 +2,7 @@
 
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
@@ -15,6 +16,7 @@ from .http import ServiceError, post_json
 from .prompt_store import prompt_text, refresh_tools
 from .prompts import SEARCH_FUNCTION, system_prompt
 from .search import Search, SearchResult
+from .trace import emit, scoped
 from .vision import multimodal_content
 
 
@@ -30,7 +32,30 @@ class LLM:
     def __init__(self, client: httpx.AsyncClient, config: Config, search: Search):
         self.client, self.config, self.search = client, config, search
 
+    @scoped("model")
     async def step(self, messages: list[dict], allow_tools: bool, request_id: str, functions=None):
+        if self.config.model_trace_enabled:
+            emit(
+                self.config,
+                "model_context",
+                request_id=request_id,
+                provider=self.config.llm_provider,
+                model=self.config.model,
+                messages=messages,
+                message_count=len(messages),
+                message_chars=[len(json.dumps(m, ensure_ascii=False)) for m in messages],
+                tools=[
+                    f["name"] for f in (functions if functions is not None else [SEARCH_FUNCTION])
+                ]
+                if allow_tools
+                else [],
+                max_output_tokens=self.config.llm_max_output_tokens,
+            )
+        text, calls, output = await self._step(messages, allow_tools, request_id, functions)
+        emit(self.config, "model_output", request_id=request_id, text=text, calls=calls)
+        return text, calls, output
+
+    async def _step(self, messages, allow_tools, request_id, functions=None):
         functions = refresh_tools(functions if functions is not None else [SEARCH_FUNCTION])
         cfg = self.config
         must_remember = len(functions) == 1 and functions[0]["name"] == "remember_emotes"
@@ -132,6 +157,7 @@ class LLM:
         except (KeyError, IndexError, TypeError, ValueError, AttributeError):
             raise ServiceError("模型响应格式无效。") from None
 
+    @scoped("reply")
     async def reply(
         self,
         history: list[dict],
@@ -200,7 +226,34 @@ class LLM:
                 messages.extend(output)
                 for call_id, query in parsed:
                     count += 1
-                    results = await self.search.run(query, request_id)
+                    started = time.monotonic()
+                    emit(
+                        self.config,
+                        "tool_start",
+                        call_id=call_id,
+                        name="web_search",
+                        arguments={"query": query},
+                    )
+                    try:
+                        results = await self.search.run(query, request_id)
+                    except BaseException as error:
+                        emit(
+                            self.config,
+                            "tool_end",
+                            call_id=call_id,
+                            status="failed",
+                            error_type=type(error).__name__,
+                            elapsed_ms=round((time.monotonic() - started) * 1000, 2),
+                        )
+                        raise
+                    emit(
+                        self.config,
+                        "tool_end",
+                        call_id=call_id,
+                        status="ok" if results else "no_matches",
+                        results=[r.numbered(i + 1) for i, r in enumerate(results)],
+                        elapsed_ms=round((time.monotonic() - started) * 1000, 2),
+                    )
                     if not results:
                         raise ServiceError("本次搜索没有找到可用结果，请换个关键词。")
                     numbered = []
@@ -230,6 +283,7 @@ class LLM:
     async def approve_group_send(self, request, group, body, history=None):
         return (await self.review_group_send(request, group, body, history))["allowed"]
 
+    @scoped("send_review")
     async def review_group_send(self, request, group, body, history=None):
         recent = [
             {"role": item["role"], "content": item["content"][:2000]}
@@ -266,6 +320,7 @@ class LLM:
         except (ValueError, AttributeError):
             return {"allowed": False, "reason": "invalid_review"}
 
+    @scoped("image_review")
     async def review_emote_image(self, preview):
         text, calls, _ = await self.step(
             [
@@ -289,6 +344,7 @@ class LLM:
         except (ValueError, TypeError):
             return {}
 
+    @scoped("tools")
     async def investigate(self, messages, request_id, history_tools, planning=False):
         sources = []
         searches = 0
@@ -354,6 +410,16 @@ class LLM:
             messages.extend(output)
             previews = []
             collector_previews = []
+            started = time.monotonic()
+            emit(
+                self.config,
+                "tool_start",
+                call_id=call.get("call_id"),
+                name=call.get("name"),
+                arguments=call.get("arguments"),
+                iteration=used + 1,
+                max_calls=self.config.history_max_calls,
+            )
             try:
                 args = json.loads(call["arguments"])
                 name = call["name"]
@@ -488,6 +554,23 @@ class LLM:
                 result = {"status": "invalid_arguments"}
             except ServiceError:
                 result = {"status": "tool_failed", "hint": "查询失败，不代表没有记录或权限"}
+            except BaseException as error:
+                emit(
+                    self.config,
+                    "tool_end",
+                    call_id=call.get("call_id"),
+                    status="failed",
+                    error_type=type(error).__name__,
+                    elapsed_ms=round((time.monotonic() - started) * 1000, 2),
+                )
+                raise
+            emit(
+                self.config,
+                "tool_end",
+                call_id=call.get("call_id"),
+                result=result,
+                elapsed_ms=round((time.monotonic() - started) * 1000, 2),
+            )
             content = json.dumps(result, ensure_ascii=False)
             if self.config.llm_provider == "openai":
                 messages.append(
@@ -532,6 +615,7 @@ class LLM:
                     }
                 )
 
+    @scoped("notice")
     async def rephrase_notice(self, source, personality):
         prompt = prompt_text("llm.rephrase_notice.0")
         text, calls, _ = await self.step(
@@ -567,6 +651,7 @@ class LLM:
         )
         return text if not calls and verdict.strip() == "OK" else source
 
+    @scoped("participation")
     async def plan_participation(
         self,
         context,
@@ -619,6 +704,7 @@ class LLM:
         except (ValueError, TypeError):
             return {}
 
+    @scoped("disclosure")
     async def screen_disclosure(self, text: str, context: str, groups: list[int]) -> dict:
         messages = [
             {
@@ -643,6 +729,7 @@ class LLM:
         except (ValueError, TypeError):
             return {}
 
+    @scoped("facts")
     async def extract_facts(self, text: str, request_id: str) -> list[dict]:
         messages = [
             {

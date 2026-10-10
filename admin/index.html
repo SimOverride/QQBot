@@ -1,11 +1,50 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>QQBot · 管理后台</title><link rel="stylesheet" href="/assets/style.css"><script src="/assets/app.js" defer></script></head>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>QQBot · 管理后台</title>
+<link rel="stylesheet" href="/assets/style.css">
+<script src="/assets/app.js" defer></script>
+</head>
 <body>
-<aside class="rail"><div class="brand"><span class="brand-icon" id="bot-fallback">机</span><img id="bot-avatar" alt="机器人头像" hidden referrerpolicy="no-referrer"><div><span id="bot-name">QQBot</span><small>管理后台</small></div></div><nav id="nav">
-<button data-page="people" class="active">◎ <span>个人认知</span></button><button data-page="groups">▧ <span>群记忆管理</span></button><button data-page="messages">≡ <span>聊天记录管理</span></button><button data-page="emotes">◉ <span>表情包管理</span></button><button data-page="prompts">✦ <span>提示词管理</span></button><button data-page="migration">⇄ <span>数据迁移</span></button><button data-page="changes">↶ <span>操作记录</span></button>
-</nav><div class="rail-footer"><span class="dot"></span> 仅本机访问<small>模型建议经你确认后才保存</small></div></aside>
-<main><header><div id="runtime-status" role="status" aria-live="polite" data-state="loading">正在读取机器人状态…</div><button id="refresh" class="quiet">刷新数据 ↻</button></header><nav id="selection" aria-label="当前选中资源">尚未选择资源</nav>
-<div id="status" role="status" aria-live="polite"></div><section id="content"></section></main>
-<dialog id="confirm"><h2>确认这次修改</h2><p>只修改当前选中的资源。保存前会保留原值。</p><div class="diff"><div><h3>修改前</h3><pre id="before"></pre></div><div><h3>修改后</h3><pre id="after"></pre></div></div><div class="actions"><button id="cancel-confirm" class="quiet">返回编辑</button><button id="apply-confirm">确认并保存</button></div></dialog>
-</body></html>
+<aside class="rail">
+  <div class="brand">
+    <span class="brand-icon" id="bot-fallback">机</span>
+    <img id="bot-avatar" alt="机器人头像" hidden referrerpolicy="no-referrer">
+    <div><span id="bot-name">QQBot</span><small>管理后台</small></div>
+  </div>
+  <nav id="nav">
+    <button data-page="people" class="active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.6"/><path d="M5 19.5c1.4-3.2 4-4.6 7-4.6s5.6 1.4 7 4.6"/></svg><span>个人认知</span></button>
+    <button data-page="groups"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="8.5" cy="9" r="3"/><path d="M3.5 18.5c1.1-2.7 3-4 5-4s3.9 1.3 5 4"/><circle cx="16.5" cy="10" r="2.4"/><path d="M15.6 14.7c2.2.1 3.9 1.3 4.9 3.8"/></svg><span>群记忆管理</span></button>
+    <button data-page="messages"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7.5a2.5 2.5 0 0 1-2.5 2.5H9l-5 4z"/><path d="M8.5 9.5h7M8.5 12.5h4.5"/></svg><span>聊天记录管理</span></button>
+    <button data-page="emotes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><path d="M8.5 14c1 1.4 2.2 2 3.5 2s2.5-.6 3.5-2"/><path d="M9 9.6h.01M15 9.6h.01"/></svg><span>表情包管理</span></button>
+    <button data-page="prompts"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5 13.7 8 18.2 9.7 13.7 11.4 12 15.9 10.3 11.4 5.8 9.7 10.3 8z"/><path d="m18.5 15 .8 1.9 1.9.8-1.9.8-.8 1.9-.8-1.9-1.9-.8 1.9-.8z"/></svg><span>提示词管理</span></button>
+    <button data-page="migration"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8.5h12.5l-3-3"/><path d="M20 15.5H7.5l3 3"/></svg><span>数据迁移</span></button>
+    <button data-page="changes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 12a7.5 7.5 0 1 1 2.1 5.2"/><path d="M4.5 12H9M4.5 12V7.5"/><path d="M12 8.5V12l2.6 1.8"/></svg><span>操作记录</span></button>
+  </nav>
+  <div class="rail-footer"><span class="dot"></span> 仅本机访问<small>模型建议经你确认后才保存</small></div>
+</aside>
+<main>
+  <header>
+    <div id="runtime-status" role="status" aria-live="polite" data-state="loading">正在读取机器人状态…</div>
+    <button id="refresh" class="quiet">刷新数据</button>
+  </header>
+  <nav id="selection" aria-label="当前选中资源">尚未选择资源</nav>
+  <div id="status" role="status" aria-live="polite"></div>
+  <section id="content"></section>
+</main>
+<dialog id="confirm">
+  <h2>确认这次修改</h2>
+  <p>只修改当前选中的资源。保存前会保留原值。</p>
+  <div class="diff">
+    <div><h3>修改前</h3><pre id="before"></pre></div>
+    <div><h3>修改后</h3><pre id="after"></pre></div>
+  </div>
+  <div class="actions">
+    <button id="cancel-confirm" class="quiet">返回编辑</button>
+    <button id="apply-confirm">确认并保存</button>
+  </div>
+</dialog>
+</body>
+</html>

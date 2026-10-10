@@ -10,6 +10,7 @@ from pathlib import Path
 from .config import Config
 from .knowledge import GLOBAL_FIELDS, GROUP_FIELDS, KNOWLEDGE_LIMIT, SCENE_FIELDS, prose
 from .prompt_store import group_knowledge
+from .trace import emit
 
 FACT_FIELDS = set(GLOBAL_FIELDS) | set(SCENE_FIELDS)
 
@@ -237,6 +238,17 @@ class LongTermMemory:
                 {"role": "assistant", "content": row["answer"]},
             )
         ]
+        emit(
+            self.config,
+            "context_selection",
+            source="persistent_recent",
+            fetched_turns=len(rows),
+            kept_turns=len(kept),
+            chars=length,
+            removed_by_char_limit=len(rows) - len(kept),
+            max_turns=self.config.session_max_turns,
+            max_chars=self.config.session_max_chars,
+        )
         return messages, {row["id"] for row in kept}
 
     def facts(self, key: tuple) -> list[dict]:
@@ -340,6 +352,18 @@ class LongTermMemory:
         )
         relevant = [self.message_context(row) for score, _, row in matches[:3] if score > 0]
         facts = self.facts(key)
+        emit(
+            self.config,
+            "context_selection",
+            source="knowledge_retrieval",
+            matched_history=len(ranked),
+            selected_history=len(older),
+            recent_statements=len(statements),
+            related_statements=len(relevant),
+            facts=len(facts),
+            history_excerpt_chars=400,
+            statement_excerpt_chars=200,
+        )
         return json.dumps(
             {
                 "subject_qq": key[2],

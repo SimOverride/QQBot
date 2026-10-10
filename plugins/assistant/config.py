@@ -14,6 +14,9 @@ class Config(BaseModel):
     proactive_share_enabled: bool = True
     memory_profile_min_messages: PositiveInt = 10
     llm_provider: Literal["deepseek", "openai"] = "deepseek"
+    model_trace_enabled: bool = True
+    model_trace_retention_days: int = Field(7, ge=1, le=365)
+    onebot_access_token: SecretStr = SecretStr("")
     deepseek_api_key: SecretStr = SecretStr("")
     deepseek_model: str = ""
     openai_api_key: SecretStr = SecretStr("")

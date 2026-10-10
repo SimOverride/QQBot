@@ -13,6 +13,7 @@ from .history_tools import HistoryTools
 from .message_context import event_metadata
 from .personality import LIMITS
 from .prompt_store import group_knowledge
+from .trace import emit, scoped
 from .vision import image_segments
 
 
@@ -181,9 +182,20 @@ class GroupConversation:
         ).fetchall()
         return [self.service.archive.message_context(r) for r in reversed(rows)]
 
+    @scoped("group")
     async def respond(self, bot, event, text, state, explicit):
+        emit(
+            self.service.config,
+            "group_trigger",
+            bot_id=int(bot.self_id),
+            group_id=event.group_id,
+            user_id=event.user_id,
+            message_id=event.message_id,
+            explicit=explicit,
+        )
         config = self.settings.get(event.group_id)
         if not explicit and config["activity"] == 0:
+            emit(self.service.config, "group_skipped", reason="activity_disabled")
             return
         if time.monotonic() - state.touched > 600:
             state.topic, state.active = "", False
@@ -256,6 +268,7 @@ class GroupConversation:
                             history_tools=planner_tools,
                         )
             except Exception as error:
+                emit(self.service.config, "participation_error", error_type=type(error).__name__)
                 logger.warning("group_planning_failure={}", type(error).__name__)
                 if not explicit:
                     return
@@ -266,6 +279,13 @@ class GroupConversation:
         state.active = not ended and decision.get("active") is True
         state.touched = time.monotonic()
         score = decision.get("relevance", 0)
+        emit(
+            self.service.config,
+            "participation_decision",
+            decision=decision,
+            explicit=explicit,
+            activity=config["activity"],
+        )
         logger.info(
             "group_decision group={} explicit={} reply={} ended={} activity={}",
             event.group_id,
@@ -281,9 +301,11 @@ class GroupConversation:
             or not 0 <= score <= 100
             or score < 100 - config["activity"]
         ):
+            emit(self.service.config, "group_skipped", reason="participation_policy")
             return
         # Do not send an outdated unsolicited response after newer activity arrived.
         if not explicit and state.pending is not None:
+            emit(self.service.config, "group_skipped", reason="newer_message")
             return
         quote = decision.get("quote") is True
         sent = False
@@ -297,6 +319,7 @@ class GroupConversation:
                     state.pending is not None or self.settings.get(event.group_id)["activity"] == 0
                 )
             ):
+                emit(self.service.config, "send_skipped", reason="superseded_group_reply")
                 raise RuntimeError("superseded_group_reply")
             msg = (
                 self.service.emotes.message(emote_id)
