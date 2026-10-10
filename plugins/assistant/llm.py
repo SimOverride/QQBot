@@ -387,6 +387,8 @@ class LLM:
             messages[0]["content"] += prompt_text("llm.investigate.0")
         extensions = getattr(history_tools, "extensions", None)
         tasks = getattr(history_tools, "tasks", None)
+        if not planning and tasks is not None and tasks.functions() and messages:
+            messages[0]["content"] += prompt_text("llm.tasks.0")
         if not planning and extensions is not None and extensions.functions() and messages:
             messages[0]["content"] += prompt_text("llm.extensions.0")
         for used in range(self.config.history_max_calls + 1):
@@ -423,11 +425,17 @@ class LLM:
                 return Reply(text.strip(), sources, emote_id=history_tools.selected_emote)
             if not allow:
                 raise ServiceError("本次查询已达上限，请缩小问题范围。")
-            if len(calls) != 1:
-                raise ServiceError("请模型每轮只调用一个工具。")
+            # 在执行前核验整批编号，避免副作用发生后才发现结果无法对应。
+            ids = set()
+            for candidate in calls:
+                if not isinstance(candidate, dict):
+                    raise ServiceError("模型工具调用格式无效。")
+                call_id = candidate.get("call_id")
+                if not isinstance(call_id, str) or not call_id or call_id in ids:
+                    raise ServiceError("模型工具调用格式无效。")
+                ids.add(call_id)
+            # 每步只执行首个调用，其余回传未执行状态，由模型读取结果后重新决定。
             call = calls[0]
-            if not isinstance(call, dict) or not isinstance(call.get("call_id"), str):
-                raise ServiceError("模型工具调用格式无效。")
             messages.extend(output)
             previews = []
             collector_previews = []
@@ -596,14 +604,24 @@ class LLM:
                 result=result,
                 elapsed_ms=round((time.monotonic() - started) * 1000, 2),
             )
-            content = json.dumps(result, ensure_ascii=False)
-            if self.config.llm_provider == "openai":
-                messages.append(
-                    {"type": "function_call_output", "call_id": call["call_id"], "output": content}
-                )
-            else:
-                messages.append(
-                    {"role": "tool", "tool_call_id": call["call_id"], "content": content}
+            self.append_tool_result(messages, call["call_id"], result)
+            for deferred in calls[1:]:
+                result = {
+                    "status": "not_executed",
+                    "reason": "sequential_tool_calls",
+                    "hint": (
+                        "本轮仅执行第一个工具调用，此调用尚未执行。"
+                        "先读取已执行调用的结果，再按需要每轮重新请求一个工具；"
+                        "不得声称此调用已完成。"
+                    ),
+                }
+                self.append_tool_result(messages, deferred["call_id"], result)
+                emit(
+                    self.config,
+                    "tool_skipped",
+                    call_id=deferred["call_id"],
+                    name=deferred.get("name"),
+                    result=result,
                 )
             if collector_previews:
                 messages.append(
@@ -618,7 +636,7 @@ class LLM:
                     }
                 )
             if previews:
-                # DeepSeek permits image parts only in user messages, not tool messages.
+                # 原图在整批工具结果回传后附加，避免打断调用与结果的对应关系。
                 messages.append(
                     {
                         "role": "user",
@@ -639,6 +657,14 @@ class LLM:
                         ),
                     }
                 )
+
+    def append_tool_result(self, messages, call_id, result):
+        """按当前服务商协议回传实际结果或明确的未执行状态。"""
+        content = json.dumps(result, ensure_ascii=False)
+        if self.config.llm_provider == "openai":
+            messages.append({"type": "function_call_output", "call_id": call_id, "output": content})
+        else:
+            messages.append({"role": "tool", "tool_call_id": call_id, "content": content})
 
     @scoped("notice")
     async def rephrase_notice(self, source, personality):
@@ -692,7 +718,10 @@ class LLM:
         messages = [
             {
                 "role": "system",
-                "content": (prompt_text("llm.plan_participation.0")),
+                "content": (
+                    prompt_text("llm.plan_participation.0")
+                    + prompt_text("llm.participation_boundary.0")
+                ),
             },
             {
                 "role": "user",
