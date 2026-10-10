@@ -376,6 +376,11 @@ class GroupConversation:
                     "recent_group_messages": context,
                     "topic": state.topic,
                     "participating": state.active,
+                    "trigger_message_id": event.message_id,
+                    "reply_focus": (
+                        decision.get("reply_focus", "")[:600]
+                        if isinstance(decision.get("reply_focus"), str) else ""
+                    ),
                 },
                 ensure_ascii=False,
             ),

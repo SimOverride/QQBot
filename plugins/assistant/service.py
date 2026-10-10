@@ -134,7 +134,14 @@ class Assistant:
                         # 入口及权限结果原样发送，不交给模型改写。
                         await send(result)
                     else:
-                        await send_notice(result)
+                        result = await self.notices.render(result, group_id)
+                        await send(result)
+                    # 只记录实际发送成功的命令结果，后续问答可获知操作已完成或被拒绝。
+                    if not passive:
+                        async with self.memory.locked(key):
+                            if self.archive:
+                                self.archive.save(key, message_id, text, result)
+                            self.memory.save(key, text, result)
                     return
                 async with self.memory.locked(key):
                     async with self.limits.slot():

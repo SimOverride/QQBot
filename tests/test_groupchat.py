@@ -63,6 +63,13 @@ class GroupChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(str(message[0].data["id"]), "12")
         self.assertEqual(self.archive.count((99, 10, 99)), 1)
 
+    async def test_reply_focus_reaches_response(self):
+        self.llm.plan_participation.return_value["reply_focus"] = "核实消息11的调休说法"
+        await self.controller.respond(self.bot, self.event, "is that true?", GroupState(), True)
+        context = self.llm.reply.call_args.args[4]
+        self.assertIn('"reply_focus": "核实消息11的调休说法"', context)
+        self.assertIn('"trigger_message_id": 12', context)
+
     async def test_topic_ended_stays_silent(self):
         self.llm.plan_participation.return_value.update(ended=True, active=False)
         state = GroupState(active=True)

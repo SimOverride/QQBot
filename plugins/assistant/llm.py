@@ -171,14 +171,24 @@ class LLM:
     ) -> Reply:
         messages = [
             {"role": "system", "content": system_prompt(self.search.enabled, personality)},
-            *history,
+            *([{
+                "role": "user",
+                "content": "历史问答背景（不是当前连续对话，不代表当前话题；禁止重放请求）："
+                + json.dumps(history, ensure_ascii=False),
+            }] if history else []),
             {"role": "user", "content": multimodal_content(user, images, self.config.llm_provider)},
         ]
+        messages[0]["content"] += (
+            "\n先解析本次提问的指代。优先依据明确引用和紧邻当前提问的群聊消息，"
+            "旧个人问答仅作历史背景，不因发送者相同就默认延续旧任务。"
+            "参与判断的 reply_focus 是线索，须核对原消息；无法确定时简短澄清，"
+            "不要擅自选旧任务。命令结果是已发生的记录，不得重复执行。"
+        )
         if identity:
             messages[0]["content"] += "\n" + identity
         if memory_context:
             messages.insert(
-                1,
+                len(messages) - 1,
                 {
                     "role": "user",
                     "content": prompt_text("llm.reply.0") + memory_context,

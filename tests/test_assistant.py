@@ -275,7 +275,10 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         await self.handle("下一条", mid=2)
         self.assertEqual(self.llm.reply.await_count, 1)
         await self.handle("/清空", mid=3, role_lookup=AsyncMock(return_value="admin"))
-        self.assertEqual(self.service.memory.history((99, 10, 1)), [])
+        history = self.service.memory.history((99, 10, 1))
+        self.assertEqual(len(history), 2)
+        self.assertEqual(history[0]["content"], "/清空")
+        self.assertIn("已清空", history[1]["content"])
         self.assertEqual(self.service.memory.locks, {})
 
     async def test_help_ping_empty_and_long_input(self):
