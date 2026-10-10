@@ -72,6 +72,8 @@ def setup() -> None:
     cleaner: asyncio.Task | None = None
     directory_worker: asyncio.Task | None = None
     heartbeat_worker: asyncio.Task | None = None
+    plugin_worker: asyncio.Task | None = None
+    extensions = None
     runtime = Runtime(Path(__file__).resolve().parents[2])
     archive: LongTermMemory | None = None
     sharing: Sharing | None = None
@@ -80,9 +82,11 @@ def setup() -> None:
     @driver.on_startup
     async def startup():
         nonlocal service, client, cleaner, archive, sharing, conversations, directory_worker
-        nonlocal heartbeat_worker
+        nonlocal heartbeat_worker, plugin_worker, extensions
         config.validate_runtime()
         root = Path(__file__).resolve().parents[2]
+        from ..extensions.manager import Manager as ExtensionManager
+        from ..extensions.schedule import Schedule
         from .knowledge import read_directory
 
         contacts.directory_path = root / "data/contacts.json"
@@ -91,6 +95,15 @@ def setup() -> None:
         archive = LongTermMemory(root / "data" / "memory.sqlite3", config)
         client = httpx.AsyncClient(follow_redirects=False)
         service = Assistant(config, LLM(client, config, Search(client, config)), profiles, archive)
+        extensions = ExtensionManager(root, service.commands, [Schedule()], archive)
+        service.commands.extensions = extensions
+
+        async def plugin_loop():
+            while True:
+                await extensions.tick(get_bots())
+                await asyncio.sleep(2)
+
+        plugin_worker = asyncio.create_task(plugin_loop())
 
         service.vision = Vision(config)
         service.emotes = Emotes(
@@ -139,6 +152,8 @@ def setup() -> None:
 
     @driver.on_bot_connect
     async def sync_on_connect(bot: Bot):
+        if extensions is not None:
+            extensions.connected[bot.self_id] = time.time()
         try:
             runtime.publish(set(get_bots()) | {bot.self_id})
             await contacts.sync_directory(bot, force=True)
@@ -147,6 +162,8 @@ def setup() -> None:
 
     @driver.on_bot_disconnect
     async def record_disconnect(bot: Bot):
+        if extensions is not None:
+            extensions.connected.pop(bot.self_id, None)
         try:
             runtime.publish(set(get_bots()) - {bot.self_id})
         except OSError:
@@ -154,6 +171,10 @@ def setup() -> None:
 
     @driver.on_shutdown
     async def shutdown():
+        if plugin_worker:
+            plugin_worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await plugin_worker
         if heartbeat_worker:
             heartbeat_worker.cancel()
             with suppress(asyncio.CancelledError):

@@ -86,6 +86,7 @@ def allowed(name):
         ".env",
         "group_chat.json",
         "data/console.json",
+        "data/plugins.json",
         MEMORY,
         IDENTITY,
     ) or name.startswith(("emotes/", "personas/", "styles/"))
@@ -140,6 +141,11 @@ def account(root, expected=None):
         console = read_json(root / "data/console.json")
         validate_console(console)
         found.update(int(k.split(":")[0]) for k in console.get("groups", {}))
+    if (root / "data/plugins.json").exists():
+        from plugins.extensions.store import validate
+
+        plugins = validate(read_json(root / "data/plugins.json"))
+        found.update(int(bot) for bot in plugins["bots"])
     if expected is not None:
         found.add(expected)
     if len(found) != 1 or any(type(x) is not int or x <= 0 for x in found):
@@ -216,7 +222,7 @@ def _export_data(root, output, bot_qq=None):
     with tempfile.TemporaryDirectory(prefix="qqbot-export-") as temporary:
         staging = Path(temporary)
         files = {}
-        for name in (".env", "group_chat.json", "data/console.json", MEMORY):
+        for name in (".env", "group_chat.json", "data/console.json", "data/plugins.json", MEMORY):
             source = root / name
             if source.is_file():
                 files[name] = source
@@ -472,6 +478,18 @@ def stage_merge(root, incoming, staged, qq, fresh):
             shutil.copy2(path, dest)
     # 群认知及提示词覆盖与其他配置采用相同的目标优先合并规则。
     console = staged / "data/console.json"
+    plugin_file = staged / "data/plugins.json"
+    if plugin_file.exists():
+        from plugins.extensions.store import preserve_progress, validate
+
+        plugin_value = validate(read_json(plugin_file), qq)
+        local = root / "data/plugins.json"
+        if local.exists():
+            plugin_value = preserve_progress(
+                fill_missing(validate(read_json(local), qq), plugin_value), plugin_value
+            )
+        validate(plugin_value, qq)
+        write_json(plugin_file, plugin_value)
     if console.exists():
         from plugins.assistant.prompt_store import validate_console
 

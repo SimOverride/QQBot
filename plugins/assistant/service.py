@@ -127,7 +127,10 @@ class Assistant:
             try:
                 if text.startswith("/"):
                     result = await self.commands.run(key, text, role_lookup)
-                    if text.split()[0] == "/后台":
+                    if text.split()[0] == "/后台" or (
+                        self.commands.extensions is not None
+                        and self.commands.extensions.is_command(text.split()[0])
+                    ):
                         # 入口及权限结果原样发送，不交给模型改写。
                         await send(result)
                     else:
@@ -142,6 +145,12 @@ class Assistant:
                                 history_tools = HistoryTools(self.archive, key)
                             if history_tools is not None and send_emote is not None:
                                 history_tools.emotes = self.emotes
+                            if history_tools is not None and self.commands.extensions is not None:
+                                history_tools.extensions = (
+                                    self.commands.extensions.session(key, role_lookup)
+                                    if group_id > 0 and not passive
+                                    else None
+                                )
                             group_role = None
                             if group_id > 0 and role_lookup is not None:
                                 try:

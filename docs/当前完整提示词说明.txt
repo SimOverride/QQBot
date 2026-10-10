@@ -52,6 +52,7 @@ DeepSeek使用messages，stream=false、thinking.type=disabled；OpenAI使用inp
 
 八、工具定义（完整定义，按条件提供）
 read_history：历史工具可用时。web_search：正式回复且搜索启用、有剩余额度时。send_group_message：正式回复且存在获准发送回调时。表情选择工具：正式回复且表情库可用时。收藏工具：收藏启用且表情库可用时；联网图片搜索还需要搜索配置。有待保存的表情记忆时，只提供并强制调用remember_emotes。
+manage_schedule：显式群请求且当前账号、群位于插件范围，全局与本群开关均开启时。群参与判断和被动回复不提供。额外附加llm.extensions.0规则：仅按当前明确请求查询或提议定时变更，展示时间、固定正文和确认指令；提议不生效，必须由原发起人在同群发送/定时 确认 确认码，后端重新核验权限。工具定义及参数见plugins/extensions/schedule.py，操作说明见docs/SCHEDULE.md。
 [
   {
     "name": "read_history",

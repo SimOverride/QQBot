@@ -39,6 +39,7 @@ class HistoryTools:
         self.group_names = group_names or {}
         self.send_attempted = False
         self.emotes = None
+        self.extensions = None
         self.collector = None
         self.selected_emote = None
         self.offered_emotes = set()

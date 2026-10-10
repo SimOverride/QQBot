@@ -375,8 +375,16 @@ class LLM:
                                 url, f"group:{history_tools.key[1]}", "本轮群聊或引用图片"
                             )
             messages[0]["content"] += prompt_text("llm.investigate.0")
+        extensions = getattr(history_tools, "extensions", None)
+        if not planning and extensions is not None and extensions.functions() and messages:
+            messages[0]["content"] += prompt_text("llm.extensions.0")
         for used in range(self.config.history_max_calls + 1):
             functions = [HISTORY_FUNCTION]
+            extension_names = set()
+            if not planning and extensions is not None:
+                extra = extensions.functions()
+                functions.extend(extra)
+                extension_names = {f["name"] for f in extra}
             if not planning and self.search.enabled and searches < self.config.search_max_calls:
                 functions.append(SEARCH_FUNCTION)
             if not planning and getattr(history_tools, "send_callback", None):
@@ -425,6 +433,8 @@ class LLM:
                 name = call["name"]
                 if name not in {f["name"] for f in functions}:
                     result = {"status": "unsupported_tool"}
+                elif name in extension_names:
+                    result = await extensions.execute(name, args)
                 elif name == "read_history":
                     result = history_tools.run(args)
                 elif name == "emote_candidates":

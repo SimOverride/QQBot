@@ -28,6 +28,7 @@ class Commands:
         self.config, self.memory = config, memory
         self.group_settings = None
         self.profiles = None
+        self.extensions = None
         self.pending: dict[tuple[int, int, int], Confirmation] = {}
 
     @staticmethod
@@ -70,6 +71,11 @@ class Commands:
         bot_id, group_id, user_id = key
         parts = text.split()
         command, args = parts[0], parts[1:]
+        if self.extensions is not None and self.extensions.is_command(command):
+            try:
+                return await self.extensions.command(key, text, lookup)
+            except (ValueError, OSError):
+                return "插件配置读取或保存失败，请检查本机插件配置。"
         if command == "/后台":
             if await self.level(user_id, lookup) < 2:
                 return "权限不足，仅机器人所有者可查询后台入口。"
@@ -160,6 +166,9 @@ class Commands:
                 "\n/ping 测试连接\n/帮助（/help）查看说明\n/记忆 查看自己在本群的长期认知"
             )
             if level >= 1:
+                if self.extensions is not None:
+                    result += "\n/插件 查看插件；/插件 本群 插件ID 开启|关闭"
+                    result += "\n/定时 待确认、/定时 确认 确认码（仅已启用定时插件的群）"
                 result += (
                     "\n/积极性 0至100 调整本群主动参与程度"
                     "\n/人格 列表、/风格 列表 查看本群设定及切换方式（仅群聊）"
@@ -171,6 +180,8 @@ class Commands:
                     "\n/忘记 字段 删除对应认知（总体认知、会话印象或群内分类）"
                 )
             if level == 2:
+                if self.extensions is not None:
+                    result += "\n/插件 全局 插件ID 开启|关闭"
                 result += "\n/后台 查询本机后台入口（仅所有者）"
                 result += "\n/清空全部 清除本机器人所有群及私聊的会话（需确认）"
             return result
