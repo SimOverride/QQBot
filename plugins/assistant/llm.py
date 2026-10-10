@@ -386,11 +386,14 @@ class LLM:
                             )
             messages[0]["content"] += prompt_text("llm.investigate.0")
         extensions = getattr(history_tools, "extensions", None)
+        tasks = getattr(history_tools, "tasks", None)
         if not planning and extensions is not None and extensions.functions() and messages:
             messages[0]["content"] += prompt_text("llm.extensions.0")
         for used in range(self.config.history_max_calls + 1):
             functions = [HISTORY_FUNCTION]
             extension_names = set()
+            if not planning and tasks is not None:
+                functions.extend(tasks.functions())
             if not planning and extensions is not None:
                 extra = extensions.functions()
                 functions.extend(extra)
@@ -443,6 +446,8 @@ class LLM:
                 name = call["name"]
                 if name not in {f["name"] for f in functions}:
                     result = {"status": "unsupported_tool"}
+                elif name == "manage_task" and tasks is not None:
+                    result = await tasks.execute(name, args)
                 elif name in extension_names:
                     result = await extensions.execute(name, args)
                 elif name == "read_history":

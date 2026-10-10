@@ -31,6 +31,12 @@ def validate(value, account=None):
             if not isinstance(entry, dict) or set(entry) != {"enabled", "scope", "groups", "data"}:
                 raise ValueError("插件设置无效")
             scope = entry["scope"]
+            if name.startswith("gen_") and (
+                not re.fullmatch(r"gen_[a-f0-9]{16}", name)
+                or not isinstance(scope, list)
+                or len(scope) != 1
+            ):
+                raise ValueError("生成插件必须绑定唯一原群")
             if scope is not None and (
                 not isinstance(scope, list) or not scope or any(not positive(g) for g in scope)
             ):
@@ -51,6 +57,18 @@ def validate(value, account=None):
                     raise ValueError("插件群数据无效")
                 if name == "schedule":
                     validate_schedule(data)
+                if name.startswith("gen_"):
+                    meta = data.get("_runtime")
+                    if (
+                        not isinstance(meta, dict)
+                        or not isinstance(data.get("state"), dict)
+                        or not re.fullmatch(r"[a-f0-9]{64}", str(meta.get("version", "")))
+                        or any(
+                            not isinstance(meta.get(k), str) or not 1 <= len(meta[k]) <= limit
+                            for k, limit in (("title", 40), ("description", 400))
+                        )
+                    ):
+                        raise ValueError("生成插件版本或数据无效")
     return value
 
 

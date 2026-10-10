@@ -29,6 +29,7 @@ class Commands:
         self.group_settings = None
         self.profiles = None
         self.extensions = None
+        self.tasks = None
         self.pending: dict[tuple[int, int, int], Confirmation] = {}
 
     @staticmethod
@@ -71,6 +72,8 @@ class Commands:
         bot_id, group_id, user_id = key
         parts = text.split()
         command, args = parts[0], parts[1:]
+        if command == "/任务" and self.tasks is not None:
+            return await self.tasks.command(key, text, lookup)
         if self.extensions is not None and self.extensions.is_command(command):
             try:
                 return await self.extensions.command(key, text, lookup)
@@ -166,6 +169,8 @@ class Commands:
                 "\n/ping 测试连接\n/帮助（/help）查看说明\n/记忆 查看自己在本群的长期认知"
             )
             if level >= 1:
+                if self.tasks is not None:
+                    result += "\n/任务 查看任务；/任务 执行|开发 需求；/任务 补充 编号 内容"
                 if self.extensions is not None:
                     result += "\n/插件 查看插件；/插件 本群 插件ID 开启|关闭"
                     result += "\n/定时 待确认、/定时 确认 确认码（仅已启用定时插件的群）"

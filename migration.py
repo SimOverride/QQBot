@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -19,6 +20,7 @@ from dotenv.parser import parse_stream
 
 ROOT = Path(__file__).resolve().parent
 MEMORY = "data/memory.sqlite3"
+TASKS = "data/tasks.sqlite3"
 IDENTITY = "data/identity.json"
 JOURNAL = "data/migration-pending.json"
 TABLES = {
@@ -82,12 +84,20 @@ def safe_path(root, name):
 
 
 def allowed(name):
+    if re.fullmatch(
+        r"data/generated/gen_[a-f0-9]{16}/[a-f0-9]{64}/(?:plugin.py|manifest.json|test_plugin.py)",
+        name,
+    ):
+        return True
+    if re.match(r"data/task-workspaces/t_[a-f0-9]{16}/work/", name):
+        return True
     return name in (
         ".env",
         "group_chat.json",
         "data/console.json",
         "data/plugins.json",
         MEMORY,
+        TASKS,
         IDENTITY,
     ) or name.startswith(("emotes/", "personas/", "styles/"))
 
@@ -124,6 +134,10 @@ def snapshot(source, target):
 def account(root, expected=None):
     """账号取自数据库及迁移绑定；新部署必须由操作者明确指定目标 QQ。"""
     found = set()
+    if (root / TASKS).exists():
+        from plugins.tasks.store import accounts
+
+        found.update(accounts(root / TASKS))
     if (root / IDENTITY).exists():
         found.add(int(read_json(root / IDENTITY)["bot_qq"]))
     if (root / MEMORY).exists():
@@ -222,10 +236,25 @@ def _export_data(root, output, bot_qq=None):
     with tempfile.TemporaryDirectory(prefix="qqbot-export-") as temporary:
         staging = Path(temporary)
         files = {}
-        for name in (".env", "group_chat.json", "data/console.json", "data/plugins.json", MEMORY):
+        for name in (
+            ".env",
+            "group_chat.json",
+            "data/console.json",
+            "data/plugins.json",
+            MEMORY,
+            TASKS,
+        ):
             source = root / name
             if source.is_file():
                 files[name] = source
+        task_folders = list((root / "data/task-workspaces").glob("t_*/work"))
+        for folder in (root / "data/generated", *task_folders):
+            if folder.exists():
+                for source in folder.rglob("*"):
+                    name = source.relative_to(root).as_posix()
+                    if allowed(name) and source.is_file() and "__pycache__" not in source.parts:
+                        safe_path(root, name)
+                        files[name] = source
         for prefix, directory in (
             ("emotes", emote_dir(root)),
             ("personas", root / "personas"),
@@ -470,6 +499,8 @@ def fill_missing(local, incoming):
 def stage_merge(root, incoming, staged, qq, fresh):
     """在隔离目录完成合并，返回最终项目路径到暂存文件的映射。"""
     plan = {}
+    from plugins.tasks.store import merge as merge_tasks
+
     for path in incoming.rglob("*"):
         if path.is_file() and not path.name.endswith(("-wal", "-shm", "-journal")):
             name = path.relative_to(incoming).as_posix()
@@ -522,6 +553,8 @@ def stage_merge(root, incoming, staged, qq, fresh):
         name = path.relative_to(staged).as_posix()
         target_name = library + name[len("emotes") :] if name.startswith("emotes/") else name
         target = safe_path(root, target_name)
+        if name.startswith("data/task-workspaces/") and target.exists() and not fresh:
+            shutil.copy2(target, path)
         if name in (MEMORY, "emotes/.memory.sqlite3", IDENTITY, "group_chat.json", ".env"):
             plan[target_name] = path
             continue
@@ -549,6 +582,7 @@ def stage_merge(root, incoming, staged, qq, fresh):
         GroupSettings(group).read()
     for name, function, local_name in (
         (MEMORY, merge_memory, MEMORY),
+        (TASKS, merge_tasks, TASKS),
         ("emotes/.memory.sqlite3", merge_emotes, library + "/.memory.sqlite3"),
     ):
         if (incoming / name).exists():

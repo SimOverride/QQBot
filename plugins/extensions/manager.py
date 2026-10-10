@@ -149,7 +149,7 @@ class Manager:
             self.connected = {key: value for key, value in self.connected.items() if key in bots}
             for bot in bots:
                 self.connected.setdefault(bot, now)
-            for plugin in self.plugins.values():
+            for plugin in list(self.plugins.values()):
                 try:
                     await plugin.tick(self, bots, now)
                 except Exception as error:

@@ -16,6 +16,11 @@ class Config(BaseModel):
     llm_provider: Literal["deepseek", "openai"] = "deepseek"
     model_trace_enabled: bool = True
     model_trace_retention_days: int = Field(7, ge=1, le=365)
+    task_max_concurrency: int = Field(2, ge=1, le=16)
+    task_timeout_seconds: int = Field(1800, ge=30, le=86400)
+    task_max_steps: int = Field(80, ge=1, le=500)
+    dsh_package_dir: str = ""
+    dsh_model: str = "deepseek-v4-flash"
     onebot_access_token: SecretStr = SecretStr("")
     deepseek_api_key: SecretStr = SecretStr("")
     deepseek_model: str = ""

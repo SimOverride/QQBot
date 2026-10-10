@@ -8,5 +8,6 @@
 *.ps1 text eol=crlf
 *.bat text eol=crlf
 *.js text eol=crlf
+*.mjs text eol=crlf
 *.css text eol=crlf
 *.html text eol=crlf

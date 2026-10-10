@@ -74,6 +74,7 @@ def setup() -> None:
     heartbeat_worker: asyncio.Task | None = None
     plugin_worker: asyncio.Task | None = None
     extensions = None
+    tasks = None
     runtime = Runtime(Path(__file__).resolve().parents[2])
     archive: LongTermMemory | None = None
     sharing: Sharing | None = None
@@ -82,7 +83,7 @@ def setup() -> None:
     @driver.on_startup
     async def startup():
         nonlocal service, client, cleaner, archive, sharing, conversations, directory_worker
-        nonlocal heartbeat_worker, plugin_worker, extensions
+        nonlocal heartbeat_worker, plugin_worker, extensions, tasks
         config.validate_runtime()
         root = Path(__file__).resolve().parents[2]
         from ..extensions.manager import Manager as ExtensionManager
@@ -97,10 +98,20 @@ def setup() -> None:
         service = Assistant(config, LLM(client, config, Search(client, config)), profiles, archive)
         extensions = ExtensionManager(root, service.commands, [Schedule()], archive)
         service.commands.extensions = extensions
+        from ..tasks.generated import load as load_generated
+        from ..tasks.manager import Manager as TaskManager
+
+        load_generated(extensions, root)
+        tasks = TaskManager(root, service.commands, archive, extensions)
+        service.commands.tasks = tasks
 
         async def plugin_loop():
             while True:
                 await extensions.tick(get_bots())
+                try:
+                    await tasks.tick(get_bots())
+                except Exception as error:
+                    logger.warning("task_worker_failure={}", type(error).__name__)
                 await asyncio.sleep(2)
 
         plugin_worker = asyncio.create_task(plugin_loop())
@@ -175,6 +186,8 @@ def setup() -> None:
             plugin_worker.cancel()
             with suppress(asyncio.CancelledError):
                 await plugin_worker
+        if tasks:
+            await tasks.close()
         if heartbeat_worker:
             heartbeat_worker.cancel()
             with suppress(asyncio.CancelledError):
@@ -230,6 +243,8 @@ def setup() -> None:
     async def private_rule(bot: Bot, event: PrivateMessageEvent) -> bool:
         if service is None or str(event.user_id) == bot.self_id:
             return False
+        if event.user_id in config.bot_owners:
+            return True
         allowed, _ = await contacts.private_access(bot, event.user_id)
         return allowed
 
@@ -241,6 +256,7 @@ def setup() -> None:
             return
         bot_id, user_id = int(bot.self_id), event.user_id
         allowed, groups = await contacts.private_access(bot, user_id)
+        allowed = allowed or user_id in config.bot_owners
         if not allowed:
             return
         scope = -user_id
