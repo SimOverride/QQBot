@@ -143,6 +143,16 @@ class Contacts:
             if bid == bot_id and gid == group_id
         }
 
+    def bot_names(self, bot_id, group_id):
+        """平台昵称与本群名片只用于识别呼叫，不用于授权。"""
+        nickname = (
+            self.directory.get(str(bot_id), {})
+            .get("users", {})
+            .get(str(bot_id), {})
+            .get("name", "")
+        )
+        return {name for name in (nickname, self.names.get((bot_id, group_id, bot_id), "")) if name}
+
     async def private_access(self, bot, user_id):
         """Revalidate on every message; API failures never grant membership."""
         friend = False
@@ -190,6 +200,8 @@ class Contacts:
         try:
             members = await asyncio.wait_for(bot.get_group_member_list(group_id=group_id), 8)
             for item in members:
+                if int(item["user_id"]) == int(bot.self_id):
+                    self.observe_nickname(int(bot.self_id), int(bot.self_id), item.get("nickname"))
                 name = str(item.get("card") or item.get("nickname") or "")[:80]
                 if name:
                     self.names[(*key, int(item["user_id"]))] = name

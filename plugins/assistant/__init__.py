@@ -1,6 +1,7 @@
 """OneBot group entry point. Runtime resources are created only on startup."""
 
 import asyncio
+import re
 import time
 from contextlib import suppress
 from pathlib import Path
@@ -27,18 +28,29 @@ from .sharing import Sharing
 from .vision import Vision
 
 
-def addressed(bot: Bot, event: GroupMessageEvent, config: Config) -> bool:
-    return str(event.user_id) != bot.self_id and any(
-        seg.type == "at" and str(seg.data.get("qq")) == bot.self_id
+def text_mention(bot, names=()):
+    """完整匹配机器人称呼，避免邮箱和名称前缀误触发。"""
+    targets = {str(bot.self_id), *(name.strip() for name in names if name.strip())}
+    choices = "|".join(re.escape(name) for name in sorted(targets, key=len, reverse=True))
+    return re.compile(r"(?<![\w@＠])[@＠](?:" + choices + r")(?=$|\s|[^\w@＠])")
+
+
+def addressed(bot: Bot, event: GroupMessageEvent, config: Config, names=()) -> bool:
+    pattern = text_mention(bot, names)
+    return str(event.user_id) != str(bot.self_id) and any(
+        (seg.type == "at" and str(seg.data.get("qq")) == str(bot.self_id))
+        or (seg.type == "text" and pattern.search(str(seg.data.get("text", ""))))
         for seg in event.original_message
     )
 
 
-def extract_text(bot: Bot, event: GroupMessageEvent | PrivateMessageEvent) -> str:
+def extract_text(bot: Bot, event: GroupMessageEvent | PrivateMessageEvent, names=()) -> str:
     parts = []
+    pattern = text_mention(bot, names) if getattr(event, "group_id", 0) > 0 else None
     for seg in event.original_message:
         if seg.type == "text":
-            parts.append(str(seg.data.get("text", "")))
+            body = str(seg.data.get("text", ""))
+            parts.append(pattern.sub("", body) if pattern else body)
         elif seg.type == "at" and str(seg.data.get("qq")) != bot.self_id:
             parts.append(f" @{seg.data.get('qq')} ")
         elif seg.type == "image":
@@ -102,6 +114,7 @@ def setup() -> None:
         from ..tasks.manager import Manager as TaskManager
 
         load_generated(extensions, root)
+
         async def task_result(record):
             async with service.limits.slot():
                 return await service.llm.task_result(record)
@@ -235,8 +248,14 @@ def setup() -> None:
     async def handle(bot: Bot, event: GroupMessageEvent):
         if conversations is None:
             return
-        text = extract_text(bot, event)
-        explicit = addressed(bot, event, config) or text.strip().split(maxsplit=1)[:1] == [
+        if any(
+            seg.type == "text" and any(c in str(seg.data.get("text", "")) for c in "@＠")
+            for seg in event.original_message
+        ):
+            await contacts.refresh_group(bot, event.group_id)
+        names = contacts.bot_names(int(bot.self_id), event.group_id)
+        text = extract_text(bot, event, names)
+        explicit = addressed(bot, event, config, names) or text.strip().split(maxsplit=1)[:1] == [
             "/积极性"
         ]
         try:
