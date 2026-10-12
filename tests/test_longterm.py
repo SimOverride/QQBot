@@ -53,6 +53,20 @@ class LongTermTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("图片", row[0])
         self.assertEqual(json.loads(row[1]), ["image"])
 
+    async def test_expired_turns_not_restored_but_still_searchable(self):
+        import time
+
+        self.archive.save(self.key, 1, "贪吃蛇", "已经完成")
+        with self.archive.db:
+            self.archive.db.execute("UPDATE turns SET created=?", (time.time() - 86400,))
+        self.assertEqual(Memory(self.config, self.archive).history(self.key), [])
+        self.archive.save(self.key, 2, "测试人格", "你好")
+        history, excluded = self.archive.recent(self.key)
+        self.assertEqual([m["content"] for m in history], ["测试人格", "你好"])
+        self.assertTrue(all(isinstance(m["time"], float) for m in history))
+        context = json.loads(self.archive.context(self.key, "贪吃蛇", excluded))
+        self.assertTrue(context["related_history"])
+
     async def test_restart_history_facts_and_dedup(self):
         for i in range(3):
             self.archive.save(self.key, i, f"问题{i}", f"回答{i}")

@@ -220,8 +220,9 @@ class LongTermMemory:
 
     def recent(self, key: tuple) -> tuple[list[dict], set[int]]:
         rows = self.db.execute(
-            "SELECT * FROM turns WHERE bot=? AND grp=? AND usr=? ORDER BY id DESC LIMIT ?",
-            (*key, self.config.session_max_turns),
+            "SELECT * FROM turns WHERE bot=? AND grp=? AND usr=? AND created>? "
+            "ORDER BY id DESC LIMIT ?",
+            (*key, time.time() - self.config.session_ttl_seconds, self.config.session_max_turns),
         ).fetchall()
         kept, length = [], 0
         for row in rows:
@@ -234,8 +235,8 @@ class LongTermMemory:
             msg
             for row in reversed(kept)
             for msg in (
-                {"role": "user", "content": row["question"]},
-                {"role": "assistant", "content": row["answer"]},
+                {"role": "user", "content": row["question"], "time": row["created"]},
+                {"role": "assistant", "content": row["answer"], "time": row["created"]},
             )
         ]
         emit(

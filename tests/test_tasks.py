@@ -107,6 +107,22 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["status"], "not_found")
         self.assertIn(task["id"], self.manager.context((123, -1, 1)))
 
+    async def test_notified_completed_task_is_queryable_but_not_in_context(self):
+        task = await self.request((123, 10, 1))
+        record = self.manager.store.get(task["id"])
+        record.update(status="completed", notification="sent", summary="完整代码" * 1000)
+        self.manager.store.save(record)
+        self.assertEqual(self.manager.context(self.key), "")
+        result = await self.manager.action(
+            self.key, self.admin, {"action": "status", "task_id": task["id"]}
+        )
+        self.assertEqual(result["summary"], record["summary"])
+        record["notification"] = "pending"
+        self.manager.store.save(record)
+        context = self.manager.context(self.key)
+        self.assertIn(task["id"], context)
+        self.assertNotIn("完整代码", context)
+
     async def test_supplement_without_approval_and_live_progress(self):
         task = await self.request((123, 10, 1))
         response = await self.manager.action(
@@ -114,7 +130,7 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(len(response["supplements"]), 1)
         self.manager.record(task["id"], "tool/call", {"name": "pwsh", "arguments": "test"})
-        self.assertIn("pwsh", self.manager.context(self.key))
+        self.assertNotIn("pwsh", self.manager.context(self.key))
         self.assertEqual(len(self.manager.store.all()), 1)
         detail = await self.manager.action(
             self.key, self.admin, {"action": "status", "task_id": task["id"]}
