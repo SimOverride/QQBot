@@ -34,3 +34,5 @@ NAPCAT_PORT=6099
 修改路径或端口后重新双击启动即可。若未检测到监听，检查 NapCat 窗口中的报错、管理员授权、端口和绑定地址；启动耗时超过 30 秒时，待其就绪后重试。端口已就绪但机器人不回复时，检查 QQ 登录、WebSocket 客户端地址和 Token，端口检查不能代替这些验证。
 
 自动检查：`.\.venv\Scripts\python.exe -m unittest discover -s tests -p test_startup.py -v`。测试使用临时文件、回环监听和模拟启动，不启动真实 QQ 或 NapCat。
+
+机器人入口启动时自动关闭当前 Windows 控制台的快速编辑模式，避免鼠标选中文字暂停消息与心跳；不修改系统全局控制台设置。重定向输入或非 Windows 环境不调整控制台模式。

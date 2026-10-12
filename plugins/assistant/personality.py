@@ -1,19 +1,19 @@
-"""Local defaults and persistent group-specific persona and style selections."""
+"""统一本地人设与持久化群选择，内容包含性格和表达方式。"""
 
 from pathlib import Path
 
-DEFAULTS = {"persona": "你是一个友善、可靠的QQ群AI助手。", "style": "自然简洁，先说重点。"}
-LIMITS = {"persona": 4000, "style": 4000}
+DEFAULTS = {"persona": "你是一个友善、可靠的QQ群AI助手。自然简洁，先说重点。"}
+LIMITS = {"persona": 12000}
 
 
 class ProfileStore:
-    def __init__(self, persona_path: Path | None = None, style_path: Path | None = None):
-        self.paths = {"persona": persona_path, "style": style_path}
+    def __init__(self, persona_path: Path | None = None):
+        self.paths = {"persona": persona_path}
         self.directories = {
             field: path.parent if path else None for field, path in self.paths.items()
         }
         self.group_settings = None
-        self.effective()  # Fail startup on missing, empty or malformed local configuration.
+        self.effective()  # 启动时校验缺失、空白和格式错误的本地人设。
 
     def choices(self, field):
         directory = self.directories[field]
@@ -36,7 +36,7 @@ class ProfileStore:
         except (OSError, UnicodeError):
             raise ValueError("无法读取本地提示词，请检查文件和UTF-8编码") from None
         if not 1 <= len(value) <= LIMITS[field]:
-            raise ValueError("本地提示词须为1至4000字")
+            raise ValueError("本地人设须为1至12000字")
         return value
 
     def effective(self, group_id: int | None = None) -> dict[str, str]:

@@ -90,15 +90,15 @@ class Commands:
                 "仅能在运行机器人的电脑上用浏览器打开，手机或其他电脑无法访问。\n"
                 "双击 start.bat 会启动后台；链接无法打开时请检查启动窗口。"
             )
-        if command in ("/人格", "/人设", "/风格"):
+        if command == "/人设":
             if group_id <= 0:
                 return "请在要调整的群中 @机器人 使用此指令，私聊不能修改群设定。"
             if await self.level(user_id, lookup) < 1:
-                return "权限不足，仅本群管理员、群主或机器人所有者可管理本群人格和风格。"
+                return "权限不足，仅本群管理员、群主或机器人所有者可管理本群人设。"
             if self.group_settings is None or self.profiles is None:
                 return "群配置未启用，未执行。"
-            field = "style" if command == "/风格" else "persona"
-            label = "风格" if field == "style" else "人格"
+            field = "persona"
+            label = "人设"
             try:
                 if not args or args == ["列表"]:
                     selection = self.group_settings.read().get("groups", {}).get(
@@ -111,7 +111,7 @@ class Commands:
                         + f"\n{command} 默认 恢复本地默认"
                     )
                 if args[0] == "设置":
-                    return "聊天不能新增或编辑提示词，请在本地人格、风格文件夹管理后切换。"
+                    return "聊天不能新增或编辑人设，请在后台或本地人设文件夹管理后切换。"
                 name = text.split(maxsplit=1)[1].strip()
                 if args[0] == "切换":
                     values = text.split(maxsplit=2)
@@ -176,7 +176,7 @@ class Commands:
                     result += "\n/定时 待确认、/定时 确认 确认码（仅已启用定时插件的群）"
                 result += (
                     "\n/积极性 0至100 调整本群主动参与程度"
-                    "\n/人格 列表、/风格 列表 查看本群设定及切换方式（仅群聊）"
+                    "\n/人设 列表 查看本群设定及切换方式（仅群聊）"
                     "\n/清空 清除自己的会话\n/清空 @某人 清除其本群会话"
                     "\n/清空 本群 清除本群会话（需确认）\n/确认 确认码 执行待确认操作"
                 )

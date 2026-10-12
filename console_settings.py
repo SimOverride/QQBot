@@ -167,14 +167,14 @@ class Settings:
                 or not 0 <= activity <= 100
                 or persona not in current["personas"]
             ):
-                raise ValueError("默认积极性或人格无效")
+                raise ValueError("默认积极性或人设无效")
             store = GroupSettings(self.root / "group_chat.json")
             data = store.read()
             atomic_json(self.root / "backups/settings" / (uuid.uuid4().hex + ".json"), data)
             data.update(default_activity=activity, default_persona=persona)
             store.write(data)
         return {
-            "message": "默认设置已保存，未单独配置的群及默认人格后续请求生效",
+            "message": "默认设置已保存，未单独配置的群及默认人设后续请求生效",
             **self.defaults(),
         }
 

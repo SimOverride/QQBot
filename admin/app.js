@@ -6,7 +6,7 @@ const settingsChanged=new Set();
 const $ = s => document.querySelector(s);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const text = v => typeof v === 'string' ? v : JSON.stringify(v, null, 2);
-const labels = {summary:'群摘要',knowledge:'群认知 · 共识与背景',activity:'主动参与积极性（0–100）',interests:'群兴趣（每行一项）',persona:'群人格',style:'群表达风格',description:'画面、文字、情绪与适用场景',content:'归档消息正文'};
+const labels = {summary:'群摘要',knowledge:'群认知 · 共识与背景',activity:'主动参与积极性（0–100）',interests:'群兴趣（每行一项）',persona:'群人设',description:'画面、文字、情绪与适用场景',content:'归档消息正文'};
 function status(message, error=false) { $('#status').textContent = message; $('#status').className = error?'error':''; }
 async function api(path, data, options={}) {
   const init = {...options,headers:{'X-Console-Token':token,...options.headers}};
@@ -35,7 +35,7 @@ async function renderPage(){
   let items=[];
   if(page==='people')items=(inventory.people||[]).map(p=>({...p,name:p.name,subtitle:`QQ ${p.usr} · ${p.scopes} 个会话 · ${p.count} 条`}));
   if(page==='groups')items=(inventory.groups||[]).map(g=>({...g,name:g.name,subtitle:g.count+' 条记录'}));
-  if(page==='prompts')items=[...(inventory.personas||[]).map(p=>({...p,name:'人格 · '+p.name})),...(inventory.styles||[]).map(p=>({...p,name:'风格 · '+p.name})),...(inventory.prompts||[])];
+  if(page==='prompts')items=[...(inventory.personas||[]).map(p=>({...p,name:'人设 · '+p.name})),...(inventory.prompts||[])];
   if(page==='emotes')items=await api('/api/emotes');
   if(page==='people'){
     const filter=document.createElement('select');filter.id='people-group';filter.setAttribute('aria-label','按群筛选个人');
@@ -52,7 +52,7 @@ async function renderPage(){
   $('#filter').oninput=list;list();
   if(page==='prompts'||page==='emotes'){
     const actions=document.createElement('div');actions.className='toolbar';
-    const add=document.createElement('button');add.textContent=page==='prompts'?'新增人格 / 风格':'上传表情包';
+    const add=document.createElement('button');add.textContent=page==='prompts'?'新增人设':'上传表情包';
     add.onclick=()=>openCreate(page==='emotes');actions.append(add);container.prepend(actions);
   }
   $('#suggest').onclick=suggest;$('#review-proposal').onclick=()=>review(proposal.value);
@@ -73,7 +73,7 @@ function showSelection(){
   const el=$('#selection');
   if(!current){el.textContent=page==='settings'?'当前选择：设置':'尚未选择资源';el.removeAttribute('title');return;}
   const [kind]=current.resource.split(':');
-  const names={person:'个人认知',group:'群管理',emote:'表情包管理',persona:'人格',style:'风格',prompt:'提示词'};
+  const names={person:'个人认知',group:'群管理',emote:'表情包管理',persona:'人设',prompt:'提示词'};
   let name=current.title||current.resource.substring(current.resource.indexOf(':')+1),scope='';
   if(kind==='person'){
     const person=(inventory.people||[]).find(p=>p.resource===current.resource);
@@ -114,7 +114,7 @@ function renderEditor(){
       }
       const label=document.createElement('label');label.className='field';const span=document.createElement('span');span.textContent=key==='__text'?'提示词正文':labels[key]||key;label.append(span);
       let input;
-      if(key==='persona'||key==='style'){input=document.createElement('select');for(const item of inventory[key==='persona'?'personas':'styles']||[]){const o=document.createElement('option');o.value=item.name;o.textContent=key==='persona'&&item.name==='默认'?'跟随默认人格':item.name;input.append(o);}input.value=value;}
+      if(key==='persona'){input=document.createElement('select');for(const item of inventory.personas||[]){const o=document.createElement('option');o.value=item.name;o.textContent=key==='persona'&&item.name==='默认'?'跟随默认人设':item.name;input.append(o);}input.value=value;}
       else{input=document.createElement(key==='activity'?'input':'textarea');if(key==='activity'){input.type='range';input.setAttribute('aria-label','主动参与积极性');input.min='0';input.max='100';input.step='1';}input.value=Array.isArray(value)?value.join('\n'):value;if(key==='__text')input.className='long';}
       const amount=key==='activity'?document.createElement('output'):null;if(amount){amount.textContent=input.value;label.append(amount);}
       input.oninput=()=>{if(amount)amount.textContent=input.value;let v=input.value;if(key==='activity')v=Number(v);if(key==='interests')v=v.split('\n').map(s=>s.trim()).filter(Boolean);if(key==='__text')draft=v;else{let target=draft;for(const part of path)target=target[part];target[key]=v;}status('草稿尚未保存');};label.append(input);parent.append(label);
@@ -144,7 +144,7 @@ function renderEditor(){
   if(evidence?.length)$('#evidence').innerHTML=`<details><summary>查看认知依据与来源</summary><pre>${esc(text(evidence))}</pre></details>`;
   $('#save-manual').onclick=saveManual;
   if($('#reset-default'))$('#reset-default').onclick=()=>{draft=current.default;renderEditor();status('默认值已载入草稿，点击保存后生效');};
-  if(['persona','style','emote'].includes(kind)&&!(kind!=='emote'&&title==='默认')){
+  if(['persona','emote'].includes(kind)&&!(kind!=='emote'&&title==='默认')){
     const remove=document.createElement('button');remove.className='quiet';remove.textContent='删除';
     remove.onclick=()=>{if(!busy)review(null,true);};$('#editor .actions').append(remove);
   }
@@ -163,7 +163,7 @@ function openCreate(emote){
   const dialog=document.createElement('dialog');let previewUrl='';
   dialog.innerHTML=emote?
     '<h2>上传表情包</h2><label class="field"><span>图片文件（PNG、JPEG、GIF、WebP）</span><input id="new-file" type="file" accept=".png,.jpg,.jpeg,.gif,.webp"></label><label class="field"><span>保存文件名（含扩展名）</span><input id="new-name" maxlength="100"></label><img id="new-preview" class="image-preview" alt="待上传表情" hidden><p class="note">确认后加入图库；同名文件不会覆盖。上传后可编辑表情说明。</p>':
-    '<h2>新增人格 / 风格</h2><label class="field"><span>类型</span><select id="new-kind"><option value="persona">人格</option><option value="style">风格</option></select></label><label class="field"><span>名称（不含 .txt）</span><input id="new-name" maxlength="100"></label><label class="field"><span>提示词正文（1 至 4000 字）</span><textarea id="new-value" maxlength="4000" class="long"></textarea></label><p class="note">确认后新增，不覆盖已有内容；在群设定中切换后使用。</p>';
+    '<h2>新增人设</h2><label class="field"><span>名称（不含 .txt）</span><input id="new-name" maxlength="100"></label><label class="field"><span>提示词正文（1 至 12000 字）</span><textarea id="new-value" maxlength="12000" class="long"></textarea></label><p class="note">确认后新增，不覆盖已有内容；在群设定中切换后使用。</p>';
   dialog.insertAdjacentHTML('beforeend','<p id="new-error" class="error" role="status"></p><div class="actions"><button id="new-cancel" class="quiet">取消</button><button id="new-save">确认并新增</button></div>');
   document.body.append(dialog);dialog.showModal();
   dialog.addEventListener('close',()=>{if(previewUrl)URL.revokeObjectURL(previewUrl);dialog.remove();});
@@ -180,7 +180,7 @@ function openCreate(emote){
     busy=true;$('#new-save').disabled=true;$('#new-cancel').disabled=true;
     try{
       const result=emote?await api('/api/emotes/upload?name='+encodeURIComponent(name),undefined,{method:'POST',body:file}):
-        await api('/api/profiles',{kind:$('#new-kind').value,name,value:$('#new-value').value});
+        await api('/api/profiles',{kind:'persona',name,value:$('#new-value').value});
       dialog.close();await refreshResources(result.resource);status('已新增，可继续维护；后续请求实时读取');
     }catch(e){if(dialog.isConnected)$('#new-error').textContent=e.message;else status(e.message,true);}
     finally{busy=false;if(dialog.isConnected){$('#new-save').disabled=false;$('#new-cancel').disabled=false;}}
@@ -271,7 +271,7 @@ async function renderSettings(){
   const area=$('#default-settings');
   const slider=control(area,'默认积极性',defaults.activity,'range');slider.min=0;slider.max=100;slider.step=1;
   const amount=document.createElement('output');amount.textContent=slider.value;slider.after(amount);
-  const persona=control(area,'默认人格',defaults.persona,'select',defaults.personas);
+  const persona=control(area,'默认人设',defaults.persona,'select',defaults.personas);
   slider.oninput=()=>{amount.textContent=slider.value;settingsChanged.add('defaults');};persona.onchange=()=>settingsChanged.add('defaults');
   $('#save-defaults').onclick=async()=>{if(busy)return;busy=true;slider.disabled=persona.disabled=true;try{const saved=await api('/api/defaults',{activity:Number(slider.value),persona:persona.value,revision:defaults.revision});defaults.revision=saved.revision;settingsChanged.delete('defaults');status(saved.message);}catch(e){status(e.message,true);}finally{busy=false;slider.disabled=persona.disabled=false;}};
   const inputs={},keys={};

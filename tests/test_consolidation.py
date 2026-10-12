@@ -130,7 +130,7 @@ class ConsolidationTests(unittest.IsolatedAsyncioTestCase):
             return {"summary": "周末交流", "knowledge": "编程"}
 
         await self.worker.tick(summarize)
-        for folder in ("personas", "styles"):
+        for folder in ("personas",):
             (self.root / folder).mkdir()
             (self.root / folder / "默认.txt").write_text("默认内容", encoding="utf-8")
         store = ConsoleStore(self.root)

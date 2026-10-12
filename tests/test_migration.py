@@ -24,10 +24,9 @@ class MigrationTests(unittest.TestCase):
         root = self.base / name
         root.mkdir()
         (root / ".env").write_text("ONEBOT_ACCESS_TOKEN=test\n", encoding="utf-8")
-        for folder in ("personas", "styles", "emotes"):
+        for folder in ("personas", "emotes"):
             (root / folder).mkdir()
         (root / "personas/默认.txt").write_text("人格", encoding="utf-8")
-        (root / "styles/默认.txt").write_text("风格", encoding="utf-8")
         m.write_json(root / "group_chat.json", {"default_activity": 50, "groups": {}})
         db = LongTermMemory(root / m.MEMORY, Config())
         db.collect((qq, 10, 20), 100, "第一条", ["text"], 1000)
@@ -124,16 +123,17 @@ class MigrationTests(unittest.TestCase):
         backup.mkdir(parents=True)
         (backup / ".env").write_text("old", encoding="utf-8")
         (root / ".env").write_text("partial", encoding="utf-8")
-        (root / "styles/new.txt").write_text("new", encoding="utf-8")
+        (root / "personas/new.txt").write_text("new", encoding="utf-8")
         m.write_json(
-            root / m.JOURNAL, {"rollback": "backups/rollback", "paths": [".env", "styles/new.txt"]}
+            root / m.JOURNAL,
+            {"rollback": "backups/rollback", "paths": [".env", "personas/new.txt"]},
         )
         with self.assertRaises(ValueError):
             with m.project_lock(root, runtime=True):
                 pass
         m.recover(root)
         self.assertEqual((root / ".env").read_text(encoding="utf-8"), "old")
-        self.assertFalse((root / "styles/new.txt").exists())
+        self.assertFalse((root / "personas/new.txt").exists())
 
     def test_failure_rolls_back(self):
         source, target = self.project("source"), self.project("target")

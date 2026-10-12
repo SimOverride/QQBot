@@ -29,18 +29,20 @@ class GroupSettings:
         if not isinstance(data, dict) or not isinstance(data.get("groups", {}), dict):
             raise ValueError("群聊配置格式错误")
         if not isinstance(data.get("default_persona", "默认"), str):
-            raise ValueError("默认人格名称无效")
+            raise ValueError("默认人设名称无效")
         levels = [data.get("default_activity", 50)]
         for group, settings in data.get("groups", {}).items():
             if not group.isdigit() or int(group) <= 0 or not isinstance(settings, dict):
                 raise ValueError("群聊配置群号错误")
             levels.append(settings.get("activity", data.get("default_activity", 50)))
+            if "style" in settings:
+                raise ValueError("群配置仍有独立风格，请先将风格并入人设并移除 style 配置")
             for profile_field in LIMITS:
                 selection = settings.get(profile_field)
                 if selection is None:
                     continue
                 if not isinstance(selection, dict) or not isinstance(selection.get("name"), str):
-                    raise ValueError("群人格或风格配置格式错误")
+                    raise ValueError("群人设配置格式错误")
                 if set(selection) != {"name"}:
                     raise ValueError("群设定只允许保存本地提示词名称")
             interests = settings.get("interests", [])
@@ -82,7 +84,7 @@ class GroupSettings:
 
     def set_profile(self, group, field, name):
         if group <= 0 or field not in LIMITS:
-            raise ValueError("只能修改当前群的人格或风格")
+            raise ValueError("只能修改当前群的人设")
         import migration
 
         # 与后台删除共用锁，不能选中刚刚被移除的提示词。
@@ -91,8 +93,7 @@ class GroupSettings:
                 raise ValueError("有未恢复的导入，暂不能切换提示词")
             selection = None if name == "默认" else {"name": name}
             if selection is not None:
-                folder = "personas" if field == "persona" else "styles"
-                path = migration.safe_path(self.path.parent, f"{folder}/{name}.txt")
+                path = migration.safe_path(self.path.parent, f"personas/{name}.txt")
                 if not path.is_file():
                     raise ValueError("提示词已移除，请重新查看列表")
             data = self.read()

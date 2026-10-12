@@ -24,9 +24,9 @@ class ConsoleTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        for folder in ("personas", "styles", "emotes", "data"):
+        for folder in ("personas", "emotes", "data"):
             (self.root / folder).mkdir()
-        for folder in ("personas", "styles"):
+        for folder in ("personas",):
             (self.root / folder / "默认.txt").write_text("默认内容", encoding="utf-8")
         (self.root / ".env").write_text(
             "LLM_PROVIDER=deepseek\nDEEPSEEK_API_KEY=test-key\nDEEPSEEK_MODEL=test-model\n",
@@ -51,12 +51,26 @@ class ConsoleTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["service"], "qqbot-console")
 
+    def test_unified_persona_and_removed_style(self):
+        self.assertNotIn("style", self.store.get("group:123:10")["value"])
+        response = self.client.post(
+            "/api/profiles", headers=self.headers,
+            json={"kind": "style", "name": "旧风格", "value": "内容"},
+        )
+        self.assertEqual(response.status_code, 400)
+        with self.assertRaises(ValueError):
+            self.store.get("style:默认")
+        content = "角色与说话方式" * 1000
+        item = self.store.create_file("persona", "合并人设", content)
+        self.assertEqual(item["value"], content)
+        self.assertFalse(migration.allowed("styles/默认.txt"))
+
     def save(self, resource, value):
         before = self.store.get(resource)
         return self.store.put(resource, value, before["revision"])
 
     def test_profile_create_delete_restore_and_references(self):
-        for kind in ("persona", "style"):
+        for kind in ("persona",):
             result = self.client.post(
                 "/api/profiles",
                 headers=self.headers,
@@ -102,7 +116,7 @@ class ConsoleTests(unittest.TestCase):
         for name in ("../越界", "CON", "a/b", "a:b", ".env", "a\\b", "a*"):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 self.store.create_file("persona", name, "内容")
-        for value in ("", " " * 10, "字" * 4001, {}):
+        for value in ("", " " * 10, "字" * 12001, {}):
             with self.assertRaises(ValueError):
                 self.store.create_file("persona", "新模板", value)
         item = self.store.create_file("persona", "新模板", "内容")
@@ -113,7 +127,7 @@ class ConsoleTests(unittest.TestCase):
             self.store.delete_file("prompt:prompts.system_prompt.0", "invalid")
         atomic_json(self.root / migration.JOURNAL, {})
         with self.assertRaisesRegex(ValueError, "未恢复"):
-            self.store.create_file("style", "新模板", "内容")
+            self.store.create_file("persona", "新模板", "内容")
         with self.assertRaisesRegex(ValueError, "未恢复"):
             self.store.delete_file(item["resource"], item["revision"])
 
@@ -121,21 +135,21 @@ class ConsoleTests(unittest.TestCase):
         from plugins.assistant.groupchat import GroupSettings
         from plugins.assistant.personality import ProfileStore
 
-        item = self.store.create_file("style", "新风格", "新增的表达风格")
+        item = self.store.create_file("persona", "新人设", "新增的人设与表达方式")
         record = next(r for r in self.store.changes() if r.get("action") == "create")
         settings = GroupSettings(self.root / "group_chat.json")
-        profiles = ProfileStore(self.root / "personas/默认.txt", self.root / "styles/默认.txt")
+        profiles = ProfileStore(self.root / "personas/默认.txt")
         profiles.group_settings = settings
-        self.assertIn("新风格", profiles.choices("style"))
-        settings.set_profile(10, "style", "新风格")
-        self.assertEqual(profiles.effective(10)["style"], "新增的表达风格")
+        self.assertIn("新人设", profiles.choices("persona"))
+        settings.set_profile(10, "persona", "新人设")
+        self.assertEqual(profiles.effective(10)["persona"], "新增的人设与表达方式")
         with self.assertRaisesRegex(ValueError, "正在使用"):
             self.store.undo(record["id"])
-        settings.set_profile(10, "style", "默认")
+        settings.set_profile(10, "persona", "默认")
         self.store.undo(record["id"])
-        self.assertNotIn("新风格", profiles.choices("style"))
+        self.assertNotIn("新人设", profiles.choices("persona"))
         with self.assertRaisesRegex(ValueError, "移除"):
-            settings.set_profile(10, "style", "新风格")
+            settings.set_profile(10, "persona", "新人设")
         with self.assertRaises(ValueError):
             self.store.get(item["resource"])
 

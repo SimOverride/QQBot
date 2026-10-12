@@ -26,7 +26,7 @@ class SettingsTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        for directory in ("personas", "styles"):
+        for directory in ("personas",):
             (self.root / directory).mkdir()
             (self.root / directory / "默认.txt").write_text("默认正文", encoding="utf-8")
         (self.root / "personas/温和.txt").write_text("温和正文", encoding="utf-8")
@@ -106,7 +106,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(groups.get(10)["activity"], 72)
         groups.set_activity(11, 9)
         self.assertEqual(groups.get(11)["activity"], 9)
-        profiles = ProfileStore(self.root / "personas/默认.txt", self.root / "styles/默认.txt")
+        profiles = ProfileStore(self.root / "personas/默认.txt")
         profiles.group_settings = groups
         self.assertEqual(profiles.effective(10)["persona"], "温和正文")
         self.assertEqual(profiles.effective(-20)["persona"], "温和正文")

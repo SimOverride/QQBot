@@ -104,7 +104,7 @@ def setup() -> None:
 
         contacts.directory_path = root / "data/contacts.json"
         contacts.directory = read_directory(root)
-        profiles = ProfileStore(root / "personas" / "默认.txt", root / "styles" / "默认.txt")
+        profiles = ProfileStore(root / "personas" / "默认.txt")
         archive = LongTermMemory(root / "data" / "memory.sqlite3", config)
         client = httpx.AsyncClient(follow_redirects=False)
         service = Assistant(config, LLM(client, config, Search(client, config)), profiles, archive)

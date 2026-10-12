@@ -99,7 +99,7 @@ def allowed(name):
         MEMORY,
         TASKS,
         IDENTITY,
-    ) or name.startswith(("emotes/", "personas/", "styles/"))
+    ) or name.startswith(("emotes/", "personas/"))
 
 
 def emote_dir(root):
@@ -109,7 +109,6 @@ def emote_dir(root):
     if value.split("/")[0] in {
         "data",
         "personas",
-        "styles",
         "plugins",
         "tests",
         "docs",
@@ -258,7 +257,6 @@ def _export_data(root, output, bot_qq=None):
         for prefix, directory in (
             ("emotes", emote_dir(root)),
             ("personas", root / "personas"),
-            ("styles", root / "styles"),
         ):
             if directory.exists():
                 for source in directory.rglob("*"):
@@ -559,7 +557,7 @@ def stage_merge(root, incoming, staged, qq, fresh):
             plan[target_name] = path
             continue
         if target.exists() and target.read_bytes() != path.read_bytes() and not fresh:
-            if name.startswith(("personas/", "styles/", "emotes/")):
+            if name.startswith(("personas/", "emotes/")):
                 alternate = target.with_name(
                     target.stem + "_导入_" + digest(path)[:12] + target.suffix
                 )
@@ -573,10 +571,9 @@ def stage_merge(root, incoming, staged, qq, fresh):
         if default in renamed:
             config["default_persona"] = renamed[default]
         for settings in config.get("groups", {}).values():
-            for field, directory in (("persona", "personas"), ("style", "styles")):
-                selection = settings.get(field)
-                if selection and directory + "/" + selection["name"] + ".txt" in renamed:
-                    selection["name"] = renamed[directory + "/" + selection["name"] + ".txt"]
+            selection = settings.get("persona")
+            if selection and "personas/" + selection["name"] + ".txt" in renamed:
+                selection["name"] = renamed["personas/" + selection["name"] + ".txt"]
         if (root / "group_chat.json").exists() and not fresh:
             config = fill_missing(read_json(root / "group_chat.json"), config)
         write_json(group, config)

@@ -7,6 +7,28 @@ from nonebot.log import logger
 from migration import ROOT, project_lock
 
 
+def disable_quick_edit():
+    """关闭当前 Windows 控制台快速编辑；重定向输入及其他系统无需处理。"""
+    import os
+
+    if os.name != "nt":
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetStdHandle.argtypes = [wintypes.DWORD]
+    kernel.GetStdHandle.restype = wintypes.HANDLE
+    kernel.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel.SetConsoleMode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    handle = kernel.GetStdHandle(wintypes.DWORD(-10))
+    mode = wintypes.DWORD()
+    if kernel.GetConsoleMode(handle, ctypes.byref(mode)):
+        # 保留其他模式位；扩展标志使快速编辑开关生效。
+        if not kernel.SetConsoleMode(handle, (mode.value | 0x0080) & ~0x0040):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+
 def configure_logging():
     import sys
 
@@ -45,5 +67,6 @@ def main():
 
 if __name__ == "__main__":
     # 与离线导入互斥；未完成恢复时不允许启动。
+    disable_quick_edit()
     with project_lock(ROOT, runtime=True):
         main()

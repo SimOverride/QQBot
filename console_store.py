@@ -43,8 +43,8 @@ class ConsoleStore:
 
     def file_target(self, kind, name):
         """新增与删除只能操作资源目录中的普通文件。"""
-        if kind not in ("persona", "style", "emote"):
-            raise ValueError("只支持人格、风格和表情包")
+        if kind not in ("persona", "emote"):
+            raise ValueError("只支持人设和表情包")
         if (
             not isinstance(name, str)
             or not 1 <= len(name) <= 100
@@ -55,7 +55,6 @@ class ConsoleStore:
             raise ValueError("名称须为 1 至 100 字，不能包含路径或特殊字符")
         folder = {
             "persona": self.root / "personas",
-            "style": self.root / "styles",
             "emote": migration.emote_dir(self.root),
         }[kind]
         filename = name if kind == "emote" else name + ".txt"
@@ -73,8 +72,8 @@ class ConsoleStore:
         """新资源不覆盖同名文件，与迁移及其他后台写入互斥。"""
         path = self.file_target(kind, name)
         if kind != "emote":
-            if not isinstance(content, str) or not 1 <= len(content.strip()) <= 4000:
-                raise ValueError("人格与风格须为 1 至 4000 字")
+            if not isinstance(content, str) or not 1 <= len(content.strip()) <= 12000:
+                raise ValueError("人设须为 1 至 12000 字")
             content = content.strip().encode("utf-8")
         with migration.project_lock(self.root, name=".migration.lock"):
             self.check_file_mutation()
@@ -116,16 +115,13 @@ class ConsoleStore:
             current = self.get(resource)
             if current["revision"] != expected:
                 raise ValueError("内容已被其他操作修改，请重新载入后再删除")
-            if kind in ("persona", "style"):
+            if kind == "persona":
                 if name == "默认":
-                    raise ValueError("默认人格和风格不能删除")
+                    raise ValueError("默认人设不能删除")
                 settings_path = self.root / "group_chat.json"
                 settings = migration.read_json(settings_path) if settings_path.exists() else {}
-                if (
-                    kind == "persona"
-                    and settings.get("default_persona", "默认").casefold() == name.casefold()
-                ):
-                    raise ValueError("此人格是全局默认人格，请先切换默认人格")
+                if settings.get("default_persona", "默认").casefold() == name.casefold():
+                    raise ValueError("此人设是全局默认人设，请先切换默认人设")
                 if any(
                     g.get(kind, {}).get("name", "").casefold() == name.casefold()
                     for g in settings.get("groups", {}).values()
@@ -177,12 +173,11 @@ class ConsoleStore:
         if kind == "prompt":
             if key not in catalog():
                 raise ValueError("未知提示词")
-        elif kind in ("persona", "style", "emote"):
+        elif kind in ("persona", "emote"):
             if "/" in key or "\\" in key or not key:
                 raise ValueError("文件名无效")
             folder = {
                 "persona": self.root / "personas",
-                "style": self.root / "styles",
                 "emote": migration.emote_dir(self.root),
             }[kind]
             file = key if kind == "emote" else key + ".txt"
@@ -213,7 +208,7 @@ class ConsoleStore:
                 "default": entry["text"],
                 "placeholders": entry["placeholders"],
             }
-        elif kind in ("persona", "style"):
+        elif kind == "persona":
             value = key.read_text(encoding="utf-8-sig").strip()
         elif kind == "group":
             data = group_knowledge(*key, self.root)
@@ -226,7 +221,6 @@ class ConsoleStore:
                 "activity": group.get("activity", settings.get("default_activity", 50)),
                 "interests": group.get("interests", []),
                 "persona": group.get("persona", {}).get("name", "默认"),
-                "style": group.get("style", {}).get("name", "默认"),
             }
         elif kind == "person":
             with self.db() as db:
@@ -265,9 +259,9 @@ class ConsoleStore:
             for name in catalog()[key]["placeholders"]:
                 if "{" + name + "}" not in value:
                     raise ValueError("不能删除动态占位符：" + name)
-        elif kind in ("persona", "style"):
-            if not 1 <= len(value.strip()) <= 4000:
-                raise ValueError("人格与风格须为 1 至 4000 字")
+        elif kind == "persona":
+            if not 1 <= len(value.strip()) <= 12000:
+                raise ValueError("人设须为 1 至 12000 字")
         elif kind == "person":
             if (
                 not isinstance(value["总体认知"], str)
@@ -304,8 +298,7 @@ class ConsoleStore:
                 or any(not isinstance(v, str) or len(v) > 100 for v in value["interests"])
             ):
                 raise ValueError("兴趣最多 20 项，每项最多 100 字")
-            for field in ("persona", "style"):
-                self.resolve(field + ":" + value[field])
+            self.resolve("persona:" + value["persona"])
         elif kind == "emote":
             if (
                 not isinstance(value["description"], str)
@@ -382,14 +375,13 @@ class ConsoleStore:
                 if "activity" in group or value["activity"] != settings.get("default_activity", 50):
                     group["activity"] = value["activity"]
                 group["interests"] = value["interests"]
-                for field in ("persona", "style"):
-                    if value[field] == "默认":
-                        group.pop(field, None)
-                    else:
-                        group[field] = {"name": value[field]}
+                if value["persona"] == "默认":
+                    group.pop("persona", None)
+                else:
+                    group["persona"] = {"name": value["persona"]}
                 atomic_json(settings_path, settings)
             atomic_json(self.root / "data/console.json", config)
-        elif kind in ("persona", "style"):
+        elif kind == "persona":
             pending = key.with_suffix(".pending")
             pending.write_text(value, encoding="utf-8")
             pending.replace(key)
@@ -565,10 +557,6 @@ class ConsoleStore:
             "personas": [
                 {"resource": "persona:" + p.stem, "name": p.stem}
                 for p in (self.root / "personas").glob("*.txt")
-            ],
-            "styles": [
-                {"resource": "style:" + p.stem, "name": p.stem}
-                for p in (self.root / "styles").glob("*.txt")
             ],
         }
 

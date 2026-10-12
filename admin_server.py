@@ -224,8 +224,8 @@ def create_app(root=ROOT):
     @app.post("/api/profiles")
     async def create_profile(request: Request):
         data = await body(request)
-        if data.get("kind") not in ("persona", "style"):
-            raise ValueError("请选择人格或风格")
+        if data.get("kind") != "persona":
+            raise ValueError("请选择人设")
         return await run_in_threadpool(store.create_file, data["kind"], data["name"], data["value"])
 
     @app.post("/api/resource/delete")
@@ -345,7 +345,7 @@ def create_app(root=ROOT):
                         "关系须注明对象QQ，不把玩笑、转述、引用当本人事实。无依据留空，"
                         "不推断敏感信息。总体认知、私聊印象及每项群内分类分别最多12000字。"
                         "群只整理该群主题、规则和互动氛围，不把个人意见当全群共识；"
-                        "群activity、interests、persona、style保持current原值，除非维护者明确要求修改。"
+                        "群activity、interests、persona保持current原值，除非维护者明确要求修改。"
                         "explanation列出关键依据的scope和消息id、冲突及抽样限制，不能声称读完未提供记录。"
                     ),
                 },
@@ -457,7 +457,7 @@ def create_app(root=ROOT):
         if group == 0 or user <= 0 or (group < 0 and group != -user):
             raise ValueError("请指定有效群号或个人私聊会话及 QQ")
         cfg = config_for(store.root)
-        profiles = ProfileStore(store.root / "personas/默认.txt", store.root / "styles/默认.txt")
+        profiles = ProfileStore(store.root / "personas/默认.txt")
         from plugins.assistant.emotes import Emotes
         from plugins.assistant.groupchat import GroupSettings
 
