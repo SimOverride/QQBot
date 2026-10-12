@@ -30,6 +30,8 @@ FIELDS = {
         "input_max_chars": "输入字符上限",
         "history_max_calls": "每次回答历史查询次数",
         "memory_profile_min_messages": "认知提取最少消息数",
+        "knowledge_cleanup_enabled": "自动整理认知",
+        "knowledge_cleanup_interval_hours": "认知整理间隔（小时）",
     },
     "请求限制": {
         "llm_timeout_seconds": "模型请求超时（秒）",

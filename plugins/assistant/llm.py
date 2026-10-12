@@ -700,6 +700,23 @@ class LLM:
         )
         return text
 
+    @scoped("knowledge_cleanup")
+    async def consolidate_knowledge(self, kind, source):
+        text, calls, _ = await self.step(
+            [
+                {"role": "system", "content": prompt_text("llm.knowledge_cleanup.0")},
+                {
+                    "role": "user",
+                    "content": json.dumps({"kind": kind, "sources": source}, ensure_ascii=False),
+                },
+            ],
+            False,
+            "knowledge-cleanup",
+        )
+        if calls:
+            raise ValueError("认知整理禁止工具调用")
+        return json.loads(text)
+
     @scoped("notice")
     async def rephrase_notice(self, source, personality):
         prompt = prompt_text("llm.rephrase_notice.0")

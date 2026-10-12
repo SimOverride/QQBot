@@ -43,6 +43,9 @@ class Assistant:
         self.commands.profiles = self.profiles
         self.limits = Limits(config)
         self.notices = Notices(llm, self.profiles, self.limits)
+        from .consolidation import Consolidation
+
+        self.consolidation = Consolidation(archive, archive.root, config) if archive else None
 
     @scoped("request")
     async def handle(
@@ -307,3 +310,10 @@ class Assistant:
                     self.archive.advance(key, last_id)
             except Exception as error:
                 logger.warning("profile_refresh_failure={}", type(error).__name__)
+        if self.consolidation:
+            async def summarize(kind, source):
+                async with self.limits.slot():
+                    async with asyncio.timeout(self.config.llm_timeout_seconds):
+                        return await self.llm.consolidate_knowledge(kind, source)
+
+            await self.consolidation.tick(summarize)

@@ -71,4 +71,10 @@ def refresh_tools(functions):
 
 def group_knowledge(bot, group, root=None):
     """仅向当前群注入该群认知，避免跨群传播。"""
-    return read_console(root).get("groups", {}).get(f"{bot}:{group}", {})
+    fixed = read_console(root).get("groups", {})
+    key = f"{bot}:{group}"
+    if key in fixed:
+        return fixed[key]
+    from .consolidation import automatic_group
+
+    return automatic_group(root or ROOT, bot, group)

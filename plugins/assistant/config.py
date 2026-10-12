@@ -13,6 +13,8 @@ class Config(BaseModel):
     )
     proactive_share_enabled: bool = True
     memory_profile_min_messages: PositiveInt = 10
+    knowledge_cleanup_enabled: bool = True
+    knowledge_cleanup_interval_hours: int = Field(24, ge=1, le=720)
     llm_provider: Literal["deepseek", "openai"] = "deepseek"
     llm_thinking_enabled: bool = False
     model_trace_enabled: bool = True

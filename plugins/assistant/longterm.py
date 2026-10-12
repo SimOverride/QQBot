@@ -19,6 +19,9 @@ class LongTermMemory:
     def __init__(self, path: Path, config: Config):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.config = config
+        self.root = path.resolve().parent
+        if self.root.name == "data":
+            self.root = self.root.parent
         self.db = sqlite3.connect(path, timeout=5)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
@@ -288,13 +291,16 @@ class LongTermMemory:
                     continue
             accepted.append(row)
         result = []
+        from .consolidation import organized
+
+        presented = organized(accepted, self.root)
         for general, label, field in ((True, "总体", "总体认知"), (False, "当前会话", "会话印象")):
             selected = [r for r in accepted if (r["grp"] == 0) == general]
             if selected:
                 result.append(
                     {
                         "field": field,
-                        "value": prose(selected),
+                        "value": prose([r for r in presented if (r["grp"] == 0) == general]),
                         "layer": label,
                         "evidence": "\n".join(dict.fromkeys(r["evidence"] for r in selected)),
                         "updated": max(r["updated"] for r in selected),

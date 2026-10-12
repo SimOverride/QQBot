@@ -19,7 +19,7 @@ from plugins.assistant.knowledge import (
     read_directory,
     scope_name,
 )
-from plugins.assistant.prompt_store import catalog, read_console
+from plugins.assistant.prompt_store import catalog, group_knowledge, read_console
 
 
 def revision(value):
@@ -216,7 +216,7 @@ class ConsoleStore:
         elif kind in ("persona", "style"):
             value = key.read_text(encoding="utf-8-sig").strip()
         elif kind == "group":
-            data = read_console(self.root).get("groups", {}).get(":".join(map(str, key)), {})
+            data = group_knowledge(*key, self.root)
             settings_file = self.root / "group_chat.json"
             settings = migration.read_json(settings_file) if settings_file.exists() else {}
             group = settings.get("groups", {}).get(str(key[1]), {})
@@ -230,7 +230,7 @@ class ConsoleStore:
             }
         elif kind == "person":
             with self.db() as db:
-                value, extra["evidence"] = person_value(db, *key)
+                value, extra["evidence"] = person_value(db, *key, root=self.root)
                 extra["title"] = (
                     f"{display_name(db, *key, read_directory(self.root))} · QQ {key[1]}"
                 )
@@ -371,9 +371,11 @@ class ConsoleStore:
             if kind == "prompt":
                 config.setdefault("prompts", {})[key] = value
             else:
-                config.setdefault("groups", {})[":".join(map(str, key))] = {
-                    f: value[f] for f in ("summary", "knowledge")
-                }
+                current = group_knowledge(*key, self.root)
+                if any(value[f] != current.get(f, "") for f in ("summary", "knowledge")):
+                    config.setdefault("groups", {})[":".join(map(str, key))] = {
+                        f: value[f] for f in ("summary", "knowledge")
+                    }
                 settings_path = self.root / "group_chat.json"
                 settings = migration.read_json(settings_path) if settings_path.exists() else {}
                 group = settings.setdefault("groups", {}).setdefault(str(key[1]), {})
@@ -397,7 +399,7 @@ class ConsoleStore:
                     db.execute("BEGIN IMMEDIATE")
                 bot, user = key
                 # 只替换实际修改的段落，保留其他会话的来源与自动处理状态。
-                previous, _ = person_value(db, *key)
+                previous, _ = person_value(db, *key, root=self.root)
 
                 def layers(data):
                     return {
@@ -511,7 +513,7 @@ class ConsoleStore:
                     "WHERE p.usr<>p.bot GROUP BY p.bot,p.usr ORDER BY latest DESC"
                 ):
                     name = display_name(db, row["bot"], row["usr"], directory)
-                    value, _ = person_value(db, row["bot"], row["usr"])
+                    value, _ = person_value(db, row["bot"], row["usr"], root=self.root)
                     sessions = [
                         {"scope": int(g), "name": scope_name(db, row["bot"], int(g), directory)}
                         for g in value["会话印象"]

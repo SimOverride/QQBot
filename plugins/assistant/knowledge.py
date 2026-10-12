@@ -40,7 +40,7 @@ def group_value(rows):
     return {field: "\n".join(values) for field, values in result.items()}
 
 
-def person_value(db, bot, user):
+def person_value(db, bot, user, root=None):
     rows = db.execute(
         "SELECT * FROM facts WHERE bot=? AND usr=? ORDER BY grp,updated,field", (bot, user)
     ).fetchall()
@@ -50,10 +50,13 @@ def person_value(db, bot, user):
         if r[0] > 0 or r[0] == -user
     }
     scopes.update(r["grp"] for r in rows if r["grp"] > 0 or r["grp"] == -user)
+    from .consolidation import organized
+
+    presented = organized(rows, root) if root is not None else rows
     value = {
-        "总体认知": prose([r for r in rows if r["grp"] == 0]),
+        "总体认知": prose([r for r in presented if r["grp"] == 0]),
         "会话印象": {
-            str(g): (group_value if g > 0 else prose)([r for r in rows if r["grp"] == g])
+            str(g): (group_value if g > 0 else prose)([r for r in presented if r["grp"] == g])
             for g in sorted(scopes)
         },
     }
