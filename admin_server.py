@@ -443,7 +443,11 @@ def create_app(root=ROOT):
             from console_store import atomic_json
 
             atomic_json(store.proposal_path(data["resource"]), proposal)
-        return proposal
+        return {
+            **proposal,
+            "display_value": store.present(data["resource"], proposal["value"]),
+            "display_explanation": store.present(data["resource"], proposal["explanation"]),
+        }
 
     @app.get("/api/knowledge-proposal")
     def knowledge_proposal(resource: str):

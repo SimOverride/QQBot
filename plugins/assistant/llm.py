@@ -13,6 +13,7 @@ from .emote_collect import COLLECT_FUNCTIONS, EmoteCollector
 from .emotes import EMOTE_FUNCTIONS
 from .history_tools import HISTORY_FUNCTION, SEND_GROUP_FUNCTION
 from .http import ServiceError, post_json
+from .names import for_request
 from .prompt_store import prompt_text, refresh_tools
 from .prompts import SEARCH_FUNCTION, system_prompt
 from .search import Search, SearchResult
@@ -208,12 +209,15 @@ class LLM:
         if history_tools is not None:
             messages[0]["content"] += history_tools.instructions()
             return await self.investigate(messages, request_id, history_tools)
+        renderer = for_request(self.config, identity=identity)
         sources: list[SearchResult] = []
         count = 0
         try:
             for _ in range(self.config.search_max_calls + 1):
                 allow = self.search.enabled and count < self.config.search_max_calls
-                text, calls, output = await self.step(messages, allow, request_id)
+                text, calls, output = await self.step(
+                    renderer.messages(messages) if renderer else messages, allow, request_id
+                )
                 if not calls:
                     if not text.strip():
                         raise ServiceError("模型返回了空回复，请稍后重试。")
@@ -367,6 +371,7 @@ class LLM:
 
     @scoped("tools")
     async def investigate(self, messages, request_id, history_tools, planning=False):
+        renderer = for_request(self.config, history_tools)
         sources = []
         searches = 0
         preview_bytes = 0
@@ -428,7 +433,9 @@ class LLM:
             if pending_memories:
                 functions = [f for f in EMOTE_FUNCTIONS if f["name"] == "remember_emotes"]
             allow = used < self.config.history_max_calls
-            text, calls, output = await self.step(messages, allow, request_id, functions)
+            text, calls, output = await self.step(
+                renderer.messages(messages), allow, request_id, functions
+            )
             if not calls:
                 if pending_memories:
                     raise ServiceError("表情包内容记忆尚未完成，请稍后重试。")
@@ -800,7 +807,8 @@ class LLM:
             ).text
             calls = []
         else:
-            content, calls, _ = await self.step(messages, False, "group-plan")
+            renderer = for_request(self.config, bot=bot_id)
+            content, calls, _ = await self.step(renderer.messages(messages), False, "group-plan")
         if calls:
             return {}
         try:

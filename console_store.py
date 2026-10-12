@@ -107,6 +107,13 @@ class ConsoleStore:
         atomic_json(audit, record)
         return result
 
+    def present(self, resource, value):
+        """仅生成阅读副本；不用于修改认知或版本计算。"""
+        from plugins.assistant.names import Names
+
+        kind, key = self.resolve(resource)
+        return Names(self.root, key[0]).data(value) if kind in ("person", "group") else value
+
     def delete_file(self, resource, expected):
         kind, _, name = resource.partition(":")
         path = self.file_target(kind, name)
@@ -243,7 +250,19 @@ class ConsoleStore:
                     db.close()
             value = {"description": text}
             extra["digest"] = content_hash
-        return {"resource": resource, "value": value, "revision": revision([value, extra]), **extra}
+        result = {
+            "resource": resource,
+            "value": value,
+            "revision": revision([value, extra]),
+            **extra,
+        }
+        if kind in ("person", "group"):
+            from plugins.assistant.names import Names
+
+            renderer = Names(self.root, key[0])
+            result["display_value"] = renderer.data(value)
+            result["display_evidence"] = renderer.data(extra.get("evidence", []))
+        return result
 
     def validate(self, resource, value):
         kind, key = self.resolve(resource)
@@ -650,7 +669,11 @@ class ConsoleStore:
             or history != self.history_version(resource, history["last_id"])
         ):
             return None
-        return data
+        return {
+            **data,
+            "display_value": self.present(resource, data["value"]),
+            "display_explanation": self.present(resource, data.get("explanation", "")),
+        }
 
     def history_version(self, resource, cutoff=None):
         """只检查生成时已有的依据，新增聊天不使待确认建议失效。"""

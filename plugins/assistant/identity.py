@@ -19,19 +19,24 @@ def identity_context(
     user_id: int,
     names: dict[int, str] | None = None,
     group_role: str | None = None,
+    root=None,
 ) -> str:
+    from . import prompt_store
+    from .names import Names
+
+    resolved = Names(root or prompt_store.ROOT, bot_id, {**config.user_names, **(names or {})})
+    names = resolved.names
     group_role = group_role if group_id > 0 else None
 
     def person(identifier: int) -> dict:
         return {
             "qq": identifier,
-            "name": config.user_names.get(
-                identifier, (names or {}).get(identifier, f"QQ用户{identifier}")
-            ),
+            "name": names.get(identifier, f"QQ用户{identifier}"),
         }
 
     data = {
         "bot_qq": bot_id,
+        "bot_self": {**person(bot_id), "is_self": True, "说明": "这是你自己的账号"},
         "group_id": group_id if group_id > 0 else None,
         "conversation": "群聊" if group_id > 0 else "私聊",
         "bot_owners": [person(uid) for uid in sorted(config.bot_owners)],

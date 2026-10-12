@@ -191,7 +191,15 @@ class Assistant:
                                     else ""
                                 )
                                 + (self.commands.tasks.context(key) if self.commands.tasks else ""),
-                                identity_context(cfg, bot_id, group_id, user_id, names, group_role),
+                                identity_context(
+                                    cfg,
+                                    bot_id,
+                                    group_id,
+                                    user_id,
+                                    names,
+                                    group_role,
+                                    root=self.archive.root if self.archive else None,
+                                ),
                                 **({"images": images} if images else {}),
                                 **(
                                     {
@@ -311,6 +319,7 @@ class Assistant:
             except Exception as error:
                 logger.warning("profile_refresh_failure={}", type(error).__name__)
         if self.consolidation:
+
             async def summarize(kind, source):
                 async with self.limits.slot():
                     async with asyncio.timeout(self.config.llm_timeout_seconds):

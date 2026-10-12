@@ -104,6 +104,12 @@ function renderEditor(){
   showSelection();
   $('#editor').innerHTML=`<div class="panel-body"><div id="fields"></div><div id="evidence"></div><div class="actions">${current.default!==undefined?'<button class="quiet" id="reset-default">载入默认值</button>':''}<button id="save-manual">保存</button></div><p class="note">手动修改点击保存即生效；模型建议须确认差异后保存。</p></div>`;
   if(kind==='emote')$('#fields').innerHTML=`<img class="image-preview" src="/api/image?name=${encodeURIComponent(title)}" alt="当前表情">`;
+  function showKnowledge(label,input,display){
+    const preview=document.createElement('div');preview.className='knowledge-display';preview.textContent=display||'暂无认知';
+    const edit=document.createElement('details');const summary=document.createElement('summary');summary.textContent='编辑原文';
+    edit.append(summary,input);label.append(preview,edit);
+    input.addEventListener('input',()=>{preview.textContent='原文已修改，保存后按当前昵称显示';});
+  }
   function fields(data, parent, path=[]){
     const entries=typeof data==='string'?[['__text',data]]:Object.entries(data);
     for(const [key,value] of entries){
@@ -117,7 +123,7 @@ function renderEditor(){
       if(key==='persona'){input=document.createElement('select');for(const item of inventory.personas||[]){const o=document.createElement('option');o.value=item.name;o.textContent=key==='persona'&&item.name==='默认'?'跟随默认人设':item.name;input.append(o);}input.value=value;}
       else{input=document.createElement(key==='activity'?'input':'textarea');if(key==='activity'){input.type='range';input.setAttribute('aria-label','主动参与积极性');input.min='0';input.max='100';input.step='1';}input.value=Array.isArray(value)?value.join('\n'):value;if(key==='__text')input.className='long';}
       const amount=key==='activity'?document.createElement('output'):null;if(amount){amount.textContent=input.value;label.append(amount);}
-      input.oninput=()=>{if(amount)amount.textContent=input.value;let v=input.value;if(key==='activity')v=Number(v);if(key==='interests')v=v.split('\n').map(s=>s.trim()).filter(Boolean);if(key==='__text')draft=v;else{let target=draft;for(const part of path)target=target[part];target[key]=v;}status('草稿尚未保存');};label.append(input);parent.append(label);
+      input.oninput=()=>{if(amount)amount.textContent=input.value;let v=input.value;if(key==='activity')v=Number(v);if(key==='interests')v=v.split('\n').map(s=>s.trim()).filter(Boolean);if(key==='__text')draft=v;else{let target=draft;for(const part of path)target=target[part];target[key]=v;}status('草稿尚未保存');};if(kind==='group'&&['summary','knowledge'].includes(key))showKnowledge(label,input,current.display_value?.[key]??value);else label.append(input);parent.append(label);
     }
   }
   if(kind==='person'){
@@ -128,7 +134,7 @@ function renderEditor(){
       title.textContent=field;
       const input=document.createElement('textarea');if(personScope==='general'||Number(personScope)<0)input.className='long';input.value=value;
       input.oninput=()=>{if(personScope==='general')draft['总体认知']=input.value;else if(typeof contents==='string')draft['会话印象'][personScope]=input.value;else draft['会话印象'][personScope][field]=input.value;status('草稿尚未保存');};
-      label.append(title,input);$('#fields').append(label);
+      label.append(title);const shown=personScope==='general'?current.display_value?.['总体认知']:typeof contents==='string'?current.display_value?.['会话印象']?.[personScope]:current.display_value?.['会话印象']?.[personScope]?.[field];showKnowledge(label,input,shown??value);$('#fields').append(label);
     }
   }else fields(draft,$('#fields'));
   if(kind==='person'||kind==='group'){
@@ -140,7 +146,7 @@ function renderEditor(){
     const [,bot,group]=current.resource.split(':');renderPlugins(holder,Number(bot),Number(group)).catch(e=>status(e.message,true));
   }
   if(current.placeholders?.length){const p=document.createElement('p');p.className='note';p.textContent='请保留动态占位符：'+current.placeholders.map(s=>'{'+s+'}').join('、');$('#fields').append(p);}
-  const evidence=current.resource.startsWith('person:')?current.evidence?.filter(r=>r.grp===(personScope==='general'?0:Number(personScope))):current.evidence;
+  const sourceEvidence=current.display_evidence||current.evidence;const evidence=current.resource.startsWith('person:')?sourceEvidence?.filter(r=>r.grp===(personScope==='general'?0:Number(personScope))):sourceEvidence;
   if(evidence?.length)$('#evidence').innerHTML=`<details><summary>查看认知依据与来源</summary><pre>${esc(text(evidence))}</pre></details>`;
   $('#save-manual').onclick=saveManual;
   if($('#reset-default'))$('#reset-default').onclick=()=>{draft=current.default;renderEditor();status('默认值已载入草稿，点击保存后生效');};
@@ -193,15 +199,17 @@ function review(value, remove=false){
   $('#confirm h2').textContent=remove?'确认删除 '+current.resource:'确认这次修改';
   $('#confirm p').textContent=remove?'原文件会备份，可在操作记录中撤销。未保存草稿将丢弃。':'只修改当前选中的资源。保存前会保留原值。';
   $('#apply-confirm').textContent=remove?'确认删除':'确认并保存';
-  let before=current.value,after=value;
+  const displayBefore=current.display_value??current.value;
+  const displayAfter=proposal&&text(proposal.value)===text(value)?proposal.display_value??value:value;
+  let before=displayBefore,after=displayAfter;
   if(current.resource.startsWith('person:')&&!remove){
     before=[];after=[];
-    if(value['总体认知']!==current.value['总体认知']){before.push({总体认知:current.value['总体认知']});after.push({总体认知:value['总体认知']});}
+    if(value['总体认知']!==current.value['总体认知']){before.push({总体认知:displayBefore['总体认知']});after.push({总体认知:displayAfter['总体认知']});}
     const sessions=(inventory.people||[]).find(p=>p.resource===current.resource)?.sessions||[];
     for(const [scope,content] of Object.entries(value['会话印象'])){
       if(text(content)===text(current.value['会话印象'][scope]))continue;
       const name=sessions.find(s=>String(s.scope)===scope)?.name||'当前会话';
-      before.push({会话:name,印象:current.value['会话印象'][scope]});after.push({会话:name,印象:content});
+      before.push({会话:name,印象:displayBefore['会话印象'][scope]});after.push({会话:name,印象:displayAfter['会话印象'][scope]});
     }
     if(!after.length){status('内容没有变化');return;}
   }
@@ -223,7 +231,7 @@ async function suggest(){
   busy=true;$('#suggest').disabled=true;chat.push({role:'user',content:instruction});chat=chat.slice(-14);$('#instruction').value='';showChat();status('模型正在提出修改建议，尚未保存…');
   try{proposal=await api('/api/suggest',{resource:current.resource,revision:current.revision,chat,scope:current.resource.startsWith('person:')?personScope:null});chat.push({role:'assistant',content:JSON.stringify(proposal)});showChat();$('#review-proposal').hidden=false;status('建议已生成，查看前后差异后确认保存');}catch(e){status(e.message,true);}finally{busy=false;$('#suggest').disabled=false;}
 }
-function showChat(){$('#chat').innerHTML=chat.map(m=>{let content=m.content;if(m.role==='assistant'){try{content=JSON.parse(content).explanation;}catch{}}return `<p class="${m.role==='user'?'user':''}">${esc(content)}</p>`;}).join('');$('#chat').scrollTop=$('#chat').scrollHeight;}
+function showChat(){$('#chat').innerHTML=chat.map(m=>{let content=m.content;if(m.role==='assistant'){try{const parsed=JSON.parse(content);content=parsed.display_explanation??parsed.explanation;}catch{}}return `<p class="${m.role==='user'?'user':''}">${esc(content)}</p>`;}).join('');$('#chat').scrollTop=$('#chat').scrollHeight;}
 function renderMigration(){
   $('#content').innerHTML='<div class="two-columns"><section class="panel"><span class="badge">全部数据</span><h2>导出备份</h2><p>聊天与认知、群摘要、表情包、人设、提示词覆盖和 .env 配置，保存在一个普通 ZIP 中。</p><p class="note">备份含明文密钥。数据库快照包含 WAL 中已提交的记录；要求严格一致时，请先停止机器人。</p><button id="export">生成并下载备份 ↓</button></section><section class="panel"><span class="badge">同号合并</span><h2>导入数据</h2><p>先停止机器人进程，后台可以保持打开。导入前自动备份；不同 QQ 拒绝导入。</p><label class="field"><span>目标机器人 QQ（新部署必填）</span><input id="import-qq" inputmode="numeric" placeholder="目标账号"></label><label class="field"><span>迁移 ZIP（最大 512 MiB）</span><input id="import-file" type="file" accept=".zip"></label><button id="import">检查并合并</button><p class="note">已有配置优先，来源缺项补齐。失败回滚，命令行 recover 可恢复中断的导入。</p></section></div>';
   $('#export').onclick=async()=>{const b=$('#export');b.disabled=true;status('正在生成备份…');try{const response=await api('/api/export',{}, {blob:true});const blob=await response.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='qqbot-backup.zip';a.click();setTimeout(()=>URL.revokeObjectURL(url),10000);status('备份已生成，浏览器已开始下载；服务器 backups 目录也保留一份');}catch(e){status(e.message,true);}finally{b.disabled=false;}};
