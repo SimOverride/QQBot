@@ -16,7 +16,6 @@ from plugins.assistant import prompt_store
 from plugins.assistant.config import Config
 from plugins.assistant.llm import LLM
 from plugins.assistant.longterm import LongTermMemory
-from plugins.assistant.memory import Memory
 from plugins.assistant.prompts import system_prompt
 
 
@@ -309,7 +308,8 @@ class ConsoleTests(unittest.TestCase):
         self.archive.collect((123, 10, 20), 2, "新增消息", ["text"], 102)
         self.assertIsNotNone(self.store.proposal(person["resource"]))
         self.assertIsNotNone(self.store.proposal(group["resource"]))
-        self.save("message:1", {"content": "更正后的资料"})
+        with self.archive.db:
+            self.archive.db.execute("UPDATE messages SET content=? WHERE id=1", ("更正后的资料",))
         for old in (person, group):
             with self.assertRaisesRegex(ValueError, "重新载入"):
                 self.store.put(old["resource"], old["value"], old["revision"])
@@ -358,11 +358,11 @@ class ConsoleTests(unittest.TestCase):
         self.store.undo(change["id"])
         self.assertEqual(self.store.get(key)["value"], old["value"])
 
-    def test_message_updates_persistent_turn_and_memory(self):
-        memory = Memory(Config(), self.archive)
-        memory.save((123, 10, 20), "过期内存", "旧回答")
-        self.save("message:1", {"content": "喜欢绘画"})
-        self.assertEqual(memory.history((123, 10, 20))[0]["content"], "喜欢绘画")
+    def test_message_management_removed(self):
+        self.assertEqual(self.client.get("/api/messages").status_code, 404)
+        with self.assertRaisesRegex(ValueError, "不支持的资源"):
+            self.store.get("message:1")
+        self.assertTrue(self.store.messages())
 
     def test_model_suggestion_never_saves_without_confirmation(self):
         resource = "group:123:10"

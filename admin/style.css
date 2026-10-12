@@ -317,3 +317,5 @@ dialog h2{font-size:18px}
   .panel-body,.panel-title{padding:12px}
   header .quiet{font-size:11px;padding:8px 12px}
 }
+
+.settings-layout{display:grid;gap:18px}.settings-layout fieldset{border:1px solid var(--border);border-radius:8px;margin:18px 0;padding:18px;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}.settings-layout legend{padding:0 8px;color:#526d79}.settings-layout .field{margin:0}input[type="checkbox"]{width:auto;accent-color:var(--accent)}input[type="range"]{padding:0;accent-color:var(--accent)}output{font-size:13px;color:var(--accent);margin-left:8px}.plugin-manager{margin-top:24px;padding-top:20px;border-top:1px solid var(--border);overflow-x:auto}.plugin-details{display:block;font-size:10px;color:var(--text-2);margin-top:5px}.settings-layout table{margin:15px 0}

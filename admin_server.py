@@ -19,6 +19,7 @@ from starlette.concurrency import run_in_threadpool
 
 import migration
 from console_endpoint import HOST, PORT
+from console_settings import Settings
 from console_store import ConsoleStore
 from plugins.assistant.config import Config
 from plugins.assistant.history_tools import HistoryTools
@@ -47,6 +48,7 @@ def config_for(root):
 def create_app(root=ROOT):
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     store = ConsoleStore(root)
+    settings = Settings(root)
     token = secrets.token_urlsafe(32)
     ai_slot = asyncio.Semaphore(1)
     avatar_cache = {}
@@ -163,6 +165,49 @@ def create_app(root=ROOT):
                     raise HTTPException(404, "头像暂时不可用") from None
         return Response(cached[1], media_type=cached[2], headers={"Cache-Control": "max-age=300"})
 
+    @app.get("/api/settings")
+    def get_settings():
+        return settings.env()
+
+    @app.post("/api/settings")
+    async def save_settings(request: Request):
+        data = await body(request)
+        return await run_in_threadpool(
+            settings.save_env, data["values"], data.get("secrets", {}), data["revision"]
+        )
+
+    @app.get("/api/defaults")
+    def get_defaults():
+        return settings.defaults()
+
+    @app.post("/api/defaults")
+    async def save_defaults(request: Request):
+        data = await body(request)
+        return await run_in_threadpool(
+            settings.save_defaults, data["activity"], data["persona"], data["revision"]
+        )
+
+    @app.get("/api/plugins")
+    def get_plugins(bot: int | None = None, group: int | None = None):
+        return settings.plugins(bot, group)
+
+    @app.post("/api/plugins/switch")
+    async def switch_plugin(request: Request):
+        data = await body(request)
+        return await run_in_threadpool(
+            settings.switch,
+            data["bot"],
+            data["id"],
+            data["enabled"],
+            data["revision"],
+            data.get("group"),
+        )
+
+    @app.post("/api/plugins/delete")
+    async def delete_plugins(request: Request):
+        data = await body(request)
+        return await run_in_threadpool(settings.delete_plugins, data["items"], data["revision"])
+
     @app.get("/api/inventory")
     def inventory():
         return store.inventory()
@@ -175,12 +220,6 @@ def create_app(root=ROOT):
     async def save(request: Request):
         data = await body(request)
         return await run_in_threadpool(store.put, data["resource"], data["value"], data["revision"])
-
-    @app.get("/api/messages")
-    def messages(group: int | None = None, user: int | None = None, q: str = "", offset: int = 0):
-        if not 0 <= offset <= 1000000:
-            raise ValueError("分页位置无效")
-        return store.messages(group, user, q, offset)
 
     @app.post("/api/profiles")
     async def create_profile(request: Request):

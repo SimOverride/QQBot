@@ -108,6 +108,16 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         await self.commands.run(self.key, "/插件 本群 schedule 开启", self.admin)
         self.assertIn("没有有效", await self.confirm(proposal))
 
+    async def test_backend_toggle_invalidates_pending_confirmation(self):
+        from console_settings import Settings
+
+        proposal = await self.propose()
+        settings = Settings(self.root)
+        for enabled in (False, True):
+            settings.switch(123, "schedule", enabled, settings.plugins()["revision"], 10)
+        self.assertIn("未执行", await self.confirm(proposal))
+        self.assertEqual(self.jobs(), {})
+
     async def test_expired_and_past_time_not_created(self):
         proposal = await self.propose(at="2020-01-01 12:00")
         self.assertEqual(proposal["status"], "invalid_time")

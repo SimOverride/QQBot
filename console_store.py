@@ -121,6 +121,11 @@ class ConsoleStore:
                     raise ValueError("默认人格和风格不能删除")
                 settings_path = self.root / "group_chat.json"
                 settings = migration.read_json(settings_path) if settings_path.exists() else {}
+                if (
+                    kind == "persona"
+                    and settings.get("default_persona", "默认").casefold() == name.casefold()
+                ):
+                    raise ValueError("此人格是全局默认人格，请先切换默认人格")
                 if any(
                     g.get(kind, {}).get("name", "").casefold() == name.casefold()
                     for g in settings.get("groups", {}).values()
@@ -193,8 +198,6 @@ class ConsoleStore:
                 raise ValueError("仅支持群会话")
             migration.account(self.root, ids[0])
             return kind, ids
-        elif kind == "message":
-            return kind, int(key)
         else:
             raise ValueError("不支持的资源")
         return kind, key
@@ -231,13 +234,6 @@ class ConsoleStore:
                 extra["title"] = (
                     f"{display_name(db, *key, read_directory(self.root))} · QQ {key[1]}"
                 )
-        elif kind == "message":
-            with self.db() as db:
-                row = db.execute("SELECT * FROM messages WHERE id=?", (key,)).fetchone()
-            if row is None:
-                raise ValueError("消息不存在")
-            value = {"content": row["content"]}
-            extra["metadata"] = {k: row[k] for k in ("bot", "grp", "usr", "message_id", "created")}
         else:
             content_hash = migration.digest(key)
             db_path = key.parent / ".memory.sqlite3"
@@ -316,12 +312,10 @@ class ConsoleStore:
                 or len(value["description"].strip()) > 1200
             ):
                 raise ValueError("表情认知最多 1200 字；留空后可重新识别")
-        elif not isinstance(value["content"], str) or not 1 <= len(value["content"]) <= 20000:
-            raise ValueError("消息内容须为 1 至 20000 字")
 
     def put(self, resource, value, expected):
         """数据库资源的版本检查与修改共用写事务，避免后台提取抢写。"""
-        if self.resolve(resource)[0] not in ("person", "message"):
+        if self.resolve(resource)[0] != "person":
             return self._put(resource, value, expected)
         with self.db() as db, db:
             db.execute("BEGIN IMMEDIATE")
@@ -383,7 +377,9 @@ class ConsoleStore:
                 settings_path = self.root / "group_chat.json"
                 settings = migration.read_json(settings_path) if settings_path.exists() else {}
                 group = settings.setdefault("groups", {}).setdefault(str(key[1]), {})
-                group.update({f: value[f] for f in ("activity", "interests")})
+                if "activity" in group or value["activity"] != settings.get("default_activity", 50):
+                    group["activity"] = value["activity"]
+                group["interests"] = value["interests"]
                 for field in ("persona", "style"):
                     if value[field] == "默认":
                         group.pop(field, None)
@@ -395,100 +391,67 @@ class ConsoleStore:
             pending = key.with_suffix(".pending")
             pending.write_text(value, encoding="utf-8")
             pending.replace(key)
-        elif kind in ("person", "message"):
+        elif kind == "person":
             with self.db() as db, db:
                 if not db.in_transaction:
                     db.execute("BEGIN IMMEDIATE")
-                if kind == "person":
-                    bot, user = key
-                    # 只替换实际修改的段落，保留其他会话的来源与自动处理状态。
-                    previous, _ = person_value(db, *key)
+                bot, user = key
+                # 只替换实际修改的段落，保留其他会话的来源与自动处理状态。
+                previous, _ = person_value(db, *key)
 
-                    def layers(data):
-                        return {
-                            "0": {"总体认知": data["总体认知"]},
-                            **{
-                                g: v if int(g) > 0 else {"会话印象": v}
-                                for g, v in data["会话印象"].items()
-                            },
-                        }
+                def layers(data):
+                    return {
+                        "0": {"总体认知": data["总体认知"]},
+                        **{
+                            g: v if int(g) > 0 else {"会话印象": v}
+                            for g, v in data["会话印象"].items()
+                        },
+                    }
 
-                    old_layers = layers(previous)
-                    changed = set()
-                    for group, fields in layers(value).items():
-                        for field, content in fields.items():
-                            if old_layers[group][field] == content:
-                                continue
-                            changed.add(int(group))
-                            # 每项独立修正；其余分类保留来源与固定状态。
-                            rows = db.execute(
-                                "SELECT field FROM facts WHERE bot=? AND grp=? AND usr=?",
-                                (bot, int(group), user),
-                            ).fetchall()
-                            for row in rows:
-                                source_field = row["field"].split(":", 1)[0]
-                                target_field = (
-                                    source_field if source_field in GROUP_FIELDS else "补充认知"
-                                )
-                                if int(group) <= 0 or target_field == field:
-                                    db.execute(
-                                        "DELETE FROM facts WHERE bot=? AND grp=? "
-                                        "AND usr=? AND field=?",
-                                        (bot, int(group), user, row["field"]),
-                                    )
-                            db.execute(
-                                "INSERT INTO facts VALUES(?,?,?,?,?,?,NULL,?)",
-                                (
-                                    bot,
-                                    int(group),
-                                    user,
-                                    field,
-                                    content,
-                                    "后台维护者修正（固定）",
-                                    time.time(),
-                                ),
-                            )
-                    for row in db.execute(
-                        "SELECT grp,MAX(id) AS latest FROM messages WHERE bot=? AND usr=? "
-                        "GROUP BY grp",
-                        key,
-                    ).fetchall():
-                        if 0 not in changed and row["grp"] not in changed:
+                old_layers = layers(previous)
+                changed = set()
+                for group, fields in layers(value).items():
+                    for field, content in fields.items():
+                        if old_layers[group][field] == content:
                             continue
+                        changed.add(int(group))
+                        # 每项独立修正；其余分类保留来源与固定状态。
+                        rows = db.execute(
+                            "SELECT field FROM facts WHERE bot=? AND grp=? AND usr=?",
+                            (bot, int(group), user),
+                        ).fetchall()
+                        for row in rows:
+                            source_field = row["field"].split(":", 1)[0]
+                            target_field = (
+                                source_field if source_field in GROUP_FIELDS else "补充认知"
+                            )
+                            if int(group) <= 0 or target_field == field:
+                                db.execute(
+                                    "DELETE FROM facts WHERE bot=? AND grp=? AND usr=? AND field=?",
+                                    (bot, int(group), user, row["field"]),
+                                )
                         db.execute(
-                            "INSERT INTO profile_cursor VALUES(?,?,?,?) ON CONFLICT(bot,grp,usr) "
-                            "DO UPDATE SET last_id=MAX(last_id,excluded.last_id)",
-                            (bot, row["grp"], user, row["latest"]),
+                            "INSERT INTO facts VALUES(?,?,?,?,?,?,NULL,?)",
+                            (
+                                bot,
+                                int(group),
+                                user,
+                                field,
+                                content,
+                                "后台维护者修正（固定）",
+                                time.time(),
+                            ),
                         )
-                else:
-                    row = db.execute("SELECT * FROM messages WHERE id=?", (key,)).fetchone()
-                    db.execute("UPDATE messages SET content=? WHERE id=?", (value["content"], key))
-                    column = "answer" if row["usr"] == row["bot"] else "question"
-                    metadata = json.loads(row["metadata"] or "{}")
-                    msg = metadata.get("response_to") if column == "answer" else row["message_id"]
-                    if isinstance(msg, dict):
-                        msg = msg.get("message_id")
-                    db.execute(
-                        f"UPDATE turns SET {column}=? WHERE bot=? AND grp=? AND message_id=?",
-                        (value["content"], row["bot"], row["grp"], msg),
-                    )
-                    # 原文变更后不沿用旧认知依据和公开性审核，后续重新核验。
-                    db.execute("DELETE FROM facts WHERE source_id=?", (key,))
-                    db.execute(
-                        "INSERT INTO disclosure_reviews VALUES(?,0) "
-                        "ON CONFLICT(source_id) DO UPDATE SET safe=0",
-                        (key,),
-                    )
-                    # 推进游标，使尚在请求中的旧个人认知提取不能重新写回。
-                    scope = (row["bot"], row["grp"], row["usr"])
-                    latest = db.execute(
-                        "SELECT COALESCE(MAX(id),0) FROM messages WHERE bot=? AND grp=? AND usr=?",
-                        scope,
-                    ).fetchone()[0]
+                for row in db.execute(
+                    "SELECT grp,MAX(id) AS latest FROM messages WHERE bot=? AND usr=? GROUP BY grp",
+                    key,
+                ).fetchall():
+                    if 0 not in changed and row["grp"] not in changed:
+                        continue
                     db.execute(
                         "INSERT INTO profile_cursor VALUES(?,?,?,?) ON CONFLICT(bot,grp,usr) "
                         "DO UPDATE SET last_id=MAX(last_id,excluded.last_id)",
-                        (*scope, latest),
+                        (bot, row["grp"], user, row["latest"]),
                     )
         else:
             db = sqlite3.connect(key.parent / ".memory.sqlite3")

@@ -99,6 +99,7 @@ class Schedule:
             "plugin": self.id,
             "code": code,
             "expires": now + 300,
+            "switch_time": manager.store.switch_time(bot, self.id, group),
             "payload": payload,
             "preview": preview,
         }
@@ -135,8 +136,11 @@ class Schedule:
             return "没有有效的待确认操作，请重新提出请求。"
         if not args[1].isascii() or not secrets.compare_digest(args[1], pending["code"]):
             return "确认码不正确，未执行。"
-        if not manager.enabled(bot, group, self.id):
-            return "插件已停用，未执行。"
+        if pending.get("switch_time", 0) != manager.store.switch_time(
+            bot, self.id, group
+        ) or not manager.enabled(bot, group, self.id):
+            manager.pending.pop(session.key, None)
+            return "插件开关已变化，未执行，请重新提出请求。"
         value = manager.store.read()
         entry = manager.entry(bot, self.id, value)
         jobs = entry["data"].setdefault(str(group), {"jobs": {}})["jobs"]
@@ -205,6 +209,7 @@ class Schedule:
                         and due
                         >= max(
                             manager.started,
+                            manager.store.switch_time(bot_id, self.id, group),
                             manager.connected.get(bot_id, current),
                             manager.activated.get((int(bot_id), int(group), self.id), 0),
                         )

@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, PositiveFloat, PositiveInt, S
 
 
 class Config(BaseModel):
-    model_config = ConfigDict(hide_input_in_errors=True)
+    model_config = ConfigDict(hide_input_in_errors=True, allow_inf_nan=False)
     bot_owners: set[PositiveInt] = Field(default_factory=set)
     user_names: dict[PositiveInt, Annotated[str, Field(max_length=80)]] = Field(
         default_factory=dict,
@@ -14,6 +14,7 @@ class Config(BaseModel):
     proactive_share_enabled: bool = True
     memory_profile_min_messages: PositiveInt = 10
     llm_provider: Literal["deepseek", "openai"] = "deepseek"
+    llm_thinking_enabled: bool = False
     model_trace_enabled: bool = True
     model_trace_retention_days: int = Field(7, ge=1, le=365)
     task_max_concurrency: int = Field(2, ge=1, le=16)

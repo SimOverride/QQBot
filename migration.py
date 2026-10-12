@@ -569,6 +569,9 @@ def stage_merge(root, incoming, staged, qq, fresh):
     group = staged / "group_chat.json"
     if group.exists():
         config = read_json(group)
+        default = "personas/" + config.get("default_persona", "默认") + ".txt"
+        if default in renamed:
+            config["default_persona"] = renamed[default]
         for settings in config.get("groups", {}).values():
             for field, directory in (("persona", "personas"), ("style", "styles")):
                 selection = settings.get(field)

@@ -28,6 +28,8 @@ class GroupSettings:
         data = json.loads(self.path.read_text(encoding="utf-8-sig"))
         if not isinstance(data, dict) or not isinstance(data.get("groups", {}), dict):
             raise ValueError("群聊配置格式错误")
+        if not isinstance(data.get("default_persona", "默认"), str):
+            raise ValueError("默认人格名称无效")
         levels = [data.get("default_activity", 50)]
         for group, settings in data.get("groups", {}).items():
             if not group.isdigit() or int(group) <= 0 or not isinstance(settings, dict):
@@ -379,7 +381,8 @@ class GroupConversation:
                     "trigger_message_id": event.message_id,
                     "reply_focus": (
                         decision.get("reply_focus", "")[:600]
-                        if isinstance(decision.get("reply_focus"), str) else ""
+                        if isinstance(decision.get("reply_focus"), str)
+                        else ""
                     ),
                 },
                 ensure_ascii=False,

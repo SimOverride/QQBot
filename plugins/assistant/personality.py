@@ -20,8 +20,10 @@ class ProfileStore:
         if directory is None:
             return []
         return sorted(
-            path.stem for path in directory.glob("*.txt")
-            if path.is_file() and path.resolve().parent == directory.resolve()
+            path.stem
+            for path in directory.glob("*.txt")
+            if path.is_file()
+            and path.resolve().parent == directory.resolve()
             and path.stem != "默认"
         )
 
@@ -53,6 +55,10 @@ class ProfileStore:
                     f"允许范围为 1～{LIMITS[field]} 字符，请检查文件。"
                 )
             values[field] = value
+        if self.group_settings is not None:
+            default_persona = self.group_settings.read().get("default_persona", "默认")
+            if default_persona != "默认":
+                values["persona"] = self.read_selection("persona", default_persona)
         if group_id is not None and group_id > 0 and self.group_settings is not None:
             settings = self.group_settings.read().get("groups", {}).get(str(group_id), {})
             for field in LIMITS:

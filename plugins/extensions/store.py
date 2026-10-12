@@ -1,10 +1,14 @@
 """插件配置及群数据的原子存储与迁移校验。"""
 
+import hashlib
 import json
 import math
 import re
+import time
 import uuid
 from pathlib import Path
+
+import migration
 
 FILE = "data/plugins.json"
 
@@ -122,21 +126,70 @@ def preserve_progress(merged, incoming):
     return merged
 
 
+class Snapshot(dict):
+    """将读取版本绑定到该快照，避免后台与机器人互相覆盖。"""
+
+    def __init__(self, value, fingerprint):
+        super().__init__(value)
+        self.fingerprint = fingerprint
+
+
 class Store:
     def __init__(self, root):
         self.path = Path(root) / FILE
 
+    def fingerprint(self):
+        return hashlib.sha256(self.path.read_bytes() if self.path.exists() else b"").hexdigest()
+
     def read(self):
-        if not self.path.exists():
-            return {"version": 1, "bots": {}}
-        return validate(json.loads(self.path.read_text(encoding="utf-8")))
+        raw = self.path.read_bytes() if self.path.exists() else b""
+        value = validate(json.loads(raw)) if raw else {"version": 1, "bots": {}}
+        return Snapshot(value, hashlib.sha256(raw).hexdigest())
+
+    def switch_time(self, bot, name, group=None):
+        path = self.path.with_name("plugin-controls.json")
+        try:
+            controls = json.loads(path.read_text(encoding="utf-8"))
+            return max(controls.get(f"{bot}:{name}", 0), controls.get(f"{bot}:{name}:{group}", 0))
+        except (OSError, ValueError):
+            return 0
 
     def write(self, value):
         validate(value)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        pending = self.path.with_name(f".plugins-{uuid.uuid4().hex}.tmp")
-        try:
-            pending.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
-            pending.replace(self.path)
-        finally:
-            pending.unlink(missing_ok=True)
+        with migration.project_lock(self.path.parents[1], name=".plugins.lock"):
+            if isinstance(value, Snapshot) and value.fingerprint != self.fingerprint():
+                raise ValueError("插件数据已变化，请重新读取后重试")
+            previous = self.read()
+            controls_path = self.path.with_name("plugin-controls.json")
+            controls = (
+                json.loads(controls_path.read_text(encoding="utf-8"))
+                if controls_path.exists()
+                else {}
+            )
+            for bot, entries in value["bots"].items():
+                for name, entry in entries.items():
+                    old = previous["bots"].get(bot, {}).get(name, {})
+                    if old.get("enabled") != entry["enabled"]:
+                        controls[f"{bot}:{name}"] = time.time()
+                    for group in set(old.get("groups", {})) | set(entry["groups"]):
+                        if old.get("groups", {}).get(group) != entry["groups"].get(group):
+                            controls[f"{bot}:{name}:{group}"] = time.time()
+            installed = {
+                f"{bot}:{name}" for bot, entries in value["bots"].items() for name in entries
+            }
+            controls = {
+                k: v for k, v in controls.items() if ":".join(k.split(":")[:2]) in installed
+            }
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            pending = self.path.with_name(f".plugins-{uuid.uuid4().hex}.tmp")
+            try:
+                pending.write_text(json.dumps(controls), encoding="utf-8")
+                pending.replace(controls_path)
+                pending.write_text(
+                    json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+                pending.replace(self.path)
+                if isinstance(value, Snapshot):
+                    value.fingerprint = self.fingerprint()
+            finally:
+                pending.unlink(missing_ok=True)

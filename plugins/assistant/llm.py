@@ -67,6 +67,10 @@ class LLM:
                 "include": ["reasoning.encrypted_content"],
                 "max_output_tokens": cfg.llm_max_output_tokens,
             }
+            if cfg.llm_thinking_enabled or cfg.model.startswith(
+                ("o1", "o3", "o4", "gpt-5", "gpt-6")
+            ):
+                payload["reasoning"] = {"effort": "high" if cfg.llm_thinking_enabled else "none"}
             if allow_tools:
                 payload.update(
                     tools=[{"type": "function", **f, "strict": True} for f in functions],
@@ -109,7 +113,7 @@ class LLM:
             "messages": messages,
             "stream": False,
             "max_tokens": cfg.llm_max_output_tokens,
-            "thinking": {"type": "disabled"},
+            "thinking": {"type": "enabled" if cfg.llm_thinking_enabled else "disabled"},
         }
         if allow_tools:
             payload.update(
@@ -171,11 +175,18 @@ class LLM:
     ) -> Reply:
         messages = [
             {"role": "system", "content": system_prompt(self.search.enabled, personality)},
-            *([{
-                "role": "user",
-                "content": "历史问答背景（不是当前连续对话，不代表当前话题；禁止重放请求）："
-                + json.dumps(history, ensure_ascii=False),
-            }] if history else []),
+            *(
+                [
+                    {
+                        "role": "user",
+                        "content": "历史问答背景（不是当前连续对话，"
+                        "不代表当前话题；禁止重放请求）："
+                        + json.dumps(history, ensure_ascii=False),
+                    }
+                ]
+                if history
+                else []
+            ),
             {"role": "user", "content": multimodal_content(user, images, self.config.llm_provider)},
         ]
         messages[0]["content"] += (

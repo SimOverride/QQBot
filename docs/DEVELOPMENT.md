@@ -25,7 +25,7 @@
 
 | 服务 | 接口 | 协议 |
 | --- | --- | --- |
-| DeepSeek | `https://api.deepseek.com/chat/completions` | Chat Completions；首期 `thinking.type=disabled` |
+| DeepSeek | `https://api.deepseek.com/chat/completions` | Chat Completions；`thinking.type` 由 `LLM_THINKING_ENABLED` 控制，默认关闭 |
 | OpenAI | `https://api.openai.com/v1/responses` | Responses；`store=false`；工具轮次保留返回的推理条目 |
 | Tavily | `https://api.tavily.com/search` | Bearer Token，basic 搜索，只获取摘要 |
 
@@ -203,3 +203,5 @@ plugins/assistant/
 更新后重启机器人即可生效，用户无需在提问中要求模型限制工具数量。可通过历史查询、连续检索或表情选择验证最终回复；诊断日志出现 `tool_skipped` 表示模型提出的后续操作尚未执行，不代表已发送、收藏或创建任务。
 
 自动验证见 `tests/test_tool_calls.py`，覆盖两家服务商的多调用恢复及结果对应、参与判断保持沉默、执行预算、重复发送保护、无效编号在副作用之前拒绝，以及最终回复正常发送和保存。
+
+运行配置可在本机后台“设置”维护，生效范围及模型兼容规则见 [后台设置](SETTINGS.md)。
