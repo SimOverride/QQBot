@@ -3,6 +3,7 @@
 import asyncio
 
 from .emotes import tool
+from .shares import share_text
 
 FORWARD_FUNCTION = tool(
     "read_forward",
@@ -71,6 +72,8 @@ class ForwardReader:
                         parts.append("[引用消息ID=" + str(value.get("id", ""))[:80] + "]")
                     elif kind == "forward":
                         parts.append("[合并转发ID=" + str(value.get("id", ""))[:256] + "]")
+                    elif kind in ("json", "xml", "music"):
+                        parts.append(share_text(seg) or "[非文本内容，未读取]")
                     else:
                         parts.append("[非文本内容，未读取]")
                 full = "".join(parts) if segments else str(content)

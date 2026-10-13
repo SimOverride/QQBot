@@ -14,10 +14,12 @@ from .emotes import EMOTE_FUNCTIONS
 from .forward import FORWARD_FUNCTION
 from .history_tools import HISTORY_FUNCTION, SEND_GROUP_FUNCTION
 from .http import ServiceError, post_json
+from .knowledge import GLOBAL_FIELDS, SCENE_FIELDS
 from .names import for_request
 from .prompt_store import prompt_text, refresh_tools
 from .prompts import SEARCH_FUNCTION, system_prompt
 from .search import Search, SearchResult
+from .shares import SHARE_FUNCTION
 from .trace import emit, scoped
 from .vision import multimodal_content
 
@@ -36,7 +38,10 @@ class LLM:
         self.client, self.config, self.search = client, config, search
 
     @scoped("model")
-    async def step(self, messages: list[dict], allow_tools: bool, request_id: str, functions=None):
+    async def step(
+        self, messages: list[dict], allow_tools: bool, request_id: str, functions=None,
+        *, json_mode=False, output_tokens=None, thinking=None,
+    ):
         if self.config.model_trace_enabled:
             emit(
                 self.config,
@@ -52,15 +57,23 @@ class LLM:
                 ]
                 if allow_tools
                 else [],
-                max_output_tokens=self.config.llm_max_output_tokens,
+                max_output_tokens=output_tokens or self.config.llm_max_output_tokens,
             )
-        text, calls, output = await self._step(messages, allow_tools, request_id, functions)
+        text, calls, output = await self._step(
+            messages, allow_tools, request_id, functions,
+            json_mode=json_mode, output_tokens=output_tokens, thinking=thinking,
+        )
         emit(self.config, "model_output", request_id=request_id, text=text, calls=calls)
         return text, calls, output
 
-    async def _step(self, messages, allow_tools, request_id, functions=None):
+    async def _step(
+        self, messages, allow_tools, request_id, functions=None,
+        *, json_mode=False, output_tokens=None, thinking=None,
+    ):
         functions = refresh_tools(functions if functions is not None else [SEARCH_FUNCTION])
         cfg = self.config
+        thinking = cfg.llm_thinking_enabled if thinking is None else thinking
+        output_tokens = output_tokens or cfg.llm_max_output_tokens
         must_remember = len(functions) == 1 and functions[0]["name"] == "remember_emotes"
         if cfg.llm_provider == "openai":
             payload = {
@@ -68,12 +81,14 @@ class LLM:
                 "input": messages,
                 "store": False,
                 "include": ["reasoning.encrypted_content"],
-                "max_output_tokens": cfg.llm_max_output_tokens,
+                "max_output_tokens": output_tokens,
             }
-            if cfg.llm_thinking_enabled or cfg.model.startswith(
+            if json_mode:
+                payload["text"] = {"format": {"type": "json_object"}}
+            if thinking or cfg.model.startswith(
                 ("o1", "o3", "o4", "gpt-5", "gpt-6")
             ):
-                payload["reasoning"] = {"effort": "high" if cfg.llm_thinking_enabled else "none"}
+                payload["reasoning"] = {"effort": "high" if thinking else "none"}
             if allow_tools:
                 payload.update(
                     tools=[{"type": "function", **f, "strict": True} for f in functions],
@@ -115,9 +130,11 @@ class LLM:
             "model": cfg.model,
             "messages": messages,
             "stream": False,
-            "max_tokens": cfg.llm_max_output_tokens,
-            "thinking": {"type": "enabled" if cfg.llm_thinking_enabled else "disabled"},
+            "max_tokens": output_tokens,
+            "thinking": {"type": "enabled" if thinking else "disabled"},
         }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
         if allow_tools:
             payload.update(
                 tools=[{"type": "function", "function": f} for f in functions],
@@ -412,6 +429,8 @@ class LLM:
                 messages[0]["content"] += prompt_text("llm.images.0")
         extensions = getattr(history_tools, "extensions", None)
         tasks = getattr(history_tools, "tasks", None)
+        shares = getattr(history_tools, "shares", None)
+        share_rules_added = False
         if not planning and tasks is not None and tasks.functions() and messages:
             messages[0]["content"] += prompt_text("llm.tasks.0")
             messages[0]["content"] += prompt_text("llm.task_reply.0")
@@ -426,12 +445,17 @@ class LLM:
 
         for used in range(self.config.history_max_calls + 1):
             check_current()
+            if shares is not None and shares.allowed and not share_rules_added:
+                messages[0]["content"] += prompt_text("llm.shares.0")
+                share_rules_added = True
             functions = [HISTORY_FUNCTION]
             if (
                 getattr(history_tools, "forward", None) is not None
                 and history_tools.forward.allowed
             ):
                 functions.append(FORWARD_FUNCTION)
+            if shares is not None and shares.allowed:
+                functions.append(SHARE_FUNCTION)
             extension_names = set()
             if not planning and tasks is not None:
                 functions.extend(tasks.functions())
@@ -517,8 +541,16 @@ class LLM:
                     result = await extensions.execute(name, args)
                 elif name == "read_forward":
                     result = await history_tools.forward.run(args)
+                    if shares is not None:
+                        for row in result.get("messages", []):
+                            shares.register_text(row.get("text", ""))
+                elif name == "read_share":
+                    result = await shares.run(args)
                 elif name == "read_history":
                     result = history_tools.run(args)
+                    if shares is not None:
+                        for row in result.get("messages", []):
+                            shares.register_text(row.get("text", ""), row.get("message_id"))
                 elif name == "emote_candidates":
                     if args != {}:
                         raise ValueError
@@ -936,19 +968,54 @@ class LLM:
         messages = [
             {
                 "role": "system",
-                "content": (prompt_text("llm.extract_facts.0")),
+                "content": prompt_text("llm.extract_facts.0") + (
+                    '\n输出协议固定为 JSON 对象 {"facts":[]}，只填写 facts 数组。'
+                    "最多6项，每项仅含field、value、evidence；不输出推理、解释或重复项。"
+                    "value最多160字，evidence是输入中连续的2至200字原文。"
+                    "没有合适的信息就输出空数组，不补造内容。"
+                ),
             },
             {"role": "user", "content": text},
         ]
-        content, calls, _ = await self.step(messages, False, request_id)
+        content, calls, _ = await self.step(
+            messages, False, request_id, json_mode=True,
+            output_tokens=self.config.memory_profile_output_tokens, thinking=False,
+        )
         if calls:
             raise ServiceError("认知提取格式无效。")
         try:
             content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content.strip())
-            updates = json.loads(content)
-            if not isinstance(updates, list):
+            value = json.loads(content)
+            if not isinstance(value, dict) or set(value) != {"facts"}:
                 raise ValueError
-            return updates
+            updates = value["facts"]
+            if not isinstance(updates, list) or len(updates) > 6:
+                raise ValueError
+            fragments = set()
+            verified = []
+            for item in updates:
+                if not isinstance(item, dict) or set(item) != {"field", "value", "evidence"}:
+                    continue
+                field, description, evidence = (item[k] for k in ("field", "value", "evidence"))
+                if (
+                    not isinstance(field, str) or field not in (*GLOBAL_FIELDS, *SCENE_FIELDS)
+                    or not isinstance(description, str) or not 1 <= len(description.strip()) <= 160
+                    or not isinstance(evidence, str) or not 2 <= len(evidence) <= 200
+                    or evidence not in text
+                ):
+                    continue
+                fragment = (field, evidence)
+                if fragment in fragments:
+                    continue
+                fragments.add(fragment)
+                verified.append(item)
+            if updates and not verified:
+                raise ValueError
+            emit(
+                self.config, "facts_verified", accepted=len(verified),
+                rejected=len(updates) - len(verified),
+            )
+            return verified
         except ValueError:
             raise ServiceError("认知提取格式无效。") from None
 

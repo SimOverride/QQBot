@@ -14,6 +14,7 @@ from .history_tools import HistoryTools
 from .message_context import event_metadata
 from .personality import LIMITS
 from .prompt_store import group_knowledge
+from .shares import ShareReader, message_text
 from .trace import emit, scoped
 from .vision import image_segments
 
@@ -309,7 +310,7 @@ class GroupConversation:
             quoted = {
                 "message_id": getattr(referenced, "message_id", None),
                 "qq": getattr(getattr(referenced, "sender", None), "user_id", None),
-                "text": quoted_message.extract_plain_text()[:400] if quoted_message else "",
+                "text": message_text(quoted_message)[:1600] if quoted_message else "",
             }
             context.append({"trigger_message_id": event.message_id, "quoted_message": quoted})
         planner_tools = HistoryTools(
@@ -322,8 +323,13 @@ class GroupConversation:
         )
         planner_tools.emotes = self.service.emotes
         planner_tools.forward = ForwardReader(bot, event)
+        planner_tools.shares = ShareReader(event)
+        for row in context:
+            if isinstance(row.get("text"), str):
+                planner_tools.shares.register_text(row["text"], row.get("message_id"))
         for item in events:
             planner_tools.forward.register(getattr(item, "original_message", []), 0)
+            planner_tools.shares.register_event(item)
         decision = {}
         if not text.lstrip().startswith("/"):
             try:

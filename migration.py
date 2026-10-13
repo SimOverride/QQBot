@@ -28,6 +28,7 @@ TABLES = {
     "turns",
     "facts",
     "profile_cursor",
+    "profile_retry",
     "disclosure_reviews",
     "share_attempts",
     "directed_sends",
@@ -418,6 +419,29 @@ def merge_memory(local, incoming, output):
                     db, "profile_cursor", dict(zip(("bot", "grp", "usr", "last_id"), (*key, last)))
                 )
             maps = [{old: new_ids[key] for old, key in keys.items()} for keys in old_keys]
+            # 仅保留与合并后游标、批次原文相符的预算；原文变化视为新批次。
+            retries = set()
+            for index, source in enumerate(sources):
+                for original in source["profile_retry"]:
+                    key = tuple(original[k] for k in ("bot", "grp", "usr"))
+                    if key in retries:
+                        continue
+                    cursor = maps[index].get(original["cursor"], 0)
+                    last = maps[index].get(original["last_id"])
+                    if last is None or archive.cursor(key) != cursor:
+                        continue
+                    row = dict(original, cursor=cursor, last_id=last)
+                    insert(db, "profile_retry", row)
+                    text, last_id = archive.pending_text(key)
+                    if (
+                        last_id != last
+                        or hashlib.sha256(text.encode()).hexdigest() != row["fingerprint"]
+                    ):
+                        db.execute(
+                            "DELETE FROM profile_retry WHERE bot=? AND grp=? AND usr=?", key
+                        )
+                        continue
+                    retries.add(key)
             # 认知选择更新时间较新的记录；相同时间保留本地。审核冲突从严拒绝公开。
             for table, keys in [
                 ("turns", ("bot", "grp", "message_id")),

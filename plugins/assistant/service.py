@@ -335,25 +335,33 @@ class Assistant:
         for key in self.archive.candidates():
             if key[1] <= 0 and key[1] != -key[2]:
                 continue
+            attempt_id = None
             try:
                 async with self.memory.locked(key):
                     text, last_id = self.archive.pending_text(key)
                     cursor = self.archive.cursor(key)
-                updates = []
-                if text:
-                    async with self.limits.slot():
-                        async with asyncio.timeout(self.config.llm_timeout_seconds):
-                            updates = await self.llm.extract_facts(text, uuid.uuid4().hex[:12])
+                    if not text:
+                        self.archive.advance(key, last_id)
+                        continue
+                async with self.limits.slot():
+                    async with self.memory.locked(key):
+                        if self.archive.pending_text(key) != (text, last_id):
+                            continue
+                        attempt_id = self.archive.claim_profile(key, cursor, last_id, text)
+                        if attempt_id is None:
+                            continue
+                    async with asyncio.timeout(self.config.llm_timeout_seconds):
+                        updates = await self.llm.extract_facts(text, uuid.uuid4().hex[:12])
                 async with self.memory.locked(key):
                     # Never recreate deleted/corrected facts from an in-flight extraction.
-                    if self.archive.cursor(key) != cursor or not self.archive.source_exists(
-                        key, last_id
-                    ):
+                    if not self.archive.profile_current(key, attempt_id):
                         continue
                     if text:
                         self.archive.update_facts(key, last_id, text, updates)
                     self.archive.advance(key, last_id)
             except Exception as error:
+                if attempt_id is not None:
+                    self.archive.fail_profile(key, attempt_id, type(error).__name__)
                 logger.warning("profile_refresh_failure={}", type(error).__name__)
         if self.consolidation:
 

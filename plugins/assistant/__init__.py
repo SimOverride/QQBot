@@ -24,6 +24,7 @@ from .personality import ProfileStore
 from .runtime import Runtime
 from .search import Search
 from .service import Assistant
+from .shares import ShareReader, share_text
 from .sharing import Sharing
 from .vision import Vision
 
@@ -55,6 +56,8 @@ def extract_text(bot: Bot, event: GroupMessageEvent | PrivateMessageEvent, names
             parts.append(f" @{seg.data.get('qq')} ")
         elif seg.type == "image":
             parts.append(" [图片] ")
+        elif seg.type in ("json", "xml", "music"):
+            parts.append(share_text(seg) or " [非文本内容] ")
         elif seg.type not in ("at", "reply"):
             parts.append(" [非文本内容] ")
     text = "".join(parts)
@@ -403,6 +406,7 @@ def setup() -> None:
         from .forward import ForwardReader
 
         history_tools.forward = ForwardReader(bot, event)
+        history_tools.shares = ShareReader(event)
         await service.handle(
             bot_id,
             scope,

@@ -1,4 +1,6 @@
-"""Platform message attribution shared by archival and model contexts."""
+"""归档与模型上下文共用消息归属和引用资料。"""
+
+from .shares import message_text
 
 
 def event_metadata(event):
@@ -28,7 +30,7 @@ def event_metadata(event):
             "sender_name": (
                 getattr(quoted_sender, "card", None) or getattr(quoted_sender, "nickname", None)
             ),
-            "text": quoted_message.extract_plain_text()[:400] if quoted_message else None,
+            "text": message_text(quoted_message)[:1600] if quoted_message else None,
         }
         if reply is not None or reply_id is not None
         else None,

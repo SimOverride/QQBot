@@ -44,6 +44,7 @@ class HistoryTools:
         self.send_attempted = False
         self.emotes = None
         self.forward = None
+        self.shares = None
         self.extensions = None
         self.collector = None
         self.selected_emote = None

@@ -197,7 +197,7 @@ class LongTermTests(unittest.IsolatedAsyncioTestCase):
     async def test_extractor_json_validation(self):
         llm = LLM(None, self.config, None)
         llm.step = AsyncMock(return_value=(
-            '[{"field":"总体认知","value":"小明","evidence":"我叫小明"}]', [], []))
+            '{"facts":[{"field":"总体认知","value":"小明","evidence":"我叫小明"}]}', [], []))
         self.assertEqual((await llm.extract_facts("我叫小明", "test"))[0]["field"], "总体认知")
         self.assertFalse(llm.step.call_args.args[1])
         llm.step.return_value = ('{"invalid":1}', [], [])

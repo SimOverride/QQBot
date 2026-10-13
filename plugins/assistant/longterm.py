@@ -5,6 +5,7 @@ import json
 import re
 import sqlite3
 import time
+import uuid
 from pathlib import Path
 
 from .config import Config
@@ -13,6 +14,8 @@ from .prompt_store import group_knowledge
 from .trace import emit
 
 FACT_FIELDS = set(GLOBAL_FIELDS) | set(SCENE_FIELDS)
+PROFILE_RETRY_DELAYS = (300, 1800)
+PROFILE_MAX_ATTEMPTS = 3
 
 
 class LongTermMemory:
@@ -63,6 +66,13 @@ class LongTermMemory:
             CREATE TABLE IF NOT EXISTS profile_cursor (
                 bot INTEGER NOT NULL, grp INTEGER NOT NULL, usr INTEGER NOT NULL,
                 last_id INTEGER NOT NULL,
+                PRIMARY KEY(bot,grp,usr)
+            );
+            CREATE TABLE IF NOT EXISTS profile_retry (
+                bot INTEGER NOT NULL, grp INTEGER NOT NULL, usr INTEGER NOT NULL,
+                cursor INTEGER NOT NULL, last_id INTEGER NOT NULL,
+                fingerprint TEXT NOT NULL, attempts INTEGER NOT NULL,
+                retry_at REAL NOT NULL, attempt_id TEXT NOT NULL, error_type TEXT NOT NULL,
                 PRIMARY KEY(bot,grp,usr)
             );
         """)
@@ -164,9 +174,12 @@ class LongTermMemory:
             for row in self.db.execute(
                 "SELECT m.bot,m.grp,m.usr FROM messages m LEFT JOIN profile_cursor c "
                 "ON m.bot=c.bot AND m.grp=c.grp AND m.usr=c.usr "
+                "LEFT JOIN profile_retry r ON m.bot=r.bot AND m.grp=r.grp AND m.usr=r.usr "
                 "WHERE m.id>COALESCE(c.last_id,0) AND m.usr<>m.bot "
+                "AND (r.bot IS NULL OR r.cursor<>COALESCE(c.last_id,0) "
+                "OR (r.attempts<? AND r.retry_at<=?)) "
                 "GROUP BY m.bot,m.grp,m.usr HAVING COUNT(*)>=? ORDER BY MIN(m.id) LIMIT 2",
-                (self.config.memory_profile_min_messages,),
+                (PROFILE_MAX_ATTEMPTS, time.time(), self.config.memory_profile_min_messages),
             )
         ]
 
@@ -176,10 +189,13 @@ class LongTermMemory:
             key,
         ).fetchone()
         cursor = row[0] if row else 0
+        retry = self.profile_retry(key)
+        # 失败批次固定终点，新增发言不会重置预算或不断扩大失败请求。
+        ceiling = retry["last_id"] if retry and retry["cursor"] == cursor else 2**63 - 1
         rows = self.db.execute(
-            "SELECT id,content FROM messages WHERE bot=? AND grp=? AND usr=? AND id>? "
+            "SELECT id,content FROM messages WHERE bot=? AND grp=? AND usr=? AND id>? AND id<=? "
             "ORDER BY id LIMIT 20",
-            (*key, cursor),
+            (*key, cursor, ceiling),
         ).fetchall()
         texts, size, last = [], 0, cursor
         for row in rows:
@@ -195,6 +211,66 @@ class LongTermMemory:
             size += len(content)
         return "\n".join(texts), last
 
+    def profile_retry(self, key):
+        """读取持久重试状态，不含消息正文。"""
+        return self.db.execute(
+            "SELECT * FROM profile_retry WHERE bot=? AND grp=? AND usr=?", key
+        ).fetchone()
+
+    def claim_profile(self, key, cursor, last_id, text):
+        """实际发起请求前占用一次预算；重启和并发刷新不能重复占用。"""
+        if self.cursor(key) != cursor or not self.source_exists(key, last_id):
+            return None
+        now = time.time()
+        fingerprint = hashlib.sha256(text.encode()).hexdigest()
+        previous = self.profile_retry(key)
+        attempts = 0
+        if previous and previous["cursor"] == cursor and previous["fingerprint"] == fingerprint:
+            if previous["attempts"] >= PROFILE_MAX_ATTEMPTS or previous["retry_at"] > now:
+                return None
+            attempts = previous["attempts"]
+        attempt_id = uuid.uuid4().hex
+        retry_at = now + max(300, self.config.llm_timeout_seconds + 60)
+        with self.db:
+            self.db.execute(
+                "INSERT OR REPLACE INTO profile_retry VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (*key, cursor, last_id, fingerprint, attempts + 1, retry_at, attempt_id, ""),
+            )
+        return attempt_id
+
+    def profile_current(self, key, attempt_id):
+        """只接受当前批次结果，人工重试或清空后旧请求不得写回。"""
+        row = self.profile_retry(key)
+        if row is None or row["attempt_id"] != attempt_id or self.cursor(key) != row["cursor"]:
+            return False
+        text, last_id = self.pending_text(key)
+        return (
+            last_id == row["last_id"]
+            and hashlib.sha256(text.encode()).hexdigest() == row["fingerprint"]
+        )
+
+    def fail_profile(self, key, attempt_id, error_type):
+        """首次失败五分钟、再次失败三十分钟后重试，第三次暂停等待维护。"""
+        if not self.profile_current(key, attempt_id):
+            return
+        row = self.profile_retry(key)
+        retry_at = (
+            time.time() + PROFILE_RETRY_DELAYS[row["attempts"] - 1]
+            if row["attempts"] < PROFILE_MAX_ATTEMPTS else 0
+        )
+        with self.db:
+            self.db.execute(
+                "UPDATE profile_retry SET retry_at=?,error_type=? "
+                "WHERE bot=? AND grp=? AND usr=? AND attempt_id=?",
+                (retry_at, error_type, *key, attempt_id),
+            )
+        emit(
+            self.config, "profile_retry", bot=key[0], group=key[1], user=key[2],
+            batch_end=row["last_id"], attempts=row["attempts"],
+            retry_at=retry_at, suspended=row["attempts"] >= PROFILE_MAX_ATTEMPTS,
+            error_type=error_type,
+        )
+
     def advance(self, key: tuple, last_id: int):
         with self.db:
             self.db.execute(
@@ -202,6 +278,7 @@ class LongTermMemory:
                 "DO UPDATE SET last_id=MAX(last_id,excluded.last_id)",
                 (*key, last_id),
             )
+            self.db.execute("DELETE FROM profile_retry WHERE bot=? AND grp=? AND usr=?", key)
 
     def seen(self, bot: int, group: int, message_id: int) -> bool:
         return (
@@ -545,7 +622,7 @@ class LongTermMemory:
                 f"DELETE FROM facts WHERE source_id IN (SELECT id FROM messages WHERE {clause})",
                 values,
             )
-            for table in ("turns", "facts", "messages", "profile_cursor"):
+            for table in ("turns", "facts", "messages", "profile_cursor", "profile_retry"):
                 target_clause, target_values = clause, values
                 if table == "messages" and user is not None:
                     target_clause = clause.replace("usr=?", "(usr=? OR related_usr=?)")
