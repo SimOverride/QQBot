@@ -134,7 +134,7 @@ async function selectResource(id,scope='general'){
     document.querySelectorAll('[data-id]').forEach(b=>b.classList.toggle('selected',b.dataset.id===id&&(!b.dataset.scope||b.dataset.scope===personScope)));
     document.querySelectorAll('[data-person]').forEach(el=>{el.hidden=el.dataset.person!==id;});
     if($('#instruction')){$('#instruction').disabled=false;$('#suggest').disabled=false;$('#chat').textContent='';$('#review-proposal').hidden=true;}
-    const savedProposal=await api('/api/knowledge-proposal?resource='+encodeURIComponent(id));if(version!==selectionVersion)return;proposal=savedProposal;if(proposal&&proposal.scope&&proposal.scope!==personScope)proposal=null;if(proposal){chat=[{role:'assistant',content:JSON.stringify(proposal)}];showChat();$('#review-proposal').hidden=false;}status(proposal?'已载入认知整理建议，查看差异后确认保存':'已载入保存版本');
+    const savedProposal=await api('/api/knowledge-proposal?resource='+encodeURIComponent(id));if(version!==selectionVersion)return;proposal=savedProposal||current.proposal||null;if(proposal&&proposal.scope&&proposal.scope!==personScope)proposal=null;if(proposal){chat=[{role:'assistant',content:JSON.stringify(proposal)}];showChat();$('#review-proposal').hidden=false;}status(proposal?'已载入修改建议，查看差异后确认保存':'已载入保存版本');
   }catch(e){if(version===selectionVersion)status(e.message,true);}
 }
 function showSelection(){

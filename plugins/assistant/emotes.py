@@ -2,8 +2,10 @@
 
 import base64
 import hashlib
+import re
 import sqlite3
 import time
+import uuid
 from contextlib import closing
 from pathlib import Path
 
@@ -26,6 +28,11 @@ def tool(name, description, properties):
 
 
 EMOTE_FUNCTIONS = [
+    tool(
+        "inspect_emote",
+        "重新查看本轮已检索表情的原图，含义不确定时使用；已有描述的修正仅提交建议。",
+        {"id": {"type": "string"}},
+    ),
     tool(
         "list_emotes",
         "查询你可发送的本地表情包库，按画面、文字、情绪检索；query为空时浏览图库，"
@@ -70,6 +77,60 @@ class Emotes:
                 "CREATE TABLE IF NOT EXISTS emote_memory ("
                 "digest TEXT PRIMARY KEY, description TEXT NOT NULL, updated REAL NOT NULL)"
             )
+
+    def setup_metadata(self, db):
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS emote_usage (id TEXT PRIMARY KEY, "
+            "bot INTEGER NOT NULL, scope INTEGER NOT NULL, digest TEXT NOT NULL, "
+            "created REAL NOT NULL)"
+        )
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS emote_proposals (digest TEXT PRIMARY KEY, "
+            "original TEXT NOT NULL, description TEXT NOT NULL, updated REAL NOT NULL)"
+        )
+
+    def record_sent(self, name, bot, scope):
+        """仅成功发送后记录；事件编号使迁移重复导入保持幂等。"""
+        with closing(sqlite3.connect(self.memory_path)) as db, db:
+            self.setup_metadata(db)
+            db.execute(
+                "INSERT INTO emote_usage VALUES(?,?,?,?,?)",
+                (uuid.uuid4().hex, bot, scope, self.digest(name), time.time()),
+            )
+
+    def usage(self, bot, scope):
+        with closing(sqlite3.connect(self.memory_path)) as db:
+            self.setup_metadata(db)
+            return {
+                r[0]: {"use_count": r[1], "last_used": r[2]}
+                for r in db.execute(
+                    "SELECT digest,COUNT(*),MAX(created) FROM emote_usage "
+                    "WHERE bot=? AND scope=? GROUP BY digest",
+                    (bot, scope),
+                )
+            }
+
+    @staticmethod
+    def score(query, text):
+        """组合关键词与常见情绪同义词匹配。"""
+        groups = (
+            "无语 无奈 汗 失语",
+            "开心 高兴 快乐 大笑",
+            "赞同 同意 支持 点头",
+            "晚安 睡觉 告别 再见",
+            "难过 伤心 哭 委屈",
+            "惊讶 震惊 吃惊",
+        )
+        score = 0
+        for term in re.findall(r"[\w]+", query.casefold()):
+            choices = {term}
+            for group in groups:
+                if term in group.split():
+                    choices.update(group.split())
+            score += max(
+                (4 if w == term else 2 for w in choices if w in text.casefold()), default=0
+            )
+        return score
 
     def import_image(self, data, suffix, description, source):
         from .emote_collect import image_data
@@ -131,7 +192,7 @@ class Emotes:
             ).fetchone()
         return row[0] if row else None
 
-    def remember(self, items, expected):
+    def remember(self, items, expected, descriptions=None):
         if not isinstance(items, list) or not items or len(items) > 3:
             raise ServiceError("表情记忆参数无效。")
         writes, seen = [], set()
@@ -152,12 +213,26 @@ class Emotes:
             seen.add(name)
             writes.append((digest, item["description"].strip(), time.time()))
         with closing(sqlite3.connect(self.memory_path)) as db, db:
-            db.executemany(
-                "INSERT INTO emote_memory VALUES(?,?,?) "
-                "ON CONFLICT(digest) DO UPDATE SET description=excluded.description, "
-                "updated=excluded.updated",
-                writes,
-            )
+            self.setup_metadata(db)
+            for digest, description, stamp in writes:
+                old = db.execute(
+                    "SELECT description FROM emote_memory WHERE digest=?", (digest,)
+                ).fetchone()
+                if descriptions is not None and digest in descriptions:
+                    if (old[0] if old else None) != descriptions[digest]:
+                        raise ServiceError("表情描述已被修改，请重新查看后再提出建议")
+                if old:
+                    if old[0] != description:
+                        db.execute(
+                            "INSERT INTO emote_proposals VALUES(?,?,?,?) ON CONFLICT(digest) "
+                            "DO UPDATE SET original=excluded.original,"
+                            "description=excluded.description,updated=excluded.updated",
+                            (digest, old[0], description, stamp),
+                        )
+                else:
+                    db.execute(
+                        "INSERT INTO emote_memory VALUES(?,?,?)", (digest, description, stamp)
+                    )
         return seen
 
     def files(self):
@@ -180,7 +255,7 @@ class Emotes:
             result[path.name] = path
         return result
 
-    def list(self, args):
+    def list(self, args, bot=0, scope=0):
         if (
             not isinstance(args, dict)
             or set(args) != {"query", "offset"}
@@ -191,6 +266,7 @@ class Emotes:
         ):
             return {"status": "invalid_arguments"}
         known, unknown = [], []
+        usage = self.usage(bot, scope)
         query = args["query"].casefold()
         for name in self.files():
             try:
@@ -203,11 +279,16 @@ class Emotes:
                 "digest": digest,
                 "description": description or "尚未识别",
                 "memory_status": "known" if description else "unknown",
+                **usage.get(digest, {"use_count": 0, "last_used": 0}),
+                "score": self.score(query, name + " " + (description or "")),
             }
-            if not query or query in (name + " " + (description or "")).casefold():
+            if not query or item["score"] > 0:
                 known.append(item)
             elif description is None:
                 unknown.append(item)
+        known.sort(
+            key=lambda x: (-x["score"], x["last_used"] > time.time() - 600, x["use_count"], x["id"])
+        )
         rows = known or unknown
         start = args["offset"]
         return {

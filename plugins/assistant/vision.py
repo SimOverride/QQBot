@@ -61,11 +61,16 @@ class Vision:
             if not url:
                 failed += 1
                 continue
+            source_id = (
+                getattr(getattr(event, "reply", None), "message_id", None)
+                if origin == "引用消息"
+                else event.message_id
+            )
             content.extend(
                 [
                     {
                         "type": "text",
-                        "text": f"图片{index}（{origin}，消息ID={event.message_id}）：",
+                        "text": f"图片{index}（{origin}，消息ID={source_id}）：",
                     },
                     {"type": "image_url", "image_url": {"url": url}},
                 ]
@@ -95,3 +100,28 @@ def multimodal_content(text, images, provider):
         else {"type": "input_image", "image_url": p["image_url"]["url"]}
         for p in parts
     ]
+
+
+def limit_images(parts, maximum):
+    """合并连续消息时共用图片上限，保留每张图片的来源标签。"""
+    result = []
+    count = 0
+    skipped = 0
+    for index, part in enumerate(parts):
+        if part.get("type") == "image_url":
+            count += 1
+            if count > maximum:
+                skipped += 1
+                continue
+        elif (
+            index + 1 < len(parts)
+            and parts[index + 1].get("type") == "image_url"
+            and count >= maximum
+        ):
+            continue
+        result.append(part)
+    if skipped:
+        result.append(
+            {"type": "text", "text": f"[{skipped}张连续消息图片超过总上限，未读取，不能猜测内容。]"}
+        )
+    return result

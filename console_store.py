@@ -246,6 +246,19 @@ class ConsoleStore:
                         "SELECT description FROM emote_memory WHERE digest=?", (content_hash,)
                     ).fetchone()
                     text = row[0] if row else ""
+                    if db.execute(
+                        "SELECT 1 FROM sqlite_master WHERE name='emote_proposals'"
+                    ).fetchone():
+                        suggestion = db.execute(
+                            "SELECT original,description FROM emote_proposals WHERE digest=?",
+                            (content_hash,),
+                        ).fetchone()
+                        if suggestion and suggestion[0] == text:
+                            extra["proposal"] = {
+                                "value": {"description": suggestion[1]},
+                                "reason": "重新查看原图后的描述修正，确认后保存",
+                            }
+
                 finally:
                     db.close()
             value = {"description": text}

@@ -53,9 +53,15 @@ class ConsolidationTests(unittest.IsolatedAsyncioTestCase):
         await self.worker.tick(self.model)
         self.assertEqual(self.model.await_count, 1)
         self.assertEqual(len(organized(self.facts(), self.root)), 3)
+        previous_value = self.model.return_value["value"]
+        self.model.return_value = {"value": "当前偏好 C#，旧偏好保留为过去状态。"}
         with patch("plugins.assistant.consolidation.time.time", return_value=10**11):
             await self.worker.tick(self.model)
         self.assertEqual(self.model.await_count, 2)
+        saved = self.worker.cache["person:99:10:1:角色"]
+        self.assertEqual(saved["history"][0]["value"], previous_value)
+        self.assertEqual(saved["history"][0]["source"], original)
+        self.assertEqual(len(saved["source"]), 3)
 
     async def test_fixed_and_inflight_changes(self):
         self.add("a")

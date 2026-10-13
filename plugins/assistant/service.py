@@ -21,6 +21,10 @@ from .personality import ProfileStore
 from .trace import emit, scoped
 
 
+class Superseded(Exception):
+    """收到补充消息后停止旧回复，不向群里发送错误提示。"""
+
+
 class SendFailure(Exception):
     pass
 
@@ -101,6 +105,8 @@ class Assistant:
             try:
                 await asyncio.wait_for(raw_send(text), 30)
                 emit(cfg, "send_result", status="sent", text=text, chars=len(text))
+            except Superseded:
+                raise
             except Exception as error:
                 emit(cfg, "send_result", status="failed", error_type=type(error).__name__)
                 raise SendFailure from None
@@ -220,7 +226,9 @@ class Assistant:
                         truncated=any("回复过长，已截断" in chunk for chunk in chunks),
                     )
                     generating_reply = True
-                    for chunk in chunks:
+                    for index, chunk in enumerate(chunks):
+                        if index:
+                            await asyncio.sleep(0.35)
                         await send(chunk)
                     saved_reply = "\n".join(chunks)
                     if reply.emote_id is not None:
@@ -229,6 +237,13 @@ class Assistant:
                         try:
                             await asyncio.wait_for(send_emote(reply.emote_id), 30)
                             emit(cfg, "send_result", status="sent", emote_id=reply.emote_id)
+                            if self.emotes is not None:
+                                try:
+                                    self.emotes.record_sent(reply.emote_id, bot_id, group_id)
+                                except Exception:
+                                    logger.warning("emote_usage_write_failed")
+                        except Superseded:
+                            raise
                         except Exception as error:
                             emit(
                                 cfg,
@@ -257,6 +272,9 @@ class Assistant:
                         self.memory.save(key, text, saved_reply)
             finally:
                 self.limits.pending -= 1
+        except Superseded:
+            self.limits.cooldowns.pop(key, None)
+            emit(cfg, "send_skipped", reason="newer_message")
         except ServiceError as error:
             emit(cfg, "request_error", error_type=type(error).__name__, reason=str(error))
             generating_reply = False

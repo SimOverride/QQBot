@@ -9,6 +9,7 @@ from pathlib import Path
 from nonebot.adapters.onebot.v11 import MessageSegment
 from nonebot.log import logger
 
+from .forward import ForwardReader
 from .history_tools import HistoryTools
 from .message_context import event_metadata
 from .personality import LIMITS
@@ -117,6 +118,10 @@ class GroupState:
     last_checked: float = 0
     seen: dict = field(default_factory=dict)
     image_pending: tuple | None = None
+    batches: dict = field(default_factory=dict)
+    direct_tasks: dict = field(default_factory=dict)
+    versions: dict = field(default_factory=dict)
+    revision: int = 0
 
 
 class GroupConversation:
@@ -126,6 +131,9 @@ class GroupConversation:
 
     async def close(self):
         tasks = [s.task for s in self.states.values() if s.task and not s.task.done()]
+        tasks.extend(
+            t for state in self.states.values() for t in state.direct_tasks.values() if not t.done()
+        )
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -139,8 +147,28 @@ class GroupConversation:
         if event.message_id in state.seen:
             return
         state.seen[event.message_id] = now
+        state.revision += 1
+        state.versions[event.user_id] = state.versions.get(event.user_id, 0) + 1
         if image_segments(event):
             state.image_pending = (event, text, now)
+        command = text.lstrip().startswith("/")
+        active_direct = state.direct_tasks.get(event.user_id)
+        if command:
+            state.batches.pop(event.user_id, None)
+        if not command and (explicit or (active_direct is not None and not active_direct.done())):
+            batch = state.batches.get(event.user_id)
+            if batch is None:
+                batch = {"first": now, "latest": now, "items": []}
+                state.batches[event.user_id] = batch
+            batch["latest"] = now
+            batch["items"].append((event, text))
+            if active_direct is None or active_direct.done():
+                state.pending = None
+                active_direct = asyncio.create_task(self.direct_worker(bot, state, event.user_id))
+                state.direct_tasks[event.user_id] = active_direct
+            if explicit:
+                await asyncio.shield(active_direct)
+            return
         if explicit:
             state.pending = None
             async with state.lock:
@@ -153,6 +181,28 @@ class GroupConversation:
         state.pending = (event, text, now)
         if state.task is None or state.task.done():
             state.task = asyncio.create_task(self.worker(bot, state))
+
+    async def direct_worker(self, bot, state, user):
+        """同一人连续补充等待1.5秒，单批最多4秒；其他人不会混入请求。"""
+        try:
+            while user in state.batches:
+                batch = state.batches[user]
+                while True:
+                    remaining = min(batch["latest"] + 1.5, batch["first"] + 4) - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    await asyncio.sleep(remaining)
+                if state.batches.get(user) is not batch:
+                    continue
+                state.batches.pop(user, None)
+                event = batch["items"][-1][0]
+                text = "\n".join(t for _, t in batch["items"] if t.strip())
+                async with state.lock:
+                    await self.respond(
+                        bot, event, text, state, True, events=[e for e, _ in batch["items"]]
+                    )
+        finally:
+            state.direct_tasks.pop(user, None)
 
     async def worker(self, bot, state):
         try:
@@ -186,7 +236,7 @@ class GroupConversation:
         return [self.service.archive.message_context(r) for r in reversed(rows)]
 
     @scoped("group")
-    async def respond(self, bot, event, text, state, explicit):
+    async def respond(self, bot, event, text, state, explicit, events=()):
         emit(
             self.service.config,
             "group_trigger",
@@ -196,6 +246,8 @@ class GroupConversation:
             message_id=event.message_id,
             explicit=explicit,
         )
+        generation = state.revision
+        sender_version = state.versions.get(event.user_id, 0)
         config = self.settings.get(event.group_id)
         if not explicit and config["activity"] == 0:
             emit(self.service.config, "group_skipped", reason="activity_disabled")
@@ -211,15 +263,22 @@ class GroupConversation:
             and time.monotonic() - state.image_pending[2] < 90
         ):
             image_event = state.image_pending[0]
+        image_events = [item for item in events if image_segments(item)] or [image_event]
         if (
             not text.lstrip().startswith("/")
             and self.service.vision is not None
-            and image_segments(image_event)
+            and any(image_segments(item) for item in image_events)
         ):
             try:
                 async with self.service.limits.slot():
                     async with asyncio.timeout(30):
-                        image_context = await self.service.vision.prepare(bot, image_event)
+                        for item in image_events:
+                            image_context.extend(await self.service.vision.prepare(bot, item))
+                        from .vision import limit_images
+
+                        image_context = limit_images(
+                            image_context, self.service.config.vision_max_images
+                        )
             except TimeoutError:
                 image_context = [{"type": "text", "text": "[取图超时，不能猜测图片内容。]"}]
         if image_context:
@@ -253,7 +312,15 @@ class GroupConversation:
         planner_tools = HistoryTools(
             self.service.archive, (int(bot.self_id), event.group_id, event.user_id)
         )
+        planner_tools.is_current = lambda: (
+            state.versions.get(event.user_id, 0) == sender_version
+            if explicit
+            else state.revision == generation
+        )
         planner_tools.emotes = self.service.emotes
+        planner_tools.forward = ForwardReader(bot, event)
+        for item in events:
+            planner_tools.forward.register(getattr(item, "original_message", []), 0)
         decision = {}
         if not text.lstrip().startswith("/"):
             try:
@@ -310,11 +377,26 @@ class GroupConversation:
         if not explicit and state.pending is not None:
             emit(self.service.config, "group_skipped", reason="newer_message")
             return
-        quote = decision.get("quote") is True
+        quote_id = decision.get("quote_message_id")
+        allowed_quotes = {r.get("message_id") for r in context if type(r.get("message_id")) is int}
+        if referenced is not None:
+            allowed_quotes.add(getattr(referenced, "message_id", None))
+        if type(quote_id) is not int or quote_id not in allowed_quotes:
+            quote_id = event.message_id if decision.get("quote") is True else None
+        quote = quote_id is not None
         sent = False
 
         async def send(body, emote_id=None):
             nonlocal sent
+            stale = (
+                state.versions.get(event.user_id, 0) != sender_version
+                if explicit
+                else state.revision != generation
+            )
+            if stale:
+                from .service import Superseded
+
+                raise Superseded
             if (
                 not explicit
                 and not sent
@@ -330,7 +412,7 @@ class GroupConversation:
                 else MessageSegment.text(body)
             )
             if quote and not sent:
-                msg = MessageSegment.reply(event.message_id) + msg
+                msg = MessageSegment.reply(quote_id) + msg
             result = await bot.send_group_msg(group_id=event.group_id, message=msg)
             sent = True
             state.last_sent = time.monotonic()

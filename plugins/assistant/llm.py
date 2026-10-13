@@ -11,6 +11,7 @@ import httpx
 from .config import Config
 from .emote_collect import COLLECT_FUNCTIONS, EmoteCollector
 from .emotes import EMOTE_FUNCTIONS
+from .forward import FORWARD_FUNCTION
 from .history_tools import HISTORY_FUNCTION, SEND_GROUP_FUNCTION
 from .http import ServiceError, post_json
 from .names import for_request
@@ -376,6 +377,7 @@ class LLM:
         searches = 0
         preview_bytes = 0
         pending_memories = {}
+        memory_versions = {}
         preview_messages = []
         collector = None
         if self.config.emotes_auto_collect and history_tools.emotes is not None:
@@ -408,8 +410,21 @@ class LLM:
             messages[0]["content"] += prompt_text("llm.task_reply.0")
         if not planning and extensions is not None and extensions.functions() and messages:
             messages[0]["content"] += prompt_text("llm.extensions.0")
+
+        def check_current():
+            if not getattr(history_tools, "is_current", lambda: True)():
+                from .service import Superseded
+
+                raise Superseded
+
         for used in range(self.config.history_max_calls + 1):
+            check_current()
             functions = [HISTORY_FUNCTION]
+            if (
+                getattr(history_tools, "forward", None) is not None
+                and history_tools.forward.allowed
+            ):
+                functions.append(FORWARD_FUNCTION)
             extension_names = set()
             if not planning and tasks is not None:
                 functions.extend(tasks.functions())
@@ -436,6 +451,7 @@ class LLM:
             text, calls, output = await self.step(
                 renderer.messages(messages), allow, request_id, functions
             )
+            check_current()
             if not calls:
                 if pending_memories:
                     raise ServiceError("表情包内容记忆尚未完成，请稍后重试。")
@@ -477,6 +493,8 @@ class LLM:
                     result = await tasks.execute(name, args)
                 elif name in extension_names:
                     result = await extensions.execute(name, args)
+                elif name == "read_forward":
+                    result = await history_tools.forward.run(args)
                 elif name == "read_history":
                     result = history_tools.run(args)
                 elif name == "emote_candidates":
@@ -515,8 +533,41 @@ class LLM:
                             history_tools.emote_hashes[emote_id] = history_tools.emotes.digest(
                                 emote_id
                             )
+                elif name == "inspect_emote":
+                    if (
+                        not isinstance(args, dict)
+                        or set(args) != {"id"}
+                        or not isinstance(args["id"], str)
+                    ):
+                        raise ValueError
+                    ident = args["id"]
+                    if ident not in history_tools.emote_hashes:
+                        result = {"status": "not_offered"}
+                    elif used + 2 >= self.config.history_max_calls:
+                        result = {"status": "budget_exhausted"}
+                    else:
+                        digest = history_tools.emotes.digest(ident)
+                        if digest != history_tools.emote_hashes[ident]:
+                            raise ServiceError("图片已变化，请重新检索")
+                        preview = history_tools.emotes.preview(ident)
+                        size = len(preview["image_url"]["url"])
+                        if preview_bytes + size > 14 * 1024 * 1024:
+                            result = {"status": "budget_exhausted"}
+                        else:
+                            preview_bytes += size
+                            previews.extend(
+                                [{"type": "text", "text": "重新查看表情：" + ident}, preview]
+                            )
+                            pending_memories[ident] = digest
+                            memory_versions[digest] = history_tools.emotes.recall(digest)
+                            result = {
+                                "status": "attached",
+                                "description": history_tools.emotes.recall(digest),
+                            }
                 elif name == "list_emotes":
-                    result = history_tools.emotes.list(args)
+                    result = history_tools.emotes.list(
+                        args, history_tools.key[0], history_tools.key[1]
+                    )
                     for emote in result.get("emotes", []):
                         try:
                             history_tools.emote_hashes[emote["id"]] = emote["digest"]
@@ -543,17 +594,24 @@ class LLM:
                                 ]
                             )
                             pending_memories[emote["id"]] = emote["digest"]
+                            memory_versions[emote["digest"]] = None
                             emote["preview_status"] = "attached"
                         except ServiceError:
                             emote["preview_status"] = "unavailable"
                 elif name == "remember_emotes":
                     if not isinstance(args, dict) or set(args) != {"items"}:
                         raise ValueError
-                    remembered = history_tools.emotes.remember(args["items"], pending_memories)
+                    remembered = history_tools.emotes.remember(
+                        args["items"], pending_memories, memory_versions
+                    )
                     history_tools.offered_emotes.update(remembered)
                     for emote_id in remembered:
                         pending_memories.pop(emote_id, None)
-                    result = {"status": "saved", "remaining": list(pending_memories)}
+                    result = {
+                        "status": "recorded",
+                        "hint": "新图保存描述；已有描述只提交待确认修正，原值保留",
+                        "remaining": list(pending_memories),
+                    }
                     if not pending_memories:
                         for message in preview_messages:
                             message["content"] = "候选图片已保存内容记忆：" + json.dumps(
@@ -872,14 +930,40 @@ def render_reply(reply: Reply, config: Config) -> list[str]:
         body = re.sub(r"https?://[^\s<>]+", "", body)
         body = re.sub(r"\[\d+\]", "", body)
     limit = config.reply_chunk_chars * config.reply_max_messages
+    if len(body) > limit and ("```" in body or "~~~" in body):
+        return ["代码内容超过本次发送上限，请缩小到一个步骤后重试。"]
     if len(body) > limit:
         note = "\n（回复过长，已截断；可追问细节。）"
         body = body[: limit - len(note)] + note
-    remaining = body.strip()
+    parts = []
+    lines = []
+    fenced = False
+    for line in body.splitlines(keepends=True):
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+        if (
+            not fenced
+            and line.strip() == "<分条>"
+            and len(parts) < min(3, config.reply_max_messages) - 1
+        ):
+            parts.append("".join(lines).strip())
+            lines = []
+        elif not fenced and line.strip() == "<分条>":
+            lines.append("\n")
+        else:
+            lines.append(line)
+    parts.append("".join(lines).strip())
+    parts = [p for p in parts if p]
+    if len(parts) <= config.reply_max_messages and all(
+        len(p) <= config.reply_chunk_chars or "```" in p or "~~~" in p for p in parts
+    ):
+        return parts
+    remaining = "\n".join(parts)
+    if "```" in remaining or "~~~" in remaining:
+        return [remaining]
     chunks = []
     while remaining:
         end = min(config.reply_chunk_chars, len(remaining))
-        # 剩余消息容量充足时优先按段落拆分。
         boundary = remaining.rfind("\n", end // 2, end)
         capacity = (config.reply_max_messages - len(chunks) - 1) * config.reply_chunk_chars
         if boundary > 0 and len(remaining) - boundary <= capacity:

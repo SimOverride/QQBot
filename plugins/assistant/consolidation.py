@@ -167,11 +167,22 @@ class Consolidation:
                     current = group_source(db, *key, ceiling=source[-1]["id"])
                 if fingerprint(current) != fingerprint(source):
                     continue
+                previous = self.cache.get(name, {})
+                history = list(previous.get("history", []))
+                if "value" in previous and previous["value"] != value:
+                    history.append(
+                        {
+                            "value": previous["value"],
+                            "updated": previous.get("updated"),
+                            "source": previous.get("source", []),
+                        }
+                    )
                 self.cache[name] = {
+                    "history": history,
                     "fingerprint": fingerprint(source),
                     "value": value,
                     "updated": now,
-                    "source": source if kind == "group" else [],
+                    "source": source,
                 }
                 self.save()
                 emit(

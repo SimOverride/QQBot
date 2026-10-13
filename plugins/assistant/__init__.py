@@ -391,6 +391,9 @@ def setup() -> None:
             send_callback=send_to_group,
             group_names=group_names,
         )
+        from .forward import ForwardReader
+
+        history_tools.forward = ForwardReader(bot, event)
         await service.handle(
             bot_id,
             scope,

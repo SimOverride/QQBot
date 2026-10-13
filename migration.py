@@ -454,6 +454,14 @@ def merge_emotes(local, incoming, output):
     schemas = {
         "emote_memory": "digest TEXT PRIMARY KEY, description TEXT NOT NULL, updated REAL NOT NULL",
         "emote_imports": "digest TEXT PRIMARY KEY, source TEXT NOT NULL, created REAL NOT NULL",
+        "emote_usage": (
+            "id TEXT PRIMARY KEY, bot INTEGER NOT NULL, scope INTEGER NOT NULL, "
+            "digest TEXT NOT NULL, created REAL NOT NULL"
+        ),
+        "emote_proposals": (
+            "digest TEXT PRIMARY KEY, original TEXT NOT NULL, "
+            "description TEXT NOT NULL, updated REAL NOT NULL"
+        ),
     }
     with closing(sqlite3.connect(output)) as dst, dst:
         for table, schema in schemas.items():
@@ -473,10 +481,11 @@ def merge_emotes(local, incoming, output):
                     columns = {r[1] for r in dst.execute(f'PRAGMA table_info("{table}")')}
                     if set(row) != columns:
                         raise ValueError("表情数据库字段不兼容")
-                    previous = records[table].get(row["digest"])
-                    field = "updated" if table == "emote_memory" else "created"
+                    key = row["id"] if table == "emote_usage" else row["digest"]
+                    previous = records[table].get(key)
+                    field = "updated" if table in ("emote_memory", "emote_proposals") else "created"
                     if previous is None or row[field] > previous[field]:
-                        records[table][row["digest"]] = row
+                        records[table][key] = row
         for table, rows in records.items():
             for row in rows.values():
                 insert(dst, table, row)
