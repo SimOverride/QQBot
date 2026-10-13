@@ -165,13 +165,11 @@ class Assistant:
                             if history_tools is not None and self.commands.tasks is not None:
                                 history_tools.tasks = (
                                     self.commands.tasks.session(key, role_lookup, str(message_id))
-                                    if not passive
-                                    else None
                                 )
                             if history_tools is not None and self.commands.extensions is not None:
                                 history_tools.extensions = (
                                     self.commands.extensions.session(key, role_lookup)
-                                    if group_id > 0 and not passive
+                                    if group_id > 0
                                     else None
                                 )
                             group_role = None

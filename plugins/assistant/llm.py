@@ -429,6 +429,8 @@ class LLM:
                 messages[0]["content"] += prompt_text("llm.images.0")
         extensions = getattr(history_tools, "extensions", None)
         tasks = getattr(history_tools, "tasks", None)
+        if not planning and messages:
+            messages[0]["content"] += prompt_text("llm.action_intent.0")
         shares = getattr(history_tools, "shares", None)
         share_rules_added = False
         if not planning and tasks is not None and tasks.functions() and messages:

@@ -8,9 +8,11 @@ from unittest.mock import AsyncMock
 
 from plugins.assistant.config import Config
 from plugins.assistant.history_tools import HistoryTools
-from plugins.assistant.llm import LLM
+from plugins.assistant.llm import LLM, Reply
 from plugins.assistant.longterm import LongTermMemory
-from plugins.tasks.manager import FUNCTION
+from plugins.assistant.service import Assistant
+from plugins.extensions.manager import Manager as Extensions
+from plugins.tasks.manager import FUNCTION, Manager
 
 
 class TaskRoutingTests(unittest.IsolatedAsyncioTestCase):
@@ -36,4 +38,36 @@ class TaskRoutingTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("应调用manage_task", args[0][0]["content"])
                 self.assertIn("由执行器核实托管条件", args[0][0]["content"])
             finally:
+                archive.close()
+
+    async def test_followup_tools_keep_identity_and_permissions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = Config(bot_owners={1}, model_trace_enabled=False)
+            archive = LongTermMemory(root / "memory.db", cfg)
+            model = SimpleNamespace(reply=AsyncMock(return_value=Reply("收到")))
+            service = Assistant(cfg, model, archive=archive)
+            extensions = Extensions(root, service.commands, [])
+            manager = Manager(root, service.commands, archive, extensions)
+            service.commands.tasks = manager
+            service.commands.extensions = extensions
+            try:
+                for user, role, expected in [(1, "member", "queued"),
+                                              (2, "admin", "pending"),
+                                              (3, "member", "access_denied")]:
+                    await service.handle(
+                        99, 10, user, user, "那就做一个新的插件", AsyncMock(),
+                        role_lookup=AsyncMock(return_value=role), passive=True,
+                    )
+                    tools = model.reply.call_args.kwargs["history_tools"]
+                    self.assertIsNotNone(tools.tasks)
+                    self.assertIsNotNone(tools.extensions)
+                    result = await tools.tasks.execute("manage_task", {
+                        "action": "request", "kind": "plugin", "task_id": None,
+                        "text": "新插件需求",
+                    })
+                    self.assertEqual(result["status"], expected)
+                self.assertEqual(len(manager.store.all()), 2)
+            finally:
+                await manager.close()
                 archive.close()
