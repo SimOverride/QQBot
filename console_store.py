@@ -261,6 +261,7 @@ class ConsoleStore:
 
             renderer = Names(self.root, key[0])
             result["display_value"] = renderer.data(value)
+            result["display_parts"] = renderer.fragments(value)
             result["display_evidence"] = renderer.data(extra.get("evidence", []))
         return result
 
@@ -694,6 +695,52 @@ class ConsoleStore:
             ):
                 digest.update(json.dumps(tuple(row), ensure_ascii=False).encode())
             return {"last_id": cutoff, "digest": digest.hexdigest()}
+
+    def referenced_messages(self, resource, ids, scope=None):
+        """只读查询当前认知会话中的来源消息，不按 QQ 消息号猜测匹配。"""
+        kind, key = self.resolve(resource)
+        if kind not in ("person", "group"):
+            raise ValueError("请选择个人或群认知")
+        if (
+            not isinstance(ids, list)
+            or not 1 <= len(ids) <= 100
+            or any(type(n) is not int or not 0 < n < 2**63 for n in ids)
+        ):
+            raise ValueError("每次最多查询 100 个有效消息编号")
+        current = self.get(resource)["value"]
+        scopes = {key[1]} if kind == "group" else {int(g) for g in current["会话印象"]}
+        if scope is not None:
+            if type(scope) is not int or scope not in scopes:
+                raise ValueError("消息不属于当前认知的会话")
+            scopes = {scope}
+        ids = list(dict.fromkeys(ids))
+        result = []
+        directory = read_directory(self.root)
+        if scopes:
+            with self.db() as db:
+                rows = db.execute(
+                    "SELECT * FROM messages WHERE bot=? AND grp IN ("
+                    + ",".join("?" for _ in scopes)
+                    + ") AND id IN ("
+                    + ",".join("?" for _ in ids)
+                    + ") ORDER BY created,id",
+                    [key[0], *sorted(scopes), *ids],
+                ).fetchall()
+                for row in rows:
+                    result.append(
+                        {
+                            "id": row["id"],
+                            "sender": row["usr"],
+                            "name": display_name(db, key[0], row["usr"], directory),
+                            "scope": row["grp"],
+                            "scope_name": scope_name(db, key[0], row["grp"], directory),
+                            "is_self": row["usr"] == key[0],
+                            "time": row["created"],
+                            "text": row["content"],
+                        }
+                    )
+        found = {r["id"] for r in result}
+        return {"messages": result, "missing": [n for n in ids if n not in found]}
 
     def messages(self, group=None, user=None, query="", offset=0):
         clause, args = ["1=1"], []

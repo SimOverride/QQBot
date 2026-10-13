@@ -46,6 +46,41 @@ class ConsoleTests(unittest.TestCase):
         self.addCleanup(self.client.close)
         self.headers = {"X-Console-Token": self.app.state.token}
 
+    def test_message_reference_preview_is_ordered_and_scoped(self):
+        self.archive.collect((123, 10, 123), 9, "机器人回复", ["text"], 110, related_user=20)
+        self.archive.collect((123, 11, 30), 8, "其他会话", ["text"], 90)
+        with self.store.db() as db:
+            rows = db.execute("SELECT id,grp FROM messages ORDER BY id").fetchall()
+        local = [r["id"] for r in rows if r["grp"] == 10]
+        foreign = next(r["id"] for r in rows if r["grp"] == 11)
+        response = self.client.get(
+            "/api/referenced-messages",
+            params={
+                "resource": "person:123:20",
+                "scope": 10,
+                "ids": ",".join(map(str, [*reversed(local), foreign, 999999])),
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual({r["id"] for r in data["messages"]}, set(local))
+        self.assertEqual(
+            [r["time"] for r in data["messages"]], sorted(r["time"] for r in data["messages"])
+        )
+        self.assertEqual(set(data["missing"]), {foreign, 999999})
+        self.assertTrue(any(r["is_self"] for r in data["messages"]))
+        self.assertTrue(all(r["scope"] == 10 for r in data["messages"]))
+        for params in (
+            {"ids": "1", "scope": 11},
+            {"ids": "bad"},
+            {"ids": ",".join(map(str, range(1, 102)))},
+            {"ids": str(2**63)},
+        ):
+            result = self.client.get(
+                "/api/referenced-messages", params={"resource": "person:123:20", **params}
+            )
+            self.assertEqual(result.status_code, 400)
+
     def test_session_service_identifier(self):
         response = self.client.get("/api/session")
         self.assertEqual(response.status_code, 200)
@@ -54,7 +89,8 @@ class ConsoleTests(unittest.TestCase):
     def test_unified_persona_and_removed_style(self):
         self.assertNotIn("style", self.store.get("group:123:10")["value"])
         response = self.client.post(
-            "/api/profiles", headers=self.headers,
+            "/api/profiles",
+            headers=self.headers,
             json={"kind": "style", "name": "旧风格", "value": "内容"},
         )
         self.assertEqual(response.status_code, 400)

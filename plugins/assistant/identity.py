@@ -43,7 +43,6 @@ def identity_context(
         "qq_group_owner": (
             person(user_id) if group_role == "owner" else "未提供，不能从机器人所有者名单推断"
         ),
-        "platform_display_names": {str(uid): name for uid, name in (names or {}).items()},
         "current_speaker": {
             **person(user_id),
             "group_role": group_role,

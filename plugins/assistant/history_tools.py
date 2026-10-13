@@ -9,12 +9,16 @@ HISTORY_FUNCTION = {
     "name": "read_history",
     "description": (
         "主动查询本地历史和记忆。先list查会话；search按时间/发送者/关键词查消息；"
-        "around读前后文；facts查当前用户认知。空关键词可查全部发言。"
+        "around读前后文；facts查当前用户认知；resolve_user按完整昵称查QQ，"
+        "resolve_group按完整群名查群号，仅查询获准会话，同名返回多个候选。搜索消息时空关键词可查全部发言。"
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["list", "search", "around", "facts"]},
+            "action": {
+                "type": "string",
+                "enum": ["list", "search", "around", "facts", "resolve_user", "resolve_group"],
+            },
             "scope": {"type": ["integer", "null"], "description": "会话ID；null搜索全部获准会话"},
             "sender": {"type": ["integer", "null"], "description": "发送者QQ，查自己用bot_qq"},
             "query": {"type": "string", "description": "原文包含的关键词；空字符串不过滤"},
@@ -70,6 +74,71 @@ class HistoryTools:
         self.send_attempted = True
         return await self.send_callback(args["group_id"], args["text"].strip())
 
+    def resolve_name(self, action, query, scopes, offset):
+        """按需查询获准会话中的名字；不返回整份目录，不授予新权限。"""
+        from .knowledge import read_directory
+        from .names import Names
+
+        query = query.strip()
+        if not query:
+            return {"status": "invalid_arguments", "hint": "请输入完整昵称或群名"}
+        root = self.archive.root
+        names = Names(root, self.key[0])
+        directory = read_directory(root).get(str(self.key[0]), {})
+        groups = directory.get("groups", {})
+        if action == "resolve_group":
+            matches = [
+                {
+                    "group_id": group,
+                    "name": names.groups.get(group, self.group_names.get(group, "")),
+                }
+                for group in sorted(scopes)
+                if group > 0
+                and query.casefold()
+                in {str(group), names.groups.get(group, self.group_names.get(group, "")).casefold()}
+            ]
+        else:
+            members = {self.key[0], self.key[2]}
+            membership = {}
+            for scope in scopes:
+                users = (
+                    set(groups.get(str(scope), {}).get("members", []))
+                    if scope > 0
+                    else {self.key[2]}
+                )
+                users.update(
+                    r[0]
+                    for r in self.archive.db.execute(
+                        "SELECT DISTINCT usr FROM messages WHERE bot=? AND grp=? "
+                        "UNION SELECT DISTINCT usr FROM facts WHERE bot=? AND grp=?",
+                        (self.key[0], scope, self.key[0], scope),
+                    )
+                )
+                members.update(users)
+                for user in users:
+                    membership.setdefault(user, []).append(scope)
+            matches = [
+                {
+                    "qq": user,
+                    "name": names.names.get(user, ""),
+                    "scopes": membership.get(user, []),
+                    "is_self": user == self.key[0],
+                }
+                for user in sorted(members)
+                if query.casefold()
+                in {
+                    str(user),
+                    names.names.get(user, "").casefold(),
+                    names.labels.get(user, "").casefold(),
+                }
+            ]
+        return {
+            "status": "ambiguous" if len(matches) > 1 else "ok" if matches else "not_found",
+            "matches": matches[offset : offset + 10],
+            "total": len(matches),
+            "next_offset": offset + 10 if offset + 10 < len(matches) else None,
+        }
+
     @staticmethod
     def timestamp(value):
         if value is None:
@@ -86,7 +155,7 @@ class HistoryTools:
             ):
                 raise ValueError
             action, scope = args["action"], args["scope"]
-            if action not in ("list", "search", "around", "facts"):
+            if action not in ("list", "search", "around", "facts", "resolve_user", "resolve_group"):
                 raise ValueError
             if scope is not None and (type(scope) is not int or scope not in self.scopes):
                 return {"status": "access_denied"}
@@ -101,6 +170,8 @@ class HistoryTools:
             if start is not None and end is not None and start >= end:
                 raise ValueError
             scopes = sorted(self.scopes if scope is None else {scope})
+            if action in ("resolve_user", "resolve_group"):
+                return self.resolve_name(action, args["query"], scopes, args["offset"])
             where = "bot=? AND grp IN (" + ",".join("?" for _ in scopes) + ")"
             params = [self.key[0], *scopes]
             db = self.archive.db
@@ -114,7 +185,9 @@ class HistoryTools:
                     "status": "ok",
                     "current_scope": self.key[1],
                     "allowed_scopes": scopes,
-                    "group_names": self.group_names,
+                    "group_names": {
+                        g: name for g, name in self.group_names.items() if int(g) in scopes
+                    },
                     "coverage": [dict(r) for r in rows],
                     "coverage_note": "仅为现存记录范围，不保证期间完整",
                 }

@@ -216,6 +216,16 @@ def create_app(root=ROOT):
     def resource(id: str):
         return store.get(id)
 
+    @app.get("/api/referenced-messages")
+    def referenced_messages(resource: str, ids: str, scope: int | None = None):
+        if len(ids) > 2100:
+            raise ValueError("消息编号过多")
+        try:
+            identifiers = [int(n) for n in ids.split(",")]
+        except ValueError:
+            raise ValueError("消息编号格式无效") from None
+        return store.referenced_messages(resource, identifiers, scope)
+
     @app.post("/api/resource")
     async def save(request: Request):
         data = await body(request)

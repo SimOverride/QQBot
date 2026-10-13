@@ -7,6 +7,73 @@ const $ = s => document.querySelector(s);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const text = v => typeof v === 'string' ? v : JSON.stringify(v, null, 2);
 const labels = {summary:'群摘要',knowledge:'群认知 · 共识与背景',activity:'主动参与积极性（0–100）',interests:'群兴趣（每行一项）',persona:'群人设',description:'画面、文字、情绪与适用场景',content:'归档消息正文'};
+// 仅通过文本节点渲染后台返回的名称片段，昵称不能注入 HTML。
+function showNameParts(element,parts,fallback){
+  element.replaceChildren();
+  if(!Array.isArray(parts)||!parts.length){element.textContent=fallback||'暂无认知';return;}
+  for(const part of parts){
+    if(part.kind==='person'||part.kind==='group'){
+      const span=document.createElement('span');span.className='name-'+part.kind;span.textContent=part.text;element.append(span);
+    }else if(part.kind==='message'){
+      const span=document.createElement('span');span.className='message-reference';span.textContent=part.text;
+      span.tabIndex=0;span.setAttribute('role','button');span.setAttribute('aria-label','查看引用消息：'+part.text);
+      const resource=current?.resource,scope=resource?.startsWith('person:')&&personScope!=='general'?Number(personScope):null;
+      span.onmouseenter=()=>showMessagePreview(span,resource,scope,part.ids);
+      span.onfocus=()=>showMessagePreview(span,resource,scope,part.ids);
+      span.onclick=()=>showMessagePreview(span,resource,scope,part.ids);
+      span.onmouseleave=schedulePreviewClose;span.onblur=schedulePreviewClose;
+      span.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();showMessagePreview(span,resource,scope,part.ids);}};
+      element.append(span);
+    }else element.append(document.createTextNode(part.text||''));
+  }
+}
+let messagePreview=null,previewAnchor=null,previewTimer=null,previewSequence=0;
+function closeMessagePreview(){clearTimeout(previewTimer);messagePreview?.remove();messagePreview=null;previewAnchor=null;previewSequence++;}
+function schedulePreviewClose(){clearTimeout(previewTimer);previewTimer=setTimeout(closeMessagePreview,250);}
+function placeMessagePreview(){
+  if(!messagePreview||!previewAnchor?.isConnected)return;
+  const r=previewAnchor.getBoundingClientRect(),height=messagePreview.offsetHeight,width=messagePreview.offsetWidth;
+  messagePreview.style.left=Math.max(12,Math.min(r.left,innerWidth-width-12))+'px';
+  messagePreview.style.top=Math.max(12,r.bottom+height+12<=innerHeight?r.bottom+6:r.top-height-6)+'px';
+}
+async function showMessagePreview(anchor,resource,scope,ids){
+  clearTimeout(previewTimer);
+  if(messagePreview&&previewAnchor===anchor)return;
+  closeMessagePreview();previewAnchor=anchor;
+  const sequence=previewSequence,version=selectionVersion;
+  const panel=document.createElement('section');panel.className='message-preview';panel.setAttribute('role','tooltip');
+  const header=document.createElement('div');header.className='message-preview-header';
+  const title=document.createElement('strong');title.textContent='引用消息';
+  const close=document.createElement('button');close.className='quiet';close.textContent='×';close.setAttribute('aria-label','关闭消息预览');close.onclick=closeMessagePreview;
+  header.append(title,close);const body=document.createElement('div');body.className='message-preview-body';body.textContent='正在读取消息…';
+  panel.append(header,body);panel.onmouseenter=()=>clearTimeout(previewTimer);panel.onmouseleave=schedulePreviewClose;
+  panel.onfocusin=()=>clearTimeout(previewTimer);panel.onfocusout=schedulePreviewClose;
+  messagePreview=panel;document.body.append(panel);placeMessagePreview();
+  if(!resource||!ids?.length){body.textContent='引用范围无效或超过 100 条，请缩小范围查看。';return;}
+  try{
+    const params=new URLSearchParams({resource,ids:ids.join(',')});if(scope!==null)params.set('scope',scope);
+    const data=await api('/api/referenced-messages?'+params);
+    if(sequence!==previewSequence||version!==selectionVersion||!anchor.isConnected)return;
+    body.replaceChildren();title.textContent='引用消息 · '+data.messages.length+' 条';
+    for(const item of data.messages){
+      const row=document.createElement('article');row.className='message-preview-row'+(item.is_self?' self':'');
+      const avatar=document.createElement('div');avatar.className='message-preview-avatar';avatar.textContent=Array.from(item.name||'?')[0];
+      const column=document.createElement('div');column.className='message-preview-column';
+      const meta=document.createElement('div');meta.className='message-preview-meta';
+      const name=document.createElement('span');name.className='name-person';name.textContent=item.name+(item.is_self?'（机器人）':'');
+      const time=document.createElement('span');time.textContent=new Date(item.time*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false});
+      meta.append(name,time);
+      const source=document.createElement('div');source.className='message-preview-source';source.textContent=item.scope_name+' · id '+item.id;
+      const bubble=document.createElement('div');bubble.className='message-preview-bubble';bubble.textContent=item.text||'（无文字内容）';
+      column.append(meta,source,bubble);row.append(avatar,column);body.append(row);
+    }
+    if(data.missing.length){const note=document.createElement('p');note.className='note';note.textContent='以下引用未找到或不属于当前会话：'+data.missing.join('、');body.append(note);}
+    placeMessagePreview();
+  }catch(error){if(sequence===previewSequence){body.textContent=error.message;placeMessagePreview();}}
+}
+document.addEventListener('keydown',event=>{if(event.key==='Escape')closeMessagePreview();});
+window.addEventListener('resize',closeMessagePreview);
+window.addEventListener('scroll',event=>{if(messagePreview&&!messagePreview.contains(event.target))closeMessagePreview();},true);
 function status(message, error=false) { $('#status').textContent = message; $('#status').className = error?'error':''; }
 async function api(path, data, options={}) {
   const init = {...options,headers:{'X-Console-Token':token,...options.headers}};
@@ -17,6 +84,7 @@ async function api(path, data, options={}) {
 }
 function dirty(){return settingsChanged.size>0 || current && text(draft)!==text(current.value);}
 async function navigate(next){
+  closeMessagePreview();
   if(busy){status('正在等待模型建议，请稍后切换');return;}
   if(dirty()&&!window.confirm('当前草稿还没有保存，放弃草稿并切换？'))return;
   settingsChanged.clear();selectionVersion++;page=next;current=null;draft=null;chat=[];proposal=null;
@@ -47,7 +115,7 @@ async function renderPage(){
   function list(){const query=$('#filter').value.toLowerCase();const found=items.filter(i=>(i.name+' '+i.subtitle+' '+i.resource).toLowerCase().includes(query)&&
     (page!=='people'||!peopleGroup||(i.groups||[]).some(g=>`${i.bot}:${g}`===peopleGroup)));$('#list-count').textContent=`${found.length} 项`;
     $('#list').className=page==='emotes'?'tiles':'listing';
-    $('#list').innerHTML=found.length?found.map(i=>page==='people'?`<div class="person-item"><button class="list-item" data-id="${esc(i.resource)}" data-scope="general"><strong>${esc(i.name)}</strong><small>${esc(i.subtitle)}</small></button><div class="person-submenu" data-person="${esc(i.resource)}" ${current?.resource===i.resource?'':'hidden'}>${(i.sessions||[]).map(g=>`<button data-id="${esc(i.resource)}" data-scope="${g.scope}">${esc(g.name)}</button>`).join('')}</div></div>`:page==='emotes'?`<button class="tile" data-id="${esc(i.resource)}" title="${esc(i.name)}"><img loading="lazy" src="/api/image?name=${encodeURIComponent(i.name)}" alt="${esc(i.name)}"><small>${esc(i.name)}</small></button>`:`<button class="list-item" data-id="${esc(i.resource)}"><strong>${esc(i.name)}</strong><small>${esc(i.subtitle||i.resource)}</small></button>`).join(''):'<div class="empty">暂无匹配数据</div>';
+    $('#list').innerHTML=found.length?found.map(i=>page==='people'?`<div class="person-item"><button class="list-item" data-id="${esc(i.resource)}" data-scope="general"><strong class="${page==='people'?'name-person':page==='groups'?'name-group':''}">${esc(i.name)}</strong><small>${esc(i.subtitle)}</small></button><div class="person-submenu" data-person="${esc(i.resource)}" ${current?.resource===i.resource?'':'hidden'}>${(i.sessions||[]).map(g=>`<button data-id="${esc(i.resource)}" data-scope="${g.scope}"><span class="${g.scope>0?'name-group':''}">${esc(g.name)}</span></button>`).join('')}</div></div>`:page==='emotes'?`<button class="tile" data-id="${esc(i.resource)}" title="${esc(i.name)}"><img loading="lazy" src="/api/image?name=${encodeURIComponent(i.name)}" alt="${esc(i.name)}"><small>${esc(i.name)}</small></button>`:`<button class="list-item" data-id="${esc(i.resource)}"><strong class="${page==='people'?'name-person':page==='groups'?'name-group':''}">${esc(i.name)}</strong><small>${esc(i.subtitle||i.resource)}</small></button>`).join(''):'<div class="empty">暂无匹配数据</div>';
     $('#list').querySelectorAll('button').forEach(b=>b.onclick=()=>selectResource(b.dataset.id,b.dataset.scope||'general'));}
   $('#filter').oninput=list;list();
   if(page==='prompts'||page==='emotes'){
@@ -99,13 +167,14 @@ async function saveManual(){
   finally{busy=false;controls.forEach(el=>el.disabled=false);}
 }
 function renderEditor(){
+  closeMessagePreview();
   const kind=current.resource.split(':')[0];
   const title=current.title||current.resource.substring(current.resource.indexOf(':')+1);
   showSelection();
   $('#editor').innerHTML=`<div class="panel-body"><div id="fields"></div><div id="evidence"></div><div class="actions">${current.default!==undefined?'<button class="quiet" id="reset-default">载入默认值</button>':''}<button id="save-manual">保存</button></div><p class="note">手动修改点击保存即生效；模型建议须确认差异后保存。</p></div>`;
   if(kind==='emote')$('#fields').innerHTML=`<img class="image-preview" src="/api/image?name=${encodeURIComponent(title)}" alt="当前表情">`;
-  function showKnowledge(label,input,display){
-    const preview=document.createElement('div');preview.className='knowledge-display';preview.textContent=display||'暂无认知';
+  function showKnowledge(label,input,display,parts){
+    const preview=document.createElement('div');preview.className='knowledge-display';showNameParts(preview,parts,display);
     const edit=document.createElement('details');const summary=document.createElement('summary');summary.textContent='编辑原文';
     edit.append(summary,input);label.append(preview,edit);
     input.addEventListener('input',()=>{preview.textContent='原文已修改，保存后按当前昵称显示';});
@@ -123,7 +192,7 @@ function renderEditor(){
       if(key==='persona'){input=document.createElement('select');for(const item of inventory.personas||[]){const o=document.createElement('option');o.value=item.name;o.textContent=key==='persona'&&item.name==='默认'?'跟随默认人设':item.name;input.append(o);}input.value=value;}
       else{input=document.createElement(key==='activity'?'input':'textarea');if(key==='activity'){input.type='range';input.setAttribute('aria-label','主动参与积极性');input.min='0';input.max='100';input.step='1';}input.value=Array.isArray(value)?value.join('\n'):value;if(key==='__text')input.className='long';}
       const amount=key==='activity'?document.createElement('output'):null;if(amount){amount.textContent=input.value;label.append(amount);}
-      input.oninput=()=>{if(amount)amount.textContent=input.value;let v=input.value;if(key==='activity')v=Number(v);if(key==='interests')v=v.split('\n').map(s=>s.trim()).filter(Boolean);if(key==='__text')draft=v;else{let target=draft;for(const part of path)target=target[part];target[key]=v;}status('草稿尚未保存');};if(kind==='group'&&['summary','knowledge'].includes(key))showKnowledge(label,input,current.display_value?.[key]??value);else label.append(input);parent.append(label);
+      input.oninput=()=>{if(amount)amount.textContent=input.value;let v=input.value;if(key==='activity')v=Number(v);if(key==='interests')v=v.split('\n').map(s=>s.trim()).filter(Boolean);if(key==='__text')draft=v;else{let target=draft;for(const part of path)target=target[part];target[key]=v;}status('草稿尚未保存');};if(kind==='group'&&['summary','knowledge'].includes(key))showKnowledge(label,input,current.display_value?.[key]??value,current.display_parts?.[key]);else label.append(input);parent.append(label);
     }
   }
   if(kind==='person'){
@@ -134,7 +203,7 @@ function renderEditor(){
       title.textContent=field;
       const input=document.createElement('textarea');if(personScope==='general'||Number(personScope)<0)input.className='long';input.value=value;
       input.oninput=()=>{if(personScope==='general')draft['总体认知']=input.value;else if(typeof contents==='string')draft['会话印象'][personScope]=input.value;else draft['会话印象'][personScope][field]=input.value;status('草稿尚未保存');};
-      label.append(title);const shown=personScope==='general'?current.display_value?.['总体认知']:typeof contents==='string'?current.display_value?.['会话印象']?.[personScope]:current.display_value?.['会话印象']?.[personScope]?.[field];showKnowledge(label,input,shown??value);$('#fields').append(label);
+      label.append(title);const shown=personScope==='general'?current.display_value?.['总体认知']:typeof contents==='string'?current.display_value?.['会话印象']?.[personScope]:current.display_value?.['会话印象']?.[personScope]?.[field];const parts=personScope==='general'?current.display_parts?.['总体认知']:typeof contents==='string'?current.display_parts?.['会话印象']?.[personScope]:current.display_parts?.['会话印象']?.[personScope]?.[field];showKnowledge(label,input,shown??value,parts);$('#fields').append(label);
     }
   }else fields(draft,$('#fields'));
   if(kind==='person'||kind==='group'){
