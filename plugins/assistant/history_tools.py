@@ -47,6 +47,7 @@ class HistoryTools:
         self.extensions = None
         self.collector = None
         self.selected_emote = None
+        self.selected_image = None
         self.offered_emotes = set()
         self.emote_hashes = {}
         self.scopes = {key[1]}

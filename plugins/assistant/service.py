@@ -70,6 +70,7 @@ class Assistant:
         image_reader=None,
         images=None,
         send_emote=None,
+        send_image=None,
     ) -> None:
         cfg = self.config
         emit(
@@ -231,6 +232,24 @@ class Assistant:
                             await asyncio.sleep(0.35)
                         await send(chunk)
                     saved_reply = "\n".join(chunks)
+                    if reply.image_data is not None:
+                        if send_image is None:
+                            raise ServiceError("当前会话无法发送搜索图片。")
+                        try:
+                            await asyncio.wait_for(send_image(reply.image_data), 30)
+                            emit(cfg, "send_result", status="sent", image_source="web")
+                        except Superseded:
+                            raise
+                        except Exception as error:
+                            emit(
+                                cfg,
+                                "send_result",
+                                status="failed",
+                                image_source="web",
+                                error_type=type(error).__name__,
+                            )
+                            raise SendFailure from None
+                        saved_reply += "\n[已发送搜索图片]"
                     if reply.emote_id is not None:
                         if send_emote is None:
                             raise ServiceError("当前会话无法发送表情包。")

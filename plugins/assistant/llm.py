@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from .config import Config
-from .emote_collect import COLLECT_FUNCTIONS, EmoteCollector
+from .emote_collect import COLLECT_FUNCTIONS, IMAGE_FUNCTIONS, EmoteCollector
 from .emotes import EMOTE_FUNCTIONS
 from .forward import FORWARD_FUNCTION
 from .history_tools import HISTORY_FUNCTION, SEND_GROUP_FUNCTION
@@ -28,6 +28,7 @@ class Reply:
     sources: list[SearchResult] = field(default_factory=list)
     save: bool = True
     emote_id: str | None = None
+    image_data: bytes | None = None
 
 
 class LLM:
@@ -380,12 +381,15 @@ class LLM:
         memory_versions = {}
         preview_messages = []
         collector = None
-        if self.config.emotes_auto_collect and history_tools.emotes is not None:
+        collecting = self.config.emotes_auto_collect and history_tools.emotes is not None
+        if collecting or (not planning and self.search.enabled):
             collector = history_tools.collector
             if collector is None:
                 collector = EmoteCollector(history_tools.emotes, self.review_emote_image)
+                if history_tools.emotes is None:
+                    collector.max_bytes = self.config.emotes_max_bytes
                 history_tools.collector = collector
-            if history_tools.key[1] > 0:
+            if collecting and history_tools.key[1] > 0:
                 for message in messages:
                     parts = message.get("content")
                     if message.get("role") != "user" or not isinstance(parts, list):
@@ -402,7 +406,10 @@ class LLM:
                             collector.add(
                                 url, f"group:{history_tools.key[1]}", "本轮群聊或引用图片"
                             )
-            messages[0]["content"] += prompt_text("llm.investigate.0")
+            if collecting:
+                messages[0]["content"] += prompt_text("llm.investigate.0")
+            if not planning:
+                messages[0]["content"] += prompt_text("llm.images.0")
         extensions = getattr(history_tools, "extensions", None)
         tasks = getattr(history_tools, "tasks", None)
         if not planning and tasks is not None and tasks.functions() and messages:
@@ -438,12 +445,18 @@ class LLM:
                 functions.append(SEND_GROUP_FUNCTION)
             if not planning and history_tools.emotes is not None:
                 functions.extend(EMOTE_FUNCTIONS)
-            if collector is not None:
+            if collecting:
                 functions.extend(
                     f
                     for f in COLLECT_FUNCTIONS
                     if f["name"] != "search_emote_images"
                     or (self.search.enabled and searches < self.config.search_max_calls)
+                )
+            if collector is not None and not planning and self.search.enabled:
+                functions.extend(
+                    f
+                    for f in IMAGE_FUNCTIONS
+                    if f["name"] != "search_images" or searches < self.config.search_max_calls
                 )
             if pending_memories:
                 functions = [f for f in EMOTE_FUNCTIONS if f["name"] == "remember_emotes"]
@@ -455,9 +468,18 @@ class LLM:
             if not calls:
                 if pending_memories:
                     raise ServiceError("表情包内容记忆尚未完成，请稍后重试。")
-                if not text.strip() and not history_tools.selected_emote:
+                if (
+                    not text.strip()
+                    and not history_tools.selected_emote
+                    and not history_tools.selected_image
+                ):
                     raise ServiceError("模型返回了空回复，请稍后重试。")
-                return Reply(text.strip(), sources, emote_id=history_tools.selected_emote)
+                return Reply(
+                    text.strip(),
+                    sources,
+                    emote_id=history_tools.selected_emote,
+                    image_data=history_tools.selected_image,
+                )
             if not allow:
                 raise ServiceError("本次查询已达上限，请缩小问题范围。")
             # 在执行前核验整批编号，避免副作用发生后才发现结果无法对应。
@@ -501,7 +523,7 @@ class LLM:
                     if args != {}:
                         raise ValueError
                     result = collector.listing()
-                elif name == "search_emote_images":
+                elif name in ("search_emote_images", "search_images"):
                     if (
                         not isinstance(args, dict)
                         or set(args) != {"query"}
@@ -516,15 +538,23 @@ class LLM:
                         source = "web:" + parsed._replace(query="", fragment="").geturl()
                         collector.add(item["url"], source, item["description"])
                     result = collector.listing()
-                elif name in ("inspect_emote_image", "save_emote"):
+                elif name in ("inspect_emote_image", "save_emote", "inspect_image", "choose_image"):
                     if (
                         not isinstance(args, dict)
                         or set(args) != {"id"}
                         or not isinstance(args["id"], str)
                     ):
                         raise ValueError
-                    if name == "inspect_emote_image":
+                    if name in ("inspect_emote_image", "inspect_image"):
                         result, collector_previews = await collector.inspect(args["id"])
+                    elif name == "choose_image":
+                        item = collector.choose(args["id"])
+                        if item is None:
+                            result = {"status": "not_reviewed_or_not_web_image"}
+                        else:
+                            history_tools.selected_image = item["data"]
+                            history_tools.selected_emote = None
+                            result = {"status": "selected", "hint": "随最终回复发送，未收藏"}
                     else:
                         result = collector.save(args["id"])
                         if result.get("status") in ("saved", "already_saved"):
@@ -636,6 +666,7 @@ class LLM:
                         ) != history_tools.emote_hashes.get(args["id"]):
                             raise ServiceError("表情包已经变化，请重新检索。")
                         history_tools.selected_emote = args["id"]
+                        history_tools.selected_image = None
                         result = {
                             "status": "queued",
                             "hint": "回复完成后发送，可留空文本仅发表情包",

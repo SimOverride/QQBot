@@ -10,7 +10,7 @@ from .image_download import download_image
 COLLECT_FUNCTIONS = [
     tool(
         "emote_candidates",
-        "查看本轮群聊图片候选。可自主收藏通用表情，不收集私人照片、截图隐私或敏感资料。",
+        "查看本轮群聊图片候选，由当前人设与聊天语境判断收藏偏好，优先考虑群内复读和人设相关表情。",
         {},
     ),
     tool(
@@ -20,12 +20,31 @@ COLLECT_FUNCTIONS = [
     ),
     tool(
         "inspect_emote_image",
-        "下载并查看候选原图，审核是否适合通用表情收藏；只接受候选id。",
+        "下载并查看候选原图，只审核敏感内容和隐私等限制；是否收藏由当前聊天模型决定。只接受候选id。",
         {"id": {"type": "string"}},
     ),
     tool(
         "save_emote",
         "收藏已查看且审核通过的候选，自动去重并保存图片内容记忆。每轮最多2张。保存不代表已发送。",
+        {"id": {"type": "string"}},
+    ),
+]
+
+IMAGE_FUNCTIONS = [
+    tool(
+        "search_images",
+        "联网搜索辅助解释的图片，不要求是表情包；查询不得包含聊天隐私。",
+        {"query": {"type": "string"}},
+    ),
+    tool(
+        "inspect_image",
+        "查看搜索候选原图并做安全审核，只接受本轮候选id。",
+        {"id": {"type": "string"}},
+    ),
+    tool(
+        "choose_image",
+        "选择已查看且安全审核通过的搜索图片随本次回复发送，不收藏入库。"
+        "每次回复与本地表情合计最多一张，后选覆盖先选。",
         {"id": {"type": "string"}},
     ),
 ]
@@ -44,11 +63,13 @@ def image_data(data):
 
 
 class EmoteCollector:
-    def __init__(self, library, review, downloader=download_image):
+    def __init__(self, library, review, downloader=download_image, max_bytes=5 * 1024 * 1024):
         self.library, self.review, self.downloader = library, review, downloader
+        self.max_bytes = library.max_bytes if library is not None else max_bytes
         self.candidates, self.inspected = {}, {}
         self.saved = 0
         self.attempts = 0
+        self.download_attempts = 0
 
     def add(self, url, source, hint=""):
         if len(self.candidates) >= 15:
@@ -81,22 +102,24 @@ class EmoteCollector:
             }, []
         if self.attempts >= 2:
             return {"status": "inspection_limit"}, []
+        if self.download_attempts >= 4:
+            return {"status": "download_limit"}, []
+        self.download_attempts += 1
+        try:
+            data = await self.downloader(self.candidates[ident]["url"], self.max_bytes)
+            if not data or len(data) > self.max_bytes:
+                raise ServiceError("候选图片为空或超过大小上限。")
+            suffix, mime = image_data(data)
+        except ServiceError as exc:
+            return {"status": "download_failed", "hint": str(exc)}, []
         self.attempts += 1
-        data = await self.downloader(self.candidates[ident]["url"], self.library.max_bytes)
-        if not data or len(data) > self.library.max_bytes:
-            raise ServiceError("候选图片为空或超过大小上限。")
-        suffix, mime = image_data(data)
         digest = hashlib.sha256(data).hexdigest()
         preview = {
             "type": "image_url",
             "image_url": {"url": f"data:{mime};base64," + base64.b64encode(data).decode("ascii")},
         }
-        remembered = self.library.recall(digest)
-        verdict = (
-            {"eligible": True, "description": remembered}
-            if remembered
-            else await self.review(preview)
-        )
+        # 内容描述不是安全审核记录，不能因为曾经记忆过就跳过审核。
+        verdict = await self.review(preview)
         eligible = isinstance(verdict, dict) and verdict.get("eligible") is True
         description = verdict.get("description", "") if isinstance(verdict, dict) else ""
         if not isinstance(description, str) or not 1 <= len(description.strip()) <= 1200:
@@ -108,16 +131,20 @@ class EmoteCollector:
             "eligible": eligible,
             "description": description,
         }
-        return {"status": "reviewed", "eligible": eligible, "description": description}, (
-            []
-            if remembered
-            else [
-                {"type": "text", "text": "收藏候选原图，id=" + ident},
-                preview,
-            ]
-        )
+        return {"status": "reviewed", "eligible": eligible, "description": description}, [
+            {"type": "text", "text": "候选原图，安全审核不代表收藏偏好，id=" + ident},
+            preview,
+        ]
+
+    def choose(self, ident):
+        item = self.inspected.get(ident)
+        if not self.candidates.get(ident, {}).get("source", "").startswith("web:"):
+            return None
+        return item if item and item["eligible"] else None
 
     def save(self, ident):
+        if self.library is None:
+            return {"status": "library_unavailable"}
         item = self.inspected.get(ident)
         if not item or not item["eligible"]:
             return {"status": "not_reviewed_or_ineligible"}

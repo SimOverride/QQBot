@@ -2,7 +2,8 @@
 
 import asyncio
 import re
-from urllib.parse import urlsplit
+import time
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 
 def image_segments(event):
@@ -44,6 +45,43 @@ class Vision:
 
     def __init__(self, config):
         self.config = config
+        self.repetitions = {}
+
+    @staticmethod
+    def image_key(segment):
+        # QQ 图片文件标识优先，临时下载参数不参与同图判断。
+        file_id = segment.data.get("file")
+        if isinstance(file_id, str):
+            digest = re.search(r"[a-fA-F0-9]{32,64}", file_id)
+            if digest:
+                return digest.group().lower()
+        url = platform_url(segment.data.get("url"))
+        if not url:
+            return file_id if isinstance(file_id, str) and file_id else None
+        parsed = urlsplit(url)
+        query = [
+            (k, v)
+            for k, v in parse_qsl(parsed.query)
+            if k.lower() not in {"rkey", "sign", "token", "timestamp", "expires"}
+        ]
+        return parsed._replace(query=urlencode(query), fragment="").geturl()
+
+    def observe(self, bot, event):
+        now = time.monotonic()
+        self.repetitions = {
+            key: {user: stamp for user, stamp in users.items() if now - stamp < 600}
+            for key, users in self.repetitions.items()
+            if any(now - stamp < 600 for stamp in users.values())
+        }
+        for origin, segment in image_segments(event):
+            ident = self.image_key(segment)
+            if origin != "当前消息" or ident is None or str(event.user_id) == str(bot.self_id):
+                continue
+            key = (int(bot.self_id), event.group_id, ident)
+            self.repetitions.setdefault(key, {})[event.user_id] = now
+        while len(self.repetitions) > 2000:
+            oldest = min(self.repetitions, key=lambda key: max(self.repetitions[key].values()))
+            del self.repetitions[oldest]
 
     async def prepare(self, bot, event):
         images = image_segments(event)
@@ -66,11 +104,20 @@ class Vision:
                 if origin == "引用消息"
                 else event.message_id
             )
+            key = (
+                int(getattr(bot, "self_id", 0)),
+                getattr(event, "group_id", 0),
+                self.image_key(seg),
+            )
+            users = self.repetitions.get(key, {})
+            repeated = sum(time.monotonic() - stamp < 600 for stamp in users.values()) >= 2
             content.extend(
                 [
                     {
                         "type": "text",
-                        "text": f"图片{index}（{origin}，消息ID={source_id}）：",
+                        "text": f"图片{index}（{origin}，消息ID={source_id}）"
+                        + ("【本群10分钟内至少两位群友复读，优先考虑收藏】" if repeated else "")
+                        + "：",
                     },
                     {"type": "image_url", "image_url": {"url": url}},
                 ]

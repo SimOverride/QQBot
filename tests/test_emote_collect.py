@@ -53,8 +53,8 @@ class CollectTests(unittest.IsolatedAsyncioTestCase):
         again = EmoteCollector(self.library, self.review, self.download)
         ident = again.add("https://other.example/same.png", "web:other")
         _, previews = await again.inspect(ident)
-        self.assertEqual(previews, [])
-        self.review.assert_awaited_once()
+        self.assertEqual(previews[-1]["type"], "image_url")
+        self.assertEqual(self.review.await_count, 2)
         self.assertEqual(again.save(ident)["status"], "already_saved")
         self.assertEqual(len(self.library.files()), 1)
         changed = PNG + b"different"
@@ -74,9 +74,26 @@ class CollectTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.library.files(), {})
         other = self.collector.add("https://images.example/html", "web:html")
         self.download.return_value = b"<html>not an image</html>"
-        with self.assertRaises(ServiceError):
-            await self.collector.inspect(other)
+        result, preview = await self.collector.inspect(other)
+        self.assertEqual(result["status"], "download_failed")
+        self.assertEqual(preview, [])
         self.review.assert_awaited_once()
+
+    async def test_failed_download_preserves_review_budget_and_is_bounded(self):
+        self.download.side_effect = [ServiceError("图片下载失败。"), PNG]
+        result, _ = await self.collector.inspect(self.ident)
+        self.assertEqual(result["status"], "download_failed")
+        self.assertEqual(result["hint"], "图片下载失败。")
+        self.assertEqual(self.collector.attempts, 0)
+        result, _ = await self.collector.inspect(self.ident)
+        self.assertTrue(result["eligible"])
+        self.review.assert_awaited_once()
+        other = self.collector.add("https://images.example/fail", "web:fail")
+        self.download.side_effect = ServiceError("图片下载失败。")
+        for _ in range(2):
+            self.assertEqual((await self.collector.inspect(other))[0]["status"], "download_failed")
+        self.assertEqual((await self.collector.inspect(other))[0]["status"], "download_limit")
+        self.assertEqual(self.download.await_count, 4)
 
     async def test_group_planner_can_collect_then_remain_silent(self):
         cfg = Config()
@@ -227,6 +244,47 @@ class CollectTests(unittest.IsolatedAsyncioTestCase):
 class DownloadTests(unittest.TestCase):
     def resolve(self, address):
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, 443))]
+
+    def test_fake_dns_uses_public_resolution_but_never_allows_private_targets(self):
+        with (
+            patch(
+                "plugins.assistant.image_download.socket.getaddrinfo",
+                return_value=self.resolve("198.18.1.94"),
+            ),
+            patch(
+                "plugins.assistant.image_download.public_dns", return_value=["112.74.1.220"]
+            ) as dns,
+        ):
+            self.assertEqual(public_target("https://example.com/image")[2], "112.74.1.220")
+            dns.assert_called_once_with("example.com")
+            dns.reset_mock()
+            with self.assertRaises(ServiceError):
+                public_target("https://198.18.1.94/image")
+            dns.assert_not_called()
+            for addresses in ([], ["127.0.0.1"], ["198.18.1.94"], ["112.74.1.220", "10.0.0.1"]):
+                dns.return_value = addresses
+                with self.assertRaises(ServiceError):
+                    public_target("https://example.com/image")
+
+    def test_public_dns_fixed_endpoint_and_failure(self):
+        from unittest.mock import MagicMock
+
+        from plugins.assistant.image_download import public_dns
+
+        response = MagicMock()
+        response.json.return_value = {
+            "Status": 0,
+            "Answer": [{"type": 5, "data": "cdn.example.com"}, {"type": 1, "data": "112.74.1.220"}],
+        }
+        with patch("plugins.assistant.image_download.httpx.Client") as factory:
+            client = factory.return_value.__enter__.return_value
+            client.get.return_value = response
+            self.assertEqual(public_dns("example.com"), ["112.74.1.220"])
+            factory.assert_called_once_with(trust_env=False, timeout=5, follow_redirects=False)
+            self.assertEqual(client.get.call_args.args[0], "https://1.1.1.1/dns-query")
+            client.get.side_effect = httpx.ConnectError("failed")
+            with self.assertRaises(ServiceError):
+                public_dns("example.com")
 
     def test_private_addresses_and_credentials_rejected(self):
         for ip in ("127.0.0.1", "10.1.2.3", "169.254.169.254", "::1", "224.0.0.1"):

@@ -297,9 +297,11 @@ def setup() -> None:
         except Exception as error:
             logger.warning("private_archive_failure={}", type(error).__name__)
 
-        async def send_private(text, emote_id=None):
+        async def send_private(text, emote_id=None, image_data=None):
             message = (
-                service.emotes.message(emote_id)
+                MessageSegment.image(image_data)
+                if image_data is not None
+                else service.emotes.message(emote_id)
                 if emote_id is not None
                 else MessageSegment.text(text)
             )
@@ -308,8 +310,12 @@ def setup() -> None:
                 archive.collect(
                     (bot_id, scope, bot_id),
                     result["message_id"],
-                    f"[表情包：{emote_id}]" if emote_id is not None else text,
-                    ["image"] if emote_id is not None else ["text"],
+                    "[搜索图片]"
+                    if image_data is not None
+                    else f"[表情包：{emote_id}]"
+                    if emote_id is not None
+                    else text,
+                    ["image"] if emote_id is not None or image_data is not None else ["text"],
                     time.time(),
                     user_id,
                     metadata={"response_to": {"message_id": event.message_id, "sender": user_id}},
@@ -317,6 +323,9 @@ def setup() -> None:
 
         async def send_private_emote(emote_id):
             await send_private("", emote_id)
+
+        async def send_private_image(data):
+            await send_private("", image_data=data)
 
         async def read_images(request_id):
             return await service.vision.prepare(bot, event)
@@ -404,6 +413,7 @@ def setup() -> None:
             private_allowed=True,
             image_reader=read_images,
             send_emote=send_private_emote,
+            send_image=send_private_image,
             history_tools=history_tools,
             names=contacts.for_scope(bot_id, scope),
         )

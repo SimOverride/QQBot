@@ -147,6 +147,9 @@ class GroupConversation:
         if event.message_id in state.seen:
             return
         state.seen[event.message_id] = now
+        vision = getattr(self.service, "vision", None)
+        if vision is not None:
+            vision.observe(bot, event)
         state.revision += 1
         state.versions[event.user_id] = state.versions.get(event.user_id, 0) + 1
         if image_segments(event):
@@ -386,7 +389,7 @@ class GroupConversation:
         quote = quote_id is not None
         sent = False
 
-        async def send(body, emote_id=None):
+        async def send(body, emote_id=None, image_data=None):
             nonlocal sent
             stale = (
                 state.versions.get(event.user_id, 0) != sender_version
@@ -407,7 +410,9 @@ class GroupConversation:
                 emit(self.service.config, "send_skipped", reason="superseded_group_reply")
                 raise RuntimeError("superseded_group_reply")
             msg = (
-                self.service.emotes.message(emote_id)
+                MessageSegment.image(image_data)
+                if image_data is not None
+                else self.service.emotes.message(emote_id)
                 if emote_id is not None
                 else MessageSegment.text(body)
             )
@@ -420,8 +425,12 @@ class GroupConversation:
                 self.service.archive.collect(
                     (int(bot.self_id), event.group_id, int(bot.self_id)),
                     result["message_id"],
-                    f"[表情包：{emote_id}]" if emote_id is not None else body,
-                    ["image"] if emote_id is not None else ["text"],
+                    "[搜索图片]"
+                    if image_data is not None
+                    else f"[表情包：{emote_id}]"
+                    if emote_id is not None
+                    else body,
+                    ["image"] if emote_id is not None or image_data is not None else ["text"],
                     time.time(),
                     event.user_id,
                     metadata={
@@ -434,6 +443,9 @@ class GroupConversation:
 
         async def send_emote(emote_id):
             await send("", emote_id)
+
+        async def send_image(data):
+            await send("", image_data=data)
 
         async def role_lookup():
             member = await bot.get_group_member_info(
@@ -474,4 +486,5 @@ class GroupConversation:
             history_tools=planner_tools,
             images=image_context,
             send_emote=send_emote,
+            send_image=send_image,
         )
