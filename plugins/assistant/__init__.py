@@ -7,8 +7,14 @@ from contextlib import suppress
 from pathlib import Path
 
 import httpx
-from nonebot import get_bots, get_driver, get_plugin_config, on_message
-from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageSegment, PrivateMessageEvent
+from nonebot import get_bots, get_driver, get_plugin_config, on_message, on_notice
+from nonebot.adapters.onebot.v11 import (
+    Bot,
+    GroupMessageEvent,
+    MessageSegment,
+    PokeNotifyEvent,
+    PrivateMessageEvent,
+)
 from nonebot.log import logger
 from nonebot.message import event_preprocessor
 
@@ -21,6 +27,7 @@ from .llm import LLM
 from .longterm import LongTermMemory
 from .message_context import event_metadata
 from .personality import ProfileStore
+from .poke import incoming
 from .runtime import Runtime
 from .search import Search
 from .service import Assistant
@@ -293,7 +300,9 @@ def setup() -> None:
                 (bot_id, scope, user_id),
                 event.message_id,
                 text,
-                [seg.type for seg in event.original_message],
+                ["poke"]
+                if getattr(event, "poke", None)
+                else [seg.type for seg in event.original_message],
                 event.time,
                 metadata=event_metadata(event),
             )
@@ -407,6 +416,8 @@ def setup() -> None:
 
         history_tools.forward = ForwardReader(bot, event)
         history_tools.shares = ShareReader(event)
+        history_tools.poke = service.pokes.session(bot, scope, user_id, event.message_id)
+        history_tools.allow_silent = bool(getattr(event, "poke", None))
         await service.handle(
             bot_id,
             scope,
@@ -415,6 +426,7 @@ def setup() -> None:
             text,
             send_private,
             private_allowed=True,
+            passive=bool(getattr(event, "poke", None)),
             image_reader=read_images,
             send_emote=send_private_emote,
             send_image=send_private_image,
@@ -422,7 +434,7 @@ def setup() -> None:
             names=contacts.for_scope(bot_id, scope),
         )
 
-        if sharing and not history_tools.send_attempted:
+        if sharing and not history_tools.send_attempted and not getattr(event, "poke", None):
             row = archive.db.execute(
                 "SELECT id FROM messages WHERE bot=? AND grp=? AND usr=? AND message_id=?",
                 (bot_id, scope, user_id, event.message_id),
@@ -432,3 +444,19 @@ def setup() -> None:
                     await sharing.review(bot, row[0])
                 except Exception as error:
                     logger.warning("disclosure_review_failure={}", type(error).__name__)
+
+    async def poke_rule(bot: Bot, event: PokeNotifyEvent) -> bool:
+        return service is not None and incoming(bot, event) is not None
+
+    poke_matcher = on_notice(rule=poke_rule, priority=10, block=True)
+
+    @poke_matcher.handle()
+    async def handle_poke(bot: Bot, event: PokeNotifyEvent):
+        if service is None or conversations is None:
+            return
+        try:
+            await service.pokes.dispatch(
+                bot, event, contacts, config.bot_owners, conversations.receive, handle_private
+            )
+        except Exception as error:
+            logger.warning("poke_receive_failure={}", type(error).__name__)

@@ -45,6 +45,8 @@ class HistoryTools:
         self.emotes = None
         self.forward = None
         self.shares = None
+        self.poke = None
+        self.allow_silent = False
         self.extensions = None
         self.collector = None
         self.selected_emote = None

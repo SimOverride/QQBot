@@ -322,6 +322,10 @@ class GroupConversation:
             else state.revision == generation
         )
         planner_tools.emotes = self.service.emotes
+        planner_tools.poke = self.service.pokes.session(
+            bot, event.group_id, event.user_id, event.message_id, planner_tools.is_current
+        )
+        planner_tools.allow_silent = bool(getattr(event, "poke", None))
         planner_tools.forward = ForwardReader(bot, event)
         planner_tools.shares = ShareReader(event)
         for row in context:
@@ -352,6 +356,8 @@ class GroupConversation:
                 if not explicit:
                     return
         state.last_checked = time.monotonic()
+        if getattr(event, "poke", None) and decision.get("reply") is not True:
+            return
         if isinstance(decision.get("topic"), str):
             state.topic = decision["topic"][:200]
         ended = decision.get("ended") is True
@@ -387,11 +393,19 @@ class GroupConversation:
             emit(self.service.config, "group_skipped", reason="newer_message")
             return
         quote_id = decision.get("quote_message_id")
-        allowed_quotes = {r.get("message_id") for r in context if type(r.get("message_id")) is int}
+        allowed_quotes = {
+            r.get("message_id")
+            for r in context
+            if type(r.get("message_id")) is int and not r.get("poke")
+        }
         if referenced is not None:
             allowed_quotes.add(getattr(referenced, "message_id", None))
         if type(quote_id) is not int or quote_id not in allowed_quotes:
-            quote_id = event.message_id if decision.get("quote") is True else None
+            quote_id = (
+                event.message_id
+                if decision.get("quote") is True and not getattr(event, "poke", None)
+                else None
+            )
         quote = quote_id is not None
         sent = False
 
@@ -488,9 +502,11 @@ class GroupConversation:
                 },
                 ensure_ascii=False,
             ),
-            passive=not explicit,
+            passive=not explicit or bool(getattr(event, "poke", None)),
             history_tools=planner_tools,
             images=image_context,
             send_emote=send_emote,
             send_image=send_image,
         )
+        if planner_tools.poke.sent_target is not None:
+            state.last_sent = time.monotonic()

@@ -20,6 +20,7 @@ def event_metadata(event):
     quoted_sender = getattr(reply, "sender", None)
     quoted_message = getattr(reply, "message", None)
     return {
+        **({"poke": event.poke} if getattr(event, "poke", None) else {}),
         "sender_name": getattr(sender, "card", None) or getattr(sender, "nickname", None),
         "sender_nickname": getattr(sender, "nickname", None),
         "sender_role_at_send": getattr(sender, "role", None),

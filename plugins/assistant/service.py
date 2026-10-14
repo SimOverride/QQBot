@@ -18,6 +18,7 @@ from .longterm import LongTermMemory
 from .memory import Memory
 from .notices import Notices
 from .personality import ProfileStore
+from .poke import Pokes
 from .trace import emit, scoped
 
 
@@ -41,6 +42,7 @@ class Assistant:
         self.archive = archive
         self.vision = None
         self.emotes = None
+        self.pokes = Pokes(archive)
         self.memory = Memory(config, archive)
         self.profiles = profiles if profiles is not None else ProfileStore()
         self.commands = Commands(config, self.memory)
@@ -272,6 +274,8 @@ class Assistant:
                             raise SendFailure from None
                         saved_reply += f"\n[已发送表情包：{reply.emote_id}]"
                     if reply.save:
+                        if reply.poke_target is not None:
+                            saved_reply += f"\n[已拍一拍：QQ {reply.poke_target}]"
                         if self.archive:
                             try:
                                 self.archive.save(key, message_id, text, saved_reply)
@@ -323,6 +327,7 @@ class Assistant:
             logger.warning("request={} send_failure={}", request_id, type(error).__name__)
 
     def cleanup(self):
+        self.pokes.cleanup()
         self.commands.cleanup()
         self.memory.cleanup()
         self.limits.cleanup()

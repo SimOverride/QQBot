@@ -16,6 +16,7 @@ from .history_tools import HISTORY_FUNCTION, SEND_GROUP_FUNCTION
 from .http import ServiceError, post_json
 from .knowledge import GLOBAL_FIELDS, SCENE_FIELDS
 from .names import for_request
+from .poke import POKE_FUNCTION
 from .prompt_store import prompt_text, refresh_tools
 from .prompts import SEARCH_FUNCTION, system_prompt
 from .search import Search, SearchResult
@@ -31,6 +32,7 @@ class Reply:
     save: bool = True
     emote_id: str | None = None
     image_data: bytes | None = None
+    poke_target: int | None = None
 
 
 class LLM:
@@ -429,8 +431,13 @@ class LLM:
                 messages[0]["content"] += prompt_text("llm.images.0")
         extensions = getattr(history_tools, "extensions", None)
         tasks = getattr(history_tools, "tasks", None)
+        poke = getattr(history_tools, "poke", None)
         if not planning and messages:
             messages[0]["content"] += prompt_text("llm.action_intent.0")
+        if not planning and poke is not None:
+            messages[0]["content"] += prompt_text("llm.poke.0")
+        if planning and history_tools.allow_silent:
+            messages[0]["content"] += prompt_text("llm.poke_plan.0")
         shares = getattr(history_tools, "shares", None)
         share_rules_added = False
         if not planning and tasks is not None and tasks.functions() and messages:
@@ -451,6 +458,8 @@ class LLM:
                 messages[0]["content"] += prompt_text("llm.shares.0")
                 share_rules_added = True
             functions = [HISTORY_FUNCTION]
+            if not planning and poke is not None:
+                functions.append(POKE_FUNCTION)
             if (
                 getattr(history_tools, "forward", None) is not None
                 and history_tools.forward.allowed
@@ -498,6 +507,8 @@ class LLM:
                     not text.strip()
                     and not history_tools.selected_emote
                     and not history_tools.selected_image
+                    and not (poke is not None and poke.sent_target is not None)
+                    and not history_tools.allow_silent
                 ):
                     raise ServiceError("模型返回了空回复，请稍后重试。")
                 return Reply(
@@ -505,6 +516,13 @@ class LLM:
                     sources,
                     emote_id=history_tools.selected_emote,
                     image_data=history_tools.selected_image,
+                    poke_target=poke.sent_target if poke is not None else None,
+                    save=bool(
+                        text.strip()
+                        or history_tools.selected_emote
+                        or history_tools.selected_image
+                        or (poke is not None and poke.sent_target is not None)
+                    ),
                 )
             if not allow:
                 raise ServiceError("本次查询已达上限，请缩小问题范围。")
@@ -548,6 +566,8 @@ class LLM:
                             shares.register_text(row.get("text", ""))
                 elif name == "read_share":
                     result = await shares.run(args)
+                elif name == "poke_user":
+                    result = await poke.run(args)
                 elif name == "read_history":
                     result = history_tools.run(args)
                     if shares is not None:

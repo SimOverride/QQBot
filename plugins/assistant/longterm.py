@@ -99,6 +99,7 @@ class LongTermMemory:
                     "text": source["content"][:400],
                 }
         return {
+            **{k: metadata[k] for k in ("poke", "poke_action") if k in metadata},
             "id": row["id"],
             "scope": row["grp"],
             "message_id": row["message_id"],
@@ -193,7 +194,8 @@ class LongTermMemory:
         # 失败批次固定终点，新增发言不会重置预算或不断扩大失败请求。
         ceiling = retry["last_id"] if retry and retry["cursor"] == cursor else 2**63 - 1
         rows = self.db.execute(
-            "SELECT id,content FROM messages WHERE bot=? AND grp=? AND usr=? AND id>? AND id<=? "
+            "SELECT id,content,types FROM messages WHERE bot=? AND grp=? AND usr=? "
+            "AND id>? AND id<=? "
             "ORDER BY id LIMIT 20",
             (*key, cursor, ceiling),
         ).fetchall()
@@ -205,7 +207,7 @@ class LongTermMemory:
                 break
             last = row["id"]
             # Commands must not be turned back into facts after deletion/correction.
-            if content.lstrip().startswith("/"):
+            if content.lstrip().startswith("/") or "poke" in json.loads(row["types"]):
                 continue
             texts.append(content)
             size += len(content)
