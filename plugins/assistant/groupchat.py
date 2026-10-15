@@ -14,6 +14,7 @@ from .history_tools import HistoryTools
 from .message_context import event_metadata
 from .personality import LIMITS
 from .prompt_store import group_knowledge
+from .repeat import RepeatState, recently_sent
 from .shares import ShareReader, message_text
 from .trace import emit, scoped
 from .vision import image_segments
@@ -123,6 +124,7 @@ class GroupState:
     direct_tasks: dict = field(default_factory=dict)
     versions: dict = field(default_factory=dict)
     revision: int = 0
+    repeat: RepeatState = field(default_factory=RepeatState)
 
 
 class GroupConversation:
@@ -148,6 +150,7 @@ class GroupConversation:
         if event.message_id in state.seen:
             return
         state.seen[event.message_id] = now
+        state.repeat.observe(event, explicit)
         vision = getattr(self.service, "vision", None)
         if vision is not None:
             vision.observe(bot, event)
@@ -335,6 +338,11 @@ class GroupConversation:
             planner_tools.forward.register(getattr(item, "original_message", []), 0)
             planner_tools.shares.register_event(item)
         decision = {}
+        repeat_text = state.repeat.candidate(event.message_id) if not explicit else None
+        if repeat_text and recently_sent(
+            self.service.archive, int(bot.self_id), event.group_id, repeat_text
+        ):
+            repeat_text = None
         if not text.lstrip().startswith("/"):
             try:
                 async with self.service.limits.slot():
@@ -342,13 +350,17 @@ class GroupConversation:
                         decision = await self.service.llm.plan_participation(
                             context,
                             config,
-                            {"topic": state.topic, "active": state.active},
+                            {
+                                "topic": state.topic,
+                                "active": state.active,
+                                "repeat_candidate": repeat_text,
+                            },
                             self.service.profiles.effective(event.group_id),
                             event.message_id,
                             explicit,
                             int(bot.self_id),
                             images=image_context,
-                            history_tools=planner_tools,
+                            history_tools=None if repeat_text else planner_tools,
                         )
             except Exception as error:
                 emit(self.service.config, "participation_error", error_type=type(error).__name__)
@@ -411,6 +423,17 @@ class GroupConversation:
 
         async def send(body, emote_id=None, image_data=None):
             nonlocal sent
+            if (
+                not explicit
+                and emote_id is None
+                and image_data is None
+                and body.strip() == state.repeat.text.strip()
+                and len(state.repeat.users) >= 2
+                and decision.get("repeat") is not True
+            ):
+                # 普通回复生成不能绕过复读协议及冷却，重新输出同一句。
+                emit(self.service.config, "send_skipped", reason="repeat_requires_selection")
+                raise RuntimeError("repeat_requires_selection")
             stale = (
                 state.versions.get(event.user_id, 0) != sender_version
                 if explicit
@@ -466,6 +489,27 @@ class GroupConversation:
 
         async def send_image(data):
             await send("", image_data=data)
+
+        if decision.get("repeat") is True:
+            if (
+                not repeat_text
+                or explicit
+                or state.repeat.candidate(event.message_id) != repeat_text
+                or recently_sent(
+                    self.service.archive, int(bot.self_id), event.group_id, repeat_text
+                )
+            ):
+                emit(self.service.config, "group_skipped", reason="repeat_not_available")
+                return
+            quote = False
+            state.repeat.reserve(repeat_text)
+            try:
+                async with asyncio.timeout(30):
+                    await send(repeat_text)
+                emit(self.service.config, "repeat_sent", message_id=event.message_id)
+            except Exception as error:
+                emit(self.service.config, "repeat_failed", error_type=type(error).__name__)
+            return
 
         async def role_lookup():
             member = await bot.get_group_member_info(

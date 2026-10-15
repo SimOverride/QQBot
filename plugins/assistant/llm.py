@@ -922,6 +922,7 @@ class LLM:
                 "content": (
                     prompt_text("llm.plan_participation.0")
                     + prompt_text("llm.participation_boundary.0")
+                    + prompt_text("llm.repeat.0")
                 ),
             },
             {

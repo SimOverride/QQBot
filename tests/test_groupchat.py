@@ -70,6 +70,75 @@ class GroupChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"reply_focus": "核实消息11的调休说法"', context)
         self.assertIn('"trigger_message_id": 12', context)
 
+    def repeat_state(self, text="好耶！\n"):
+        from nonebot.adapters.onebot.v11 import Message
+
+        state = GroupState()
+        for user, mid in ((3, 11), (2, 12)):
+            state.repeat.observe(
+                SimpleNamespace(user_id=user, message_id=mid, original_message=Message(text)), False
+            )
+        self.llm.plan_participation.return_value["repeat"] = True
+        return state
+
+    async def test_repeat_sends_exact_text_without_quote_or_generation(self):
+        state = self.repeat_state()
+        await self.controller.respond(self.bot, self.event, "好耶！\n", state, False)
+        message = self.bot.send_group_msg.call_args.kwargs["message"]
+        self.assertEqual(message.type, "text")
+        self.assertEqual(message.data["text"], "好耶！\n")
+        self.llm.reply.assert_not_awaited()
+        self.assertEqual(self.archive.count((99, 10, 99)), 1)
+        await self.controller.respond(self.bot, self.event, "好耶！\n", state, False)
+        self.bot.send_group_msg.assert_awaited_once()
+        # 即使内存状态重建，已成功发送的历史仍阻止同文跟读。
+        await self.controller.respond(self.bot, self.event, "好耶！\n", self.repeat_state(), False)
+        self.bot.send_group_msg.assert_awaited_once()
+
+    async def test_repeat_failure_is_not_retried_or_recorded(self):
+        state = self.repeat_state()
+        self.bot.send_group_msg.side_effect = TimeoutError
+        await self.controller.respond(self.bot, self.event, "好耶！\n", state, False)
+        await self.controller.respond(self.bot, self.event, "好耶！\n", state, False)
+        self.bot.send_group_msg.assert_awaited_once()
+        self.assertEqual(self.archive.count((99, 10, 99)), 0)
+
+    async def test_repeat_zero_activity_and_normal_reply_cannot_bypass(self):
+        state = self.repeat_state()
+        self.settings.set_activity(10, 0)
+        await self.controller.respond(self.bot, self.event, "好耶！\n", state, False)
+        self.llm.plan_participation.assert_not_awaited()
+        self.settings.set_activity(10, 50)
+        self.llm.plan_participation.return_value["repeat"] = False
+        self.llm.reply.return_value = Reply("好耶！\n")
+        await self.controller.respond(self.bot, self.event, "好耶！\n", state, False)
+        self.bot.send_group_msg.assert_not_awaited()
+
+    async def test_repeat_other_group_or_bot_history_does_not_block(self):
+        self.archive.collect((99, 20, 99), 30, "好耶！\n", ["text"], time.time())
+        self.archive.collect((88, 10, 88), 31, "好耶！\n", ["text"], time.time())
+        state = self.repeat_state()
+        await self.controller.respond(self.bot, self.event, "好耶！\n", state, False)
+        self.bot.send_group_msg.assert_awaited_once()
+        self.assertIsNone(self.llm.plan_participation.call_args.kwargs["history_tools"])
+
+    async def test_repeat_requires_candidate_and_respects_silence_and_staleness(self):
+        self.llm.plan_participation.return_value["repeat"] = True
+        await self.controller.respond(self.bot, self.event, "无候选", GroupState(), False)
+        state = self.repeat_state()
+        self.llm.plan_participation.return_value["reply"] = False
+        await self.controller.respond(self.bot, self.event, "好耶！\n", state, False)
+        self.llm.plan_participation.return_value["reply"] = True
+
+        async def stale(*args, **kwargs):
+            state.revision += 1
+            return {"reply": True, "repeat": True, "relevance": 100}
+
+        self.llm.plan_participation.side_effect = stale
+        await self.controller.respond(self.bot, self.event, "好耶！\n", state, False)
+        self.bot.send_group_msg.assert_not_awaited()
+        self.llm.reply.assert_not_awaited()
+
     async def test_topic_ended_stays_silent(self):
         self.llm.plan_participation.return_value.update(ended=True, active=False)
         state = GroupState(active=True)
