@@ -243,12 +243,12 @@ class GroupChatTests(unittest.IsolatedAsyncioTestCase):
         proceed = asyncio.Event()
         entered = asyncio.Event()
 
-        async def pause(_):
+        async def pause(state, delay):
             entered.set()
             await proceed.wait()
 
         self.controller.respond = AsyncMock()
-        with patch("plugins.assistant.groupchat.asyncio.sleep", side_effect=pause):
+        with patch.object(self.controller, "wait_pending", side_effect=pause):
             await self.controller.receive(self.bot, self.event, "第一句", False)
             await entered.wait()
             latest = SimpleNamespace(group_id=10, user_id=3, message_id=13)

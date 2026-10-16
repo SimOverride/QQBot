@@ -11,7 +11,7 @@ from nonebot.log import logger
 
 from .forward import ForwardReader
 from .history_tools import HistoryTools
-from .message_context import event_metadata
+from .message_context import event_metadata, mentions_all
 from .personality import LIMITS
 from .prompt_store import group_knowledge
 from .repeat import RepeatState, recently_sent
@@ -125,6 +125,7 @@ class GroupState:
     versions: dict = field(default_factory=dict)
     revision: int = 0
     repeat: RepeatState = field(default_factory=RepeatState)
+    attention: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 class GroupConversation:
@@ -183,9 +184,14 @@ class GroupConversation:
             return
         if text.lstrip().startswith("/") or not text.strip() or text.strip() == "[非文本内容]":
             return
-        if self.settings.get(event.group_id)["activity"] == 0:
+        mention_all = mentions_all(event)
+        if self.settings.get(event.group_id)["activity"] == 0 and not mention_all:
             return
-        state.pending = (event, text, now)
+        # 普通后续消息仍进入归档上下文，但不挤掉尚未判断的全体提醒。
+        if mention_all or state.pending is None or not mentions_all(state.pending[0]):
+            state.pending = (event, text, now)
+        if mention_all:
+            state.attention.set()
         if state.task is None or state.task.done():
             state.task = asyncio.create_task(self.worker(bot, state))
 
@@ -211,19 +217,29 @@ class GroupConversation:
         finally:
             state.direct_tasks.pop(user, None)
 
+    async def wait_pending(self, state, delay):
+        """新全体提醒可唤醒普通消息的等待，关闭时等待随工作任务取消。"""
+        try:
+            await asyncio.wait_for(state.attention.wait(), delay)
+            return True
+        except TimeoutError:
+            return False
+
     async def worker(self, bot, state):
         try:
             while state.pending:
+                state.attention.clear()
                 event = state.pending[0]
                 level = self.settings.get(event.group_id)["activity"]
-                # Batch bursts; bound both model polling and unsolicited output frequency.
-                interval = max(8, 60 - level / 2)
+                # 全体提醒更快关注，仍合并短时消息并限制判断及主动发送频率。
+                interval = 8 if mentions_all(event) else max(8, 60 - level / 2)
                 delay = max(
                     2,
                     interval - (time.monotonic() - state.last_checked),
                     interval - (time.monotonic() - state.last_sent),
                 )
-                await asyncio.sleep(delay)
+                if await self.wait_pending(state, delay):
+                    continue
                 async with state.lock:
                     pending, state.pending = state.pending, None
                     if pending is None:
@@ -256,7 +272,11 @@ class GroupConversation:
         generation = state.revision
         sender_version = state.versions.get(event.user_id, 0)
         config = self.settings.get(event.group_id)
-        if not explicit and config["activity"] == 0:
+        mention_all = mentions_all(event)
+        attention_activity = (
+            min(100, config["activity"] + 20) if mention_all else config["activity"]
+        )
+        if not explicit and config["activity"] == 0 and not mention_all:
             emit(self.service.config, "group_skipped", reason="activity_disabled")
             return
         if time.monotonic() - state.touched > 600:
@@ -349,7 +369,11 @@ class GroupConversation:
                     async with asyncio.timeout(self.service.config.request_timeout_seconds):
                         decision = await self.service.llm.plan_participation(
                             context,
-                            config,
+                            {
+                                **config,
+                                "mention_all": mention_all,
+                                "attention_activity": attention_activity,
+                            },
                             {
                                 "topic": state.topic,
                                 "active": state.active,
@@ -382,6 +406,8 @@ class GroupConversation:
             decision=decision,
             explicit=explicit,
             activity=config["activity"],
+            mention_all=mention_all,
+            attention_activity=attention_activity,
         )
         logger.info(
             "group_decision group={} explicit={} reply={} ended={} activity={}",
@@ -396,7 +422,7 @@ class GroupConversation:
             or ended
             or type(score) is not int
             or not 0 <= score <= 100
-            or score < 100 - config["activity"]
+            or score < 100 - attention_activity
         ):
             emit(self.service.config, "group_skipped", reason="participation_policy")
             return
@@ -447,7 +473,8 @@ class GroupConversation:
                 not explicit
                 and not sent
                 and (
-                    state.pending is not None or self.settings.get(event.group_id)["activity"] == 0
+                    state.pending is not None
+                    or (self.settings.get(event.group_id)["activity"] == 0 and not mention_all)
                 )
             ):
                 emit(self.service.config, "send_skipped", reason="superseded_group_reply")
@@ -538,6 +565,7 @@ class GroupConversation:
                     "topic": state.topic,
                     "participating": state.active,
                     "trigger_message_id": event.message_id,
+                    "mention_all": mention_all,
                     "reply_focus": (
                         decision.get("reply_focus", "")[:600]
                         if isinstance(decision.get("reply_focus"), str)

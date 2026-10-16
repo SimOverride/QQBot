@@ -60,7 +60,8 @@ def extract_text(bot: Bot, event: GroupMessageEvent | PrivateMessageEvent, names
             body = str(seg.data.get("text", ""))
             parts.append(pattern.sub("", body) if pattern else body)
         elif seg.type == "at" and str(seg.data.get("qq")) != bot.self_id:
-            parts.append(f" @{seg.data.get('qq')} ")
+            target = seg.data.get("qq")
+            parts.append(" @全体成员 " if str(target) == "all" else f" @{target} ")
         elif seg.type == "image":
             parts.append(" [图片] ")
         elif seg.type in ("json", "xml", "music"):

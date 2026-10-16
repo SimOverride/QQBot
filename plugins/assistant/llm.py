@@ -944,6 +944,8 @@ class LLM:
         messages[-1]["content"] = multimodal_content(
             messages[-1]["content"], images, self.config.llm_provider
         )
+        if config.get("mention_all") is True:
+            messages[0]["content"] += prompt_text("llm.mention_all.0")
         if history_tools is not None:
             messages[0]["content"] += history_tools.instructions()
             content = (

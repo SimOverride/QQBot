@@ -3,6 +3,14 @@
 from .shares import message_text
 
 
+def mentions_all(event):
+    """只识别当前消息的原生全体提醒，引用和普通文字不提高关注度。"""
+    return any(
+        segment.type == "at" and str(segment.data.get("qq", "")) == "all"
+        for segment in getattr(event, "original_message", ())
+    )
+
+
 def event_metadata(event):
     sender = getattr(event, "sender", None)
     mentions = []
