@@ -20,6 +20,7 @@ SCHEMA = """
 
 class Store:
     def __init__(self, root):
+        self.root = root
         path = root / FILE
         path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path)
@@ -36,12 +37,30 @@ class Store:
         return json.loads(row[0]) if row else None
 
     def save(self, record):
+        previous = self.get(record["id"])
         record["updated"] = time.time()
         with self.db:
             self.db.execute(
                 "INSERT INTO records VALUES(?,?,?) "
                 "ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",
                 (record["id"], record["bot"], json.dumps(record, ensure_ascii=False)),
+            )
+
+        if previous is None or (previous.get("status"), previous.get("notification")) != (
+            record.get("status"),
+            record.get("notification"),
+        ):
+            from plugins.assistant.events import Events
+
+            Events(self.root, (record["bot"], record["group"])).publish(
+                "task_state",
+                {
+                    "id": record["id"],
+                    "status": record["status"],
+                    "phase": record["phase"],
+                    "notification": record.get("notification"),
+                    "summary": record.get("summary", "")[:4000],
+                },
             )
 
     def create(self, key, text, kind, application=False):
@@ -83,6 +102,16 @@ class Store:
                     "INSERT OR REPLACE INTO records VALUES(?,?,?)",
                     (record["id"], record["bot"], json.dumps(record, ensure_ascii=False)),
                 )
+        from plugins.assistant.events import Events
+
+        Events(self.root, (task["bot"], task["group"])).publish(
+            "task_approved",
+            {
+                "id": task["id"],
+                "application": application["id"],
+                "status": "queued",
+            },
+        )
         return task
 
     def event(self, identity, kind, data):
@@ -145,7 +174,8 @@ def accounts(path):
                     "failed",
                     "completed",
                 )
-                or record.get("notification") not in ("pending", "attempting", "sent", "unknown")
+                or record.get("notification")
+                not in ("pending", "attempting", "sent", "silent", "unknown")
                 or any(not isinstance(record.get(k), str) for k in ("text", "phase", "summary"))
                 or any(type(record.get(k)) not in (int, float) for k in ("created", "updated"))
                 or not isinstance(record.get("supplements"), list)

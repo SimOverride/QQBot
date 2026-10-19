@@ -31,7 +31,7 @@
 - 成功、失败和来源数量记入现有日志，模型上下文沿用日志开关，不记录模型内部思维。
 
 - `plugins/assistant/names.py` 共用当前平台目录 `data/contacts.json`；在每个回答或参与判断请求内建立昵称映射，每轮工具交互从原始消息生成独立展示副本。文本与嵌入 JSON 分开处理，保留结构化数字、链接、图片地址、工具调用与推理数据。消息编号引用优先整体识别，避免数字昵称或账号匹配破坏编号；纯数字昵称不从普通数字片段推断。兼容旧认知中的裸编号、方括号、QQ号、群号和带字段前缀的文字引用；人物与群恰好同号时，裸数字不猜测归属。身份补充仅标记机器人自己，不附加名称目录。
-- `identity_context` 明确提供 `bot_self`；`LLM.reply`、`LLM.investigate`、`LLM.plan_participation` 统一投影文字，后台请求预览沿用同一路径。昵称和群名片均无权限意义。
+- `identity_context` 明确提供 `bot_self`；`LLM.reply`、`LLM.investigate` 统一投影文字，后台请求预览沿用同一路径。昵称和群名片均无权限意义。
 - 后台资源保留原始 `value`，另返回 `display_value`、`display_evidence` 与带人物/群类型的 `display_parts`；昵称展示不进入认知版本计算，不写回数据库。建议差异也使用当前昵称展示，保存仍提交原始内容。前端通过文本节点渲染高亮片段，昵称不作为 HTML 执行。
 
 - `HistoryTools.run` 支持 `resolve_user` 与 `resolve_group`，通过 `query` 精确匹配名称或编号，通过 `scope` 限定已获准会话；仅返回匹配结果，每页最多十项。同名返回 `ambiguous`，未知返回 `not_found`，空查询不允许列出全目录。查询不会扩大原有会话权限。

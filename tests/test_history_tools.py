@@ -147,29 +147,12 @@ class HistoryTests(unittest.IsolatedAsyncioTestCase):
                     },
                 )
 
-            cfg = Config(llm_provider=provider, history_max_calls=1)
+            cfg = Config(llm_provider=provider, agent_max_calls=1)
             async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
                 llm = LLM(client, cfg, Search(client, cfg))
                 reply = await llm.reply([], "昨天说了什么", "test", history_tools=self.tools)
             self.assertEqual(reply.text, "查到了")
             self.assertNotIn("tools", seen[1])
-
-    async def test_planner_can_investigate_and_stay_quiet(self):
-        async with httpx.AsyncClient() as client:
-            llm = LLM(client, self.cfg, Search(client, self.cfg))
-            llm.step = AsyncMock(
-                side_effect=[
-                    (
-                        "",
-                        [{"call_id": "c", "name": "read_history", "arguments": json.dumps(args())}],
-                        [],
-                    ),
-                    ('{"reply":false,"ended":false}', [], []),
-                ]
-            )
-            result = await llm.plan_participation([], {}, {}, {}, 1, False, 99, self.tools)
-            self.assertFalse(result["reply"])
-            self.assertEqual(llm.step.await_count, 2)
 
     async def test_send_review_fails_closed(self):
         async with httpx.AsyncClient(

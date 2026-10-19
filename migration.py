@@ -85,6 +85,8 @@ def safe_path(root, name):
 
 
 def allowed(name):
+    if re.fullmatch(r"data/agent-events/[1-9][0-9]*/-?[1-9][0-9]*\.(json|epoch)", name):
+        return True
     if re.fullmatch(
         r"data/generated/gen_[a-f0-9]{16}/[a-f0-9]{64}/(?:plugin.py|manifest.json|test_plugin.py)",
         name,
@@ -134,6 +136,9 @@ def snapshot(source, target):
 def account(root, expected=None):
     """账号取自数据库及迁移绑定；新部署必须由操作者明确指定目标 QQ。"""
     found = set()
+    for folder in (root / "data/agent-events").glob("*"):
+        if folder.is_dir():
+            found.add(int(folder.name))
     if (root / TASKS).exists():
         from plugins.tasks.store import accounts
 
@@ -248,7 +253,7 @@ def _export_data(root, output, bot_qq=None):
             if source.is_file():
                 files[name] = source
         task_folders = list((root / "data/task-workspaces").glob("t_*/work"))
-        for folder in (root / "data/generated", *task_folders):
+        for folder in (root / "data/generated", root / "data/agent-events", *task_folders):
             if folder.exists():
                 for source in folder.rglob("*"):
                     name = source.relative_to(root).as_posix()
@@ -437,9 +442,7 @@ def merge_memory(local, incoming, output):
                         last_id != last
                         or hashlib.sha256(text.encode()).hexdigest() != row["fingerprint"]
                     ):
-                        db.execute(
-                            "DELETE FROM profile_retry WHERE bot=? AND grp=? AND usr=?", key
-                        )
+                        db.execute("DELETE FROM profile_retry WHERE bot=? AND grp=? AND usr=?", key)
                         continue
                     retries.add(key)
             # 认知选择更新时间较新的记录；相同时间保留本地。审核冲突从严拒绝公开。
@@ -584,6 +587,21 @@ def stage_merge(root, incoming, staged, qq, fresh):
         name = path.relative_to(staged).as_posix()
         target_name = library + name[len("emotes") :] if name.startswith("emotes/") else name
         target = safe_path(root, target_name)
+        if name.startswith("data/agent-events/"):
+            if name.endswith(".json"):
+                event_rows = read_json(path)
+                if not isinstance(event_rows, list) or any(
+                    not isinstance(row, dict) or not {"id", "time", "kind", "data"} <= row.keys()
+                    for row in event_rows
+                ):
+                    raise ValueError("会话模块事件格式错误")
+                if target.exists() and not fresh:
+                    event_rows = list(
+                        {row["id"]: row for row in [*event_rows, *read_json(target)]}.values()
+                    )
+                write_json(path, sorted(event_rows, key=lambda row: row["time"])[-32:])
+            elif target.exists() and not fresh:
+                shutil.copy2(target, path)
         if name.startswith("data/task-workspaces/") and target.exists() and not fresh:
             shutil.copy2(target, path)
         if name in (MEMORY, "emotes/.memory.sqlite3", IDENTITY, "group_chat.json", ".env"):

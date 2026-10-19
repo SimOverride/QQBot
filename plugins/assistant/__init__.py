@@ -131,8 +131,27 @@ def setup() -> None:
         load_generated(extensions, root)
 
         async def task_result(record):
+            import json
+
+            from .events import Events
+            from .history_tools import HistoryTools
+            from .response import Response
+
+            key = (record["bot"], record["group"], record["user"])
+            scope = HistoryTools(archive, key)
+            scope.allow_silent = True
+            scope.response = Response(set())
+            # 后台事件没有当前用户授权；只给读取与响应选择，不挂载任务修改及插件工具。
             async with service.limits.slot():
-                return await service.llm.task_result(record)
+                reply = await service.llm.reply(
+                    [],
+                    "任务状态事件，请判断是否需要通知原会话，并用适合聊天的语言说明真实结果。",
+                    "task-event-" + record["id"] + "-" + record["status"],
+                    service.profiles.effective(record["group"]),
+                    json.dumps({"task": record}, ensure_ascii=False) + Events(root, key).context(),
+                    history_tools=scope,
+                )
+            return scope.response.apply(reply).text
 
         tasks = TaskManager(root, service.commands, archive, extensions, task_result)
         service.commands.tasks = tasks

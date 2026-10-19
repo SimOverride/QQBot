@@ -35,6 +35,7 @@ class Session:
 
 class Manager:
     def __init__(self, root, commands, plugins, archive=None):
+        self.root = root
         self.store, self.commands = Store(root), commands
         self.archive = archive
         self.config = commands.config
@@ -121,6 +122,11 @@ class Manager:
         else:
             entry["groups"][str(group)] = enabled
         self.store.write(value)
+        from plugins.assistant.events import Events
+
+        Events(self.root, (bot, group)).publish(
+            "plugin_changed", {"plugin": name, "enabled": enabled, "scope": scope}
+        )
         if enabled:
             for target in entry["groups"] if scope == "全局" else [str(group)]:
                 self.activated[(bot, int(target), name)] = time.time()

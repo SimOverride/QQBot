@@ -95,11 +95,12 @@ class CollectTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.collector.inspect(other))[0]["status"], "download_limit")
         self.assertEqual(self.download.await_count, 4)
 
-    async def test_group_planner_can_collect_then_remain_silent(self):
+    async def test_main_agent_can_collect_then_remain_silent(self):
         cfg = Config()
         archive = LongTermMemory(self.root / "archive.db", cfg)
         tools = HistoryTools(archive, (99, 10, 2))
         tools.emotes = self.library
+        tools.allow_silent = True
 
         def call(name, args, cid):
             return ("", [{"name": name, "arguments": json.dumps(args), "call_id": cid}], [])
@@ -116,7 +117,7 @@ class CollectTests(unittest.IsolatedAsyncioTestCase):
                         call("inspect_emote_image", {"id": "image-1"}, "b"),
                         ('{"eligible":true,"description":"卡通反应图，表达惊讶"}', [], []),
                         call("save_emote", {"id": "image-1"}, "c"),
-                        ('{"reply":false,"ended":false}', [], []),
+                        ("", [], []),
                     ]
                 )
 
@@ -124,11 +125,11 @@ class CollectTests(unittest.IsolatedAsyncioTestCase):
                 def factory(library, review):
                     return EmoteCollector(library, review, self.download)
 
-                with patch("plugins.assistant.llm.EmoteCollector", side_effect=factory):
-                    decision = await llm.plan_participation(
-                        [], {}, {}, {}, 1, False, 99, tools, images=images
+                with patch("plugins.assistant.tools.EmoteCollector", side_effect=factory):
+                    decision = await llm.reply(
+                        [], "看看表情", "test", history_tools=tools, images=images
                     )
-                self.assertFalse(decision["reply"])
+                self.assertEqual(decision.text, "")
                 self.assertEqual(len(self.library.files()), 1)
                 name = next(iter(self.library.files()))
                 self.assertIn("惊讶", self.library.recall(self.library.digest(name)))
@@ -228,7 +229,7 @@ class CollectTests(unittest.IsolatedAsyncioTestCase):
                 def factory(library, review):
                     return EmoteCollector(library, review, self.download)
 
-                with patch("plugins.assistant.llm.EmoteCollector", side_effect=factory):
+                with patch("plugins.assistant.tools.EmoteCollector", side_effect=factory):
                     result = await llm.reply([], "找一个开心的表情", "test", history_tools=tools)
                 self.assertEqual(result.emote_id, saved_name)
                 search.images.assert_awaited_once()

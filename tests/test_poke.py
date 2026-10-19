@@ -250,32 +250,22 @@ class PokeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result.poke_target, 3 if do_poke else None)
                 self.assertEqual(result.save, do_poke)
 
-    async def test_planner_cannot_execute_poke(self):
-        tools = HistoryTools(self.archive, (99, 10, 2))
-        tools.poke = self.pokes.session(self.bot, 10, 2, 1)
-        tools.allow_silent = True
-        async with httpx.AsyncClient() as client:
-            llm = LLM(client, self.cfg, Search(client, self.cfg))
-            llm.step = AsyncMock(
-                side_effect=[
-                    ("", [{"call_id": "p", "name": "poke_user", "arguments": '{"user_id":3}'}], []),
-                    ('{"reply":false}', [], []),
-                ]
-            )
-            result = await llm.plan_participation([], {}, {}, {}, 1, True, 99, history_tools=tools)
-        self.assertFalse(result["reply"])
-        names = [f["name"] for f in llm.step.call_args_list[0].args[3]]
-        self.assertNotIn("poke_user", names)
-        self.bot.call_api.assert_not_awaited()
-
     async def test_group_notice_reply_cannot_quote_local_notice_and_can_stay_silent(self):
         event = self.pokes.receive(self.bot, notice())
-        llm = SimpleNamespace(
-            plan_participation=AsyncMock(
-                return_value={"reply": True, "quote": True, "quote_message_id": event.message_id}
-            ),
-            reply=AsyncMock(return_value=Reply("怎么啦")),
-        )
+
+        async def reply(*args, **kwargs):
+            result = await kwargs["history_tools"].response.execute(
+                {
+                    "action": "reply",
+                    "quote_message_id": event.message_id,
+                    "topic": "",
+                    "active": True,
+                }
+            )
+            self.assertEqual(result["status"], "invalid_quote")
+            return Reply("怎么啦")
+
+        llm = SimpleNamespace(reply=AsyncMock(side_effect=reply))
         service = Assistant(self.cfg, llm, archive=self.archive)
         contacts = SimpleNamespace(refresh_group=AsyncMock(), for_scope=lambda *a: {})
         group = GroupConversation(service, contacts, GroupSettings(self.root / "group.json"))
@@ -286,7 +276,8 @@ class PokeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("拍了拍机器人", llm.reply.call_args.args[4])
         self.assertTrue(llm.reply.call_args.kwargs["history_tools"].allow_silent)
         self.bot.send_group_msg.reset_mock()
-        llm.plan_participation.return_value = {"reply": False}
+        llm.reply.side_effect = None
+        llm.reply.return_value = Reply("", save=False)
         await group.respond(self.bot, event, str(event.original_message), GroupState(), True)
         self.bot.send_group_msg.assert_not_awaited()
 

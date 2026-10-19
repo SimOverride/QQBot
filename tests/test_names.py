@@ -231,20 +231,3 @@ class NamesTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"bot_self"', first[0]["content"])
         self.assertIn("与小红交流", json.dumps(final, ensure_ascii=False))
         self.assertIn("QQ30", self.archive.db.execute("SELECT content FROM messages").fetchone()[0])
-
-    async def test_planner_uses_same_identity_projection(self):
-        llm = LLM(None, Config(), SimpleNamespace(enabled=False))
-        llm.step = AsyncMock(return_value=('{"reply":false}', [], []))
-        await llm.plan_participation(
-            [{"sender": 20, "text": "请QQ99评价QQ30"}],
-            {},
-            {},
-            {},
-            1,
-            False,
-            99,
-            history_tools=HistoryTools(self.archive, (99, 10, 20)),
-        )
-        messages = llm.step.call_args.args[0]
-        self.assertIn("鲸（机器人自己）", json.dumps(messages, ensure_ascii=False))
-        self.assertIn("小红", json.dumps(messages, ensure_ascii=False))

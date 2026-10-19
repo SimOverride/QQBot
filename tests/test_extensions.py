@@ -218,7 +218,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         await self.run_tick(bot, self.now + 62)
         bot.send_group_msg.assert_not_awaited()
 
-    async def test_model_tool_dispatch_and_planning_exclusion(self):
+    async def test_model_tool_dispatch(self):
         tools = HistoryTools(None, self.key)
         tools.extensions = self.manager.session(self.key, self.admin)
         llm = LLM(None, self.config, SimpleNamespace(enabled=False))
@@ -238,11 +238,8 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
                 ("暂无任务", [], []),
             ]
         )
-        await llm.investigate([], "test", tools)
+        await llm.investigate([{"role": "system", "content": "测试"}], "test", tools)
         self.assertIn("manage_schedule", [f["name"] for f in llm.step.call_args_list[0].args[3]])
-        llm.step = AsyncMock(return_value=("{}", [], []))
-        await llm.investigate([], "plan", tools, planning=True)
-        self.assertNotIn("manage_schedule", [f["name"] for f in llm.step.call_args.args[3]])
 
     def test_store_rejects_cross_scope_and_invalid_data(self):
         bad = settings()

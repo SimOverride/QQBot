@@ -40,7 +40,11 @@ class Config(BaseModel):
     search_api_key: SecretStr = SecretStr("")
     search_max_results: int = Field(5, ge=1, le=5)
     search_timeout_seconds: PositiveFloat = 15
-    history_max_calls: int = Field(6, ge=1, le=12)
+    agent_max_calls: int = Field(24, ge=1, le=128)
+    agent_max_cost: float = Field(0, ge=0)
+    agent_input_price: float = Field(0, ge=0)
+    agent_output_price: float = Field(0, ge=0)
+    agent_max_tokens: int = Field(120000, ge=1024, le=2000000)
     search_max_calls: int = Field(2, ge=1, le=4)
     llm_timeout_seconds: PositiveFloat = 60
     request_timeout_seconds: PositiveFloat = 180

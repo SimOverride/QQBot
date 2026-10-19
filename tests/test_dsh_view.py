@@ -33,7 +33,9 @@ class ViewTests(unittest.IsolatedAsyncioTestCase):
             patch.object(LLM, "reply", AsyncMock(return_value=Reply("测试"))),
         ):
             for key in ((1, 10, 2), (1, 10, 3), (2, 10, 2), (1, -2, 2)):
-                await chat.reply([], "虚构消息", "test", history_tools=SimpleNamespace(key=key))
+                await chat.reply(
+                    [], "虚构消息", "test", history_tools=SimpleNamespace(key=key, scopes={key[1]})
+                )
             await chat.reply([], "试聊", "trial")
         self.assertEqual(turns[0].view["id"], turns[1].view["id"])
         self.assertNotEqual(turns[0].view["id"], turns[2].view["id"])

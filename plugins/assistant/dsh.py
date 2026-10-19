@@ -79,7 +79,7 @@ async def sync_views(config):
 
 
 class Turn:
-    """单个请求的独立执行器；结束即回收，浏览记录不回灌模型历史。"""
+    """单次进程恢复会话执行状态；浏览镜像保持独立。"""
 
     def __init__(self, config, request_id):
         self.config, self.request_id = config, request_id
@@ -87,12 +87,15 @@ class Turn:
         self.offset = 0
         self.pending = None
         self.view = None
+        self.budget = None
+        self.runtime = None
 
     async def start(self):
         package = Runner(Path.cwd(), self.config).package()
         self.temp = tempfile.TemporaryDirectory(prefix="qqbot-chat-")
         root = Path(self.temp.name)
-        (root / "home").mkdir()
+        home = self.runtime or root / "home"
+        home.mkdir(parents=True, exist_ok=True)
         entries = [
             {"id": name, "disabled": True}
             for name in (
@@ -140,12 +143,14 @@ class Turn:
         patch.write_text(json.dumps(entries), encoding="utf-8")
         env = environment()
         env.update(
-            DSH_HOME=str(root / "home"),
+            DSH_HOME=str(home),
             DSH_TELEMETRY_DISABLED="1",
             DSH_PERMISSION_MODE="workspace-write",
             DEEPSEEK_API_KEY=self.config.deepseek_api_key.get_secret_value(),
             QQBOT_DSH_PACKAGE=str(package),
             QQBOT_OUTPUT_TOKENS=str(self.config.llm_max_output_tokens),
+            QQBOT_SESSION_ID=self.view["id"] if self.runtime else "",
+            QQBOT_RUNTIME_CWD=str(home),
         )
         self.process = await asyncio.create_subprocess_exec(
             *launch(package, env),
@@ -211,12 +216,20 @@ class Turn:
             "system": messages[0]["content"],
             "functions": refresh_tools(functions) if allow else [],
             "output_tokens": self.config.llm_max_output_tokens,
-            "max_steps": self.config.history_max_calls + 2,
+            "max_steps": self.config.agent_max_calls + 2,
             "messages": await self.prepare(messages[self.offset or 1 :]),
             "view": self.view,
+            "budget": self.budget.remaining() if self.budget else None,
         }
         if self.pending:
-            item["id"] = self.pending
+            results = item.pop("messages")
+            attachments = [m for m in results if m.get("role") == "user"]
+            item["results"] = []
+            for index, identity in enumerate(self.pending):
+                found = [m for m in results if m.get("call_id", m.get("tool_call_id")) == identity]
+                if index == len(self.pending) - 1:
+                    found.extend(attachments)
+                item["results"].append({"id": identity, "messages": found})
         self.process.stdin.write((json.dumps(item, ensure_ascii=False) + "\n").encode())
         await self.process.stdin.drain()
         while line := await self.process.stdout.readline():
@@ -224,35 +237,34 @@ class Turn:
                 continue
             event = json.loads(line[11:])
             if event["type"] == "usage":
+                if self.budget:
+                    self.budget.usage(event.get("usage"))
                 emit(self.config, "dsh_usage", request_id=self.request_id, usage=event.get("usage"))
-            elif event["type"] == "call":
-                self.pending = event["id"]
-                call = {
-                    "call_id": event["id"],
-                    "name": event["name"],
-                    "arguments": event["arguments"],
-                }
-                # 这些协议记录仅供原有业务校验器定位结果；DSH 自身维护真实工具回合。
-                output = (
-                    {"type": "function_call", **call}
-                    if self.config.llm_provider == "openai"
-                    else {
-                        "role": "assistant",
-                        "content": "",
-                        "tool_calls": [
-                            {
-                                "id": call["call_id"],
-                                "type": "function",
-                                "function": {
-                                    "name": call["name"],
-                                    "arguments": call["arguments"],
-                                },
-                            }
-                        ],
-                    }
-                )
-                self.offset = len(messages) + 1
-                return "", [call], [output]
+            elif event["type"] == "calls":
+                calls = event["calls"]
+                self.pending = [call["call_id"] for call in calls]
+                if self.config.llm_provider == "openai":
+                    output = [{"type": "function_call", **call} for call in calls]
+                else:
+                    output = [
+                        {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": call["call_id"],
+                                    "type": "function",
+                                    "function": {
+                                        "name": call["name"],
+                                        "arguments": call["arguments"],
+                                    },
+                                }
+                                for call in calls
+                            ],
+                        }
+                    ]
+                self.offset = len(messages) + len(output)
+                return "", calls, output
             elif event["type"] == "final":
                 emit(self.config, "dsh_reply", request_id=self.request_id, text=event["text"])
                 return event["text"], [], []
@@ -275,10 +287,42 @@ class Chat(LLM):
     """正式聊天使用 DSH；认知提取、审核等独立模型操作保持各自职责。"""
 
     async def reply(self, history, user, request_id, *args, **kwargs):
+        scope = kwargs.get("history_tools", args[3] if len(args) > 3 else None)
+        if not hasattr(self, "_sessions"):
+            self._sessions = {}
+        key = tuple(scope.key[:2]) if scope is not None else ("trial", request_id)
+        lock = self._sessions.setdefault(key, asyncio.Lock())
+        async with lock:
+            try:
+                return await self._reply(history, user, request_id, *args, **kwargs)
+            finally:
+                if not lock._waiters:
+                    self._sessions.pop(key, None)
+
+    async def _reply(self, history, user, request_id, *args, **kwargs):
         turn = Turn(self.config, request_id)
         scope = kwargs.get("history_tools", args[3] if len(args) > 3 else None)
         if scope is not None and getattr(scope, "key", None):
+            from .budget import Budget
+
+            scope.budget = turn.budget = Budget(self.config)
             bot, group, sender = scope.key
+            archive = getattr(scope, "archive", None)
+            project = archive.root if archive is not None else Path.cwd()
+            from .events import Events
+
+            events = Events(project, scope.key)
+            epoch_file = project / "data" / "agent-events" / str(bot) / f"{group}.epoch"
+            epoch = epoch_file.read_text() if epoch_file.exists() else "initial"
+            policy = json.dumps([sorted(self.config.bot_owners), sorted(scope.scopes), epoch])
+            generation = hashlib.sha256(policy.encode()).hexdigest()[:16]
+            turn.runtime = project / "data" / "agent" / str(bot) / str(group) / generation
+            original_current = getattr(scope, "is_current", lambda: True)
+            scope.is_current = lambda: (
+                original_current()
+                and (epoch_file.read_text() if epoch_file.exists() else "initial") == epoch
+            )
+            user += events.context()
             turn.view = {
                 "home": str(view_home(self.config)),
                 "cwd": str(Path(__file__).resolve().parents[2]),

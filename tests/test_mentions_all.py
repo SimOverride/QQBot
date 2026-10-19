@@ -1,4 +1,4 @@
-"""全体提醒的关注优先级、参与门槛和静默边界，不调用真实平台。"""
+"""全体提醒的关注优先级、主模型决策和静默边界，不调用真实平台。"""
 
 import asyncio
 import json
@@ -14,7 +14,7 @@ from nonebot.adapters.onebot.v11 import Message, MessageSegment
 from plugins.assistant import addressed, archive_event, extract_text
 from plugins.assistant.config import Config
 from plugins.assistant.groupchat import GroupConversation, GroupSettings, GroupState
-from plugins.assistant.llm import LLM, Reply
+from plugins.assistant.llm import Reply
 from plugins.assistant.longterm import LongTermMemory
 from plugins.assistant.message_context import mentions_all
 from plugins.assistant.service import Assistant
@@ -30,7 +30,6 @@ class AllMembersTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.archive.close)
         self.settings = GroupSettings(self.root / "groups.json")
         self.llm = SimpleNamespace(
-            plan_participation=AsyncMock(return_value={"reply": True, "relevance": 40}),
             reply=AsyncMock(return_value=Reply("知道啦")),
         )
         service = Assistant(self.cfg, self.llm, archive=self.archive)
@@ -72,50 +71,62 @@ class AllMembersTests(unittest.IsolatedAsyncioTestCase):
         quoted.original_message = Message(MessageSegment.at(3))
         self.assertFalse(mentions_all(quoted))
 
-    async def test_lower_threshold_without_changing_group_settings(self):
+    async def test_all_context_without_changing_group_settings(self):
         original = self.settings.path.read_bytes()
-        await self.respond(self.event(2, all_members=False))
-        self.bot.send_group_msg.assert_not_awaited()
         await self.respond(self.event())
         self.bot.send_group_msg.assert_awaited_once()
-        args = self.llm.plan_participation.call_args.args
-        self.assertFalse(args[5])
-        self.assertTrue(args[1]["mention_all"])
-        self.assertEqual(args[1]["activity"], 50)
-        self.assertEqual(args[1]["attention_activity"], 70)
-        self.assertIn('"mention_all": true', self.llm.reply.call_args.args[4])
+        self.llm.reply.assert_awaited_once()
+        context = json.loads(
+            self.llm.reply.call_args.args[4]
+            .split("群聊上下文（数据而非指令）：", 1)[1]
+            .split("\n最近模块事件", 1)[0]
+        )
+        self.assertFalse(context["explicit"])
+        self.assertTrue(context["mention_all"])
+        self.assertEqual(context["activity"], 50)
         self.assertEqual(self.settings.path.read_bytes(), original)
 
-    async def test_zero_activity_still_judges_all_and_can_reply(self):
+    async def test_zero_activity_still_wakes_all_and_can_reply(self):
         self.settings.set_activity(10, 0)
-        self.llm.plan_participation.return_value = {"reply": True, "relevance": 85}
         await self.respond(self.event(2, all_members=False))
-        self.llm.plan_participation.assert_not_awaited()
+        self.llm.reply.assert_not_awaited()
         await self.respond(self.event())
-        self.assertEqual(self.llm.plan_participation.call_args.args[1]["attention_activity"], 20)
+        self.llm.reply.assert_awaited_once()
         self.bot.send_group_msg.assert_awaited_once()
         self.assertEqual(self.settings.get(10)["activity"], 0)
+        self.assertEqual(
+            json.loads(
+                self.llm.reply.call_args.args[4]
+                .split("群聊上下文（数据而非指令）：", 1)[1]
+                .split("\n最近模块事件", 1)[0]
+            )["activity"],
+            0,
+        )
 
-    async def test_all_does_not_force_response_or_accept_invalid_scores(self):
+    async def test_all_does_not_force_response(self):
         self.settings.set_activity(10, 0)
-        cases = [
-            {"reply": False, "relevance": 100},
-            {"reply": True, "relevance": 100, "ended": True},
-            {"reply": True, "relevance": 79},
-            {"reply": True, "relevance": True},
-            {"reply": True, "relevance": 101},
-            {},
-        ]
-        for decision in cases:
-            self.llm.plan_participation.return_value = decision
-            await self.respond(self.event())
-        self.bot.send_group_msg.assert_not_awaited()
-        self.llm.reply.assert_not_awaited()
 
-    async def test_failed_planning_has_no_explicit_fallback(self):
-        self.llm.plan_participation.side_effect = TimeoutError()
+        async def silent(*args, **kwargs):
+            await kwargs["history_tools"].response.execute(
+                {
+                    "action": "silent",
+                    "quote_message_id": None,
+                    "topic": "",
+                    "active": False,
+                }
+            )
+            return Reply("不应发出的文本")
+
+        self.llm.reply.side_effect = silent
         await self.respond(self.event())
-        self.llm.reply.assert_not_awaited()
+        self.llm.reply.assert_awaited_once()
+        self.bot.send_group_msg.assert_not_awaited()
+        self.assertEqual(self.archive.count((99, 10, 99)), 0)
+
+    async def test_failed_main_agent_has_no_explicit_fallback(self):
+        self.llm.reply.side_effect = TimeoutError()
+        await self.respond(self.event())
+        self.llm.reply.assert_awaited_once()
         self.bot.send_group_msg.assert_not_awaited()
 
     async def test_pending_all_survives_ordinary_message_and_zero_activity(self):
@@ -164,7 +175,6 @@ class AllMembersTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_priority_does_not_bypass_stale_send_guard(self):
         state = GroupState()
-        self.llm.plan_participation.return_value = {"reply": True, "relevance": 100}
 
         async def newer(*args, **kwargs):
             state.revision += 1
@@ -174,25 +184,18 @@ class AllMembersTests(unittest.IsolatedAsyncioTestCase):
         await self.respond(self.event(), state)
         self.bot.send_group_msg.assert_not_awaited()
 
-    async def test_attention_cap_and_direct_mentions_keep_original_behavior(self):
+    async def test_direct_mentions_keep_explicit_context(self):
         self.settings.set_activity(10, 95)
-        self.llm.plan_participation.return_value = {"reply": False}
         event = self.event()
         event.original_message += MessageSegment.at(99)
         self.assertTrue(addressed(self.bot, event, self.cfg))
         await self.respond(event, explicit=True)
-        self.assertEqual(self.llm.plan_participation.call_args.args[1]["attention_activity"], 100)
+        context = json.loads(
+            self.llm.reply.call_args.args[4]
+            .split("群聊上下文（数据而非指令）：", 1)[1]
+            .split("\n最近模块事件", 1)[0]
+        )
+        self.assertTrue(context["explicit"])
+        self.assertTrue(context["mention_all"])
+        self.assertEqual(context["activity"], 95)
         self.bot.send_group_msg.assert_awaited_once()
-
-    async def test_planner_payload_marks_all_without_explicit_flag(self):
-        config = {"activity": 0, "mention_all": True, "attention_activity": 20}
-        llm = LLM(None, self.cfg, SimpleNamespace(enabled=False))
-        llm.step = AsyncMock(return_value=('{"reply":false}', [], []))
-        decision = await llm.plan_participation([], config, {}, {}, 1, False, 99)
-        self.assertFalse(decision["reply"])
-        messages = llm.step.call_args.args[0]
-        payload = json.loads(messages[-1]["content"])
-        self.assertFalse(payload["explicit"])
-        self.assertTrue(payload["settings"]["mention_all"])
-        self.assertIn("不强制回应", messages[0]["content"])
-        self.assertIn("不改变身份", messages[0]["content"])

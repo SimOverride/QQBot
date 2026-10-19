@@ -28,11 +28,16 @@ PLUGIN = {
 
 class Modules:
     def __init__(self, session):
+        self.response = getattr(session, "response", None)
         self.tasks = getattr(session, "tasks", None)
         self.extensions = getattr(session, "extensions", None)
 
     def functions(self):
         result = [CAPABILITIES]
+        if self.response:
+            from .response import FUNCTION
+
+            result.append(FUNCTION)
         if self.tasks:
             result.extend(self.tasks.functions())
         if self.extensions:
@@ -41,6 +46,8 @@ class Modules:
         return result
 
     async def execute(self, name, args, available):
+        if name == "set_response" and self.response:
+            return await self.response.execute(args)
         if name == "read_capabilities":
             if args != {}:
                 raise ValueError

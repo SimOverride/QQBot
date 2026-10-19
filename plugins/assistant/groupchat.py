@@ -273,9 +273,6 @@ class GroupConversation:
         sender_version = state.versions.get(event.user_id, 0)
         config = self.settings.get(event.group_id)
         mention_all = mentions_all(event)
-        attention_activity = (
-            min(100, config["activity"] + 20) if mention_all else config["activity"]
-        )
         if not explicit and config["activity"] == 0 and not mention_all:
             emit(self.service.config, "group_skipped", reason="activity_disabled")
             return
@@ -336,101 +333,33 @@ class GroupConversation:
                 "text": message_text(quoted_message)[:1600] if quoted_message else "",
             }
             context.append({"trigger_message_id": event.message_id, "quoted_message": quoted})
-        planner_tools = HistoryTools(
+        chat_tools = HistoryTools(
             self.service.archive, (int(bot.self_id), event.group_id, event.user_id)
         )
-        planner_tools.is_current = lambda: (
+        chat_tools.is_current = lambda: (
             state.versions.get(event.user_id, 0) == sender_version
             if explicit
             else state.revision == generation
         )
-        planner_tools.emotes = self.service.emotes
-        planner_tools.poke = self.service.pokes.session(
-            bot, event.group_id, event.user_id, event.message_id, planner_tools.is_current
+        chat_tools.emotes = self.service.emotes
+        chat_tools.poke = self.service.pokes.session(
+            bot, event.group_id, event.user_id, event.message_id, chat_tools.is_current
         )
-        planner_tools.allow_silent = bool(getattr(event, "poke", None))
-        planner_tools.forward = ForwardReader(bot, event)
-        planner_tools.shares = ShareReader(event)
+        chat_tools.allow_silent = True
+        chat_tools.forward = ForwardReader(bot, event)
+        chat_tools.shares = ShareReader(event)
         for row in context:
             if isinstance(row.get("text"), str):
-                planner_tools.shares.register_text(row["text"], row.get("message_id"))
+                chat_tools.shares.register_text(row["text"], row.get("message_id"))
         for item in events:
-            planner_tools.forward.register(getattr(item, "original_message", []), 0)
-            planner_tools.shares.register_event(item)
-        decision = {}
+            chat_tools.forward.register(getattr(item, "original_message", []), 0)
+            chat_tools.shares.register_event(item)
         repeat_text = state.repeat.candidate(event.message_id) if not explicit else None
         if repeat_text and recently_sent(
             self.service.archive, int(bot.self_id), event.group_id, repeat_text
         ):
             repeat_text = None
-        if not text.lstrip().startswith("/"):
-            try:
-                async with self.service.limits.slot():
-                    async with asyncio.timeout(self.service.config.request_timeout_seconds):
-                        decision = await self.service.llm.plan_participation(
-                            context,
-                            {
-                                **config,
-                                "mention_all": mention_all,
-                                "attention_activity": attention_activity,
-                            },
-                            {
-                                "topic": state.topic,
-                                "active": state.active,
-                                "repeat_candidate": repeat_text,
-                            },
-                            self.service.profiles.effective(event.group_id),
-                            event.message_id,
-                            explicit,
-                            int(bot.self_id),
-                            images=image_context,
-                            history_tools=None if repeat_text else planner_tools,
-                        )
-            except Exception as error:
-                emit(self.service.config, "participation_error", error_type=type(error).__name__)
-                logger.warning("group_planning_failure={}", type(error).__name__)
-                if not explicit:
-                    return
         state.last_checked = time.monotonic()
-        if getattr(event, "poke", None) and decision.get("reply") is not True:
-            return
-        if isinstance(decision.get("topic"), str):
-            state.topic = decision["topic"][:200]
-        ended = decision.get("ended") is True
-        state.active = not ended and decision.get("active") is True
-        state.touched = time.monotonic()
-        score = decision.get("relevance", 0)
-        emit(
-            self.service.config,
-            "participation_decision",
-            decision=decision,
-            explicit=explicit,
-            activity=config["activity"],
-            mention_all=mention_all,
-            attention_activity=attention_activity,
-        )
-        logger.info(
-            "group_decision group={} explicit={} reply={} ended={} activity={}",
-            event.group_id,
-            explicit,
-            decision.get("reply") is True,
-            ended,
-            config["activity"],
-        )
-        if not explicit and (
-            decision.get("reply") is not True
-            or ended
-            or type(score) is not int
-            or not 0 <= score <= 100
-            or score < 100 - attention_activity
-        ):
-            emit(self.service.config, "group_skipped", reason="participation_policy")
-            return
-        # Do not send an outdated unsolicited response after newer activity arrived.
-        if not explicit and state.pending is not None:
-            emit(self.service.config, "group_skipped", reason="newer_message")
-            return
-        quote_id = decision.get("quote_message_id")
         allowed_quotes = {
             r.get("message_id")
             for r in context
@@ -438,13 +367,10 @@ class GroupConversation:
         }
         if referenced is not None:
             allowed_quotes.add(getattr(referenced, "message_id", None))
-        if type(quote_id) is not int or quote_id not in allowed_quotes:
-            quote_id = (
-                event.message_id
-                if decision.get("quote") is True and not getattr(event, "poke", None)
-                else None
-            )
-        quote = quote_id is not None
+        from .response import Response
+
+        chat_tools.response = Response(allowed_quotes, repeat_text, state.topic, state.active)
+        decision = chat_tools.response.state
         sent = False
 
         async def send(body, emote_id=None, image_data=None):
@@ -455,7 +381,7 @@ class GroupConversation:
                 and image_data is None
                 and body.strip() == state.repeat.text.strip()
                 and len(state.repeat.users) >= 2
-                and decision.get("repeat") is not True
+                and decision.get("action") != "repeat"
             ):
                 # 普通回复生成不能绕过复读协议及冷却，重新输出同一句。
                 emit(self.service.config, "send_skipped", reason="repeat_requires_selection")
@@ -486,7 +412,20 @@ class GroupConversation:
                 if emote_id is not None
                 else MessageSegment.text(body)
             )
-            if quote and not sent:
+            if decision.get("action") == "repeat" and not sent:
+                if (
+                    not repeat_text
+                    or state.repeat.candidate(event.message_id) != repeat_text
+                    or recently_sent(
+                        self.service.archive, int(bot.self_id), event.group_id, repeat_text
+                    )
+                ):
+                    from .service import Superseded
+
+                    raise Superseded
+                state.repeat.reserve(repeat_text)
+            quote_id = decision.get("quote_message_id")
+            if quote_id is not None and not sent and decision.get("action") != "repeat":
                 msg = MessageSegment.reply(quote_id) + msg
             result = await bot.send_group_msg(group_id=event.group_id, message=msg)
             sent = True
@@ -517,27 +456,6 @@ class GroupConversation:
         async def send_image(data):
             await send("", image_data=data)
 
-        if decision.get("repeat") is True:
-            if (
-                not repeat_text
-                or explicit
-                or state.repeat.candidate(event.message_id) != repeat_text
-                or recently_sent(
-                    self.service.archive, int(bot.self_id), event.group_id, repeat_text
-                )
-            ):
-                emit(self.service.config, "group_skipped", reason="repeat_not_available")
-                return
-            quote = False
-            state.repeat.reserve(repeat_text)
-            try:
-                async with asyncio.timeout(30):
-                    await send(repeat_text)
-                emit(self.service.config, "repeat_sent", message_id=event.message_id)
-            except Exception as error:
-                emit(self.service.config, "repeat_failed", error_type=type(error).__name__)
-            return
-
         async def role_lookup():
             member = await bot.get_group_member_info(
                 group_id=event.group_id, user_id=event.user_id, no_cache=True
@@ -566,19 +484,25 @@ class GroupConversation:
                     "participating": state.active,
                     "trigger_message_id": event.message_id,
                     "mention_all": mention_all,
-                    "reply_focus": (
-                        decision.get("reply_focus", "")[:600]
-                        if isinstance(decision.get("reply_focus"), str)
-                        else ""
+                    "activity": config["activity"],
+                    "explicit": explicit,
+                    "repeat_candidate": repeat_text,
+                    "participation_guidance": (
+                        "积极性仅表示参与意愿：低档倾听，中档自然参与，高档积极；"
+                        "结合语境自主回应或静默，不按分数阈值决定。"
+                        "@全体只代表优先唤醒，不要求回复。"
                     ),
                 },
                 ensure_ascii=False,
             ),
             passive=not explicit or bool(getattr(event, "poke", None)),
-            history_tools=planner_tools,
+            history_tools=chat_tools,
             images=image_context,
             send_emote=send_emote,
             send_image=send_image,
         )
-        if planner_tools.poke.sent_target is not None:
+        state.topic = decision["topic"]
+        state.active = decision["active"]
+        state.touched = time.monotonic()
+        if chat_tools.poke.sent_target is not None:
             state.last_sent = time.monotonic()

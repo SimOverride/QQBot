@@ -127,7 +127,10 @@ class ModuleTests(unittest.IsolatedAsyncioTestCase):
         turn = Turn(cfg, "test")
         sent = []
         stream = asyncio.StreamReader()
-        stream.feed_data(b'QQBOT_CHAT {"type":"call","id":"a","name":"probe","arguments":"{}"}\n')
+        stream.feed_data(
+            b'QQBOT_CHAT {"type":"calls","calls":['
+            b'{"call_id":"a","name":"probe","arguments":"{}"}]}\n'
+        )
         stream.feed_data(b'QQBOT_CHAT {"type":"final","text":"done"}\n')
         stdin = SimpleNamespace(write=sent.append, drain=AsyncMock())
         turn.process = SimpleNamespace(stdin=stdin, stdout=stream)
@@ -137,8 +140,8 @@ class ModuleTests(unittest.IsolatedAsyncioTestCase):
         LLM(None, cfg, None).append_tool_result(messages, calls[0]["call_id"], {"status": "ok"})
         await turn.step(messages, False, [])
         request = json.loads(sent[-1])
-        self.assertEqual(request["id"], "a")
-        self.assertEqual(len(request["messages"]), 1)
+        self.assertEqual(request["results"][0]["id"], "a")
+        self.assertEqual(len(request["results"][0]["messages"]), 1)
         self.assertEqual(request["functions"], [])
 
 

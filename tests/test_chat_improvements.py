@@ -152,10 +152,19 @@ class Improvements(unittest.IsolatedAsyncioTestCase):
         archive = LongTermMemory(self.root / "data/memory.sqlite3", config)
         self.addCleanup(archive.close)
         archive.collect((99, 10, 2), 11, "旧问题", ["text"], time.time())
-        llm = SimpleNamespace(
-            plan_participation=AsyncMock(return_value={"quote_message_id": 11}),
-            reply=AsyncMock(return_value=Reply("先说一句\n<分条>\n再补一句")),
-        )
+
+        async def reply(*args, **kwargs):
+            await kwargs["history_tools"].response.execute(
+                {
+                    "action": "reply",
+                    "quote_message_id": 11,
+                    "topic": "",
+                    "active": True,
+                }
+            )
+            return Reply("先说一句\n<分条>\n再补一句")
+
+        llm = SimpleNamespace(reply=AsyncMock(side_effect=reply))
         service = Assistant(config, llm, archive=archive)
         controller = GroupConversation(
             service,

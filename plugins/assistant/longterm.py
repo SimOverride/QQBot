@@ -258,7 +258,8 @@ class LongTermMemory:
         row = self.profile_retry(key)
         retry_at = (
             time.time() + PROFILE_RETRY_DELAYS[row["attempts"] - 1]
-            if row["attempts"] < PROFILE_MAX_ATTEMPTS else 0
+            if row["attempts"] < PROFILE_MAX_ATTEMPTS
+            else 0
         )
         with self.db:
             self.db.execute(
@@ -267,9 +268,15 @@ class LongTermMemory:
                 (retry_at, error_type, *key, attempt_id),
             )
         emit(
-            self.config, "profile_retry", bot=key[0], group=key[1], user=key[2],
-            batch_end=row["last_id"], attempts=row["attempts"],
-            retry_at=retry_at, suspended=row["attempts"] >= PROFILE_MAX_ATTEMPTS,
+            self.config,
+            "profile_retry",
+            bot=key[0],
+            group=key[1],
+            user=key[2],
+            batch_end=row["last_id"],
+            attempts=row["attempts"],
+            retry_at=retry_at,
+            suspended=row["attempts"] >= PROFILE_MAX_ATTEMPTS,
             error_type=error_type,
         )
 
@@ -611,6 +618,23 @@ class LongTermMemory:
             self.advance(key, last)
 
     def delete(self, bot: int, group: int | None = None, user: int | None = None):
+        # 清除任何成员历史后重建群执行上下文，避免原生会话重新带回已删除内容。
+        from .events import Events
+
+        scopes = (
+            {group}
+            if group is not None
+            else {
+                r[0]
+                for r in self.db.execute("SELECT DISTINCT grp FROM messages WHERE bot=?", (bot,))
+            }
+        )
+        for scope in scopes:
+            stream = Events(self.root, (bot, scope))
+            stream.path.parent.mkdir(parents=True, exist_ok=True)
+            stream.path.with_suffix(".epoch").write_text(uuid.uuid4().hex)
+            stream.path.unlink(missing_ok=True)
+            stream.publish("session_reset", {"hint": "历史已清除；后续从当前有效档案重建上下文。"})
         clause, values = "bot=?", [bot]
         if group is not None:
             clause += " AND grp=?"

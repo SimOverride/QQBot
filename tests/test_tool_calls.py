@@ -99,7 +99,6 @@ class ToolCallTests(unittest.IsolatedAsyncioTestCase):
                             ],
                             reasoning=reasoning if provider == "openai" else None,
                         ),
-                        model_response(provider, [call("b-next", arguments=history_args("音乐"))]),
                         model_response(provider),
                     ]
                 )
@@ -111,13 +110,13 @@ class ToolCallTests(unittest.IsolatedAsyncioTestCase):
                         messages = payload["input" if provider == "openai" else "messages"]
                         results = tool_results(messages)
                         self.assertEqual(results["a"]["status"], "ok")
-                        self.assertEqual(results["b"]["status"], "not_executed")
+                        self.assertEqual(results["b"]["status"], "ok")
                         if provider == "openai":
                             self.assertIn(reasoning, messages)
                     return httpx.Response(200, json=next(responses))
 
                 self.tools.run = Mock(wraps=HistoryTools.run.__get__(self.tools))
-                cfg = self.cfg.model_copy(update={"llm_provider": provider, "history_max_calls": 2})
+                cfg = self.cfg.model_copy(update={"llm_provider": provider, "agent_max_calls": 2})
                 async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
                     llm = LLM(client, cfg, Search(client, cfg))
                     reply = await llm.reply([], "查两件事", "test", history_tools=self.tools)
@@ -125,14 +124,14 @@ class ToolCallTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(
                     [c.args[0]["query"] for c in self.tools.run.call_args_list], ["编程", "音乐"]
                 )
-                self.assertEqual(len(seen), 3)
+                self.assertEqual(len(seen), 2)
                 self.assertNotIn("tools", seen[-1])
                 results = tool_results(seen[-1]["input" if provider == "openai" else "messages"])
-                self.assertEqual(results["b-next"]["status"], "ok")
+                self.assertEqual(results["b"]["status"], "ok")
 
-    async def test_deferred_send_does_not_execute_or_expand_budget(self):
+    async def test_exhausted_batch_does_not_execute_send(self):
         self.tools.send_callback = AsyncMock(return_value={"status": "sent"})
-        self.cfg.history_max_calls = 1
+        self.cfg.agent_max_calls = 1
         async with httpx.AsyncClient() as client:
             llm = LLM(client, self.cfg, Search(client, self.cfg))
             llm.step = AsyncMock(
@@ -153,7 +152,9 @@ class ToolCallTests(unittest.IsolatedAsyncioTestCase):
         self.tools.send_callback.assert_not_awaited()
         self.assertFalse(self.tools.send_attempted)
         self.assertFalse(llm.step.call_args.args[1])
-        self.assertEqual(tool_results(llm.step.call_args.args[0])["send"]["status"], "not_executed")
+        self.assertEqual(
+            tool_results(llm.step.call_args.args[0])["send"]["status"], "budget_exhausted"
+        )
 
     async def test_batch_send_respects_existing_once_only_guard(self):
         self.tools.send_callback = AsyncMock(return_value={"status": "sent"})
@@ -177,10 +178,10 @@ class ToolCallTests(unittest.IsolatedAsyncioTestCase):
             await llm.reply([], "去群里打招呼", "test", history_tools=self.tools)
         self.tools.send_callback.assert_awaited_once()
         results = tool_results(llm.step.call_args.args[0])
-        self.assertEqual(results["b"]["status"], "not_executed")
+        self.assertEqual(results["b"]["status"], "already_attempted")
         self.assertEqual(results["b-next"]["status"], "already_attempted")
 
-    async def test_repeated_batches_do_not_bypass_search_budget(self):
+    async def test_search_uses_shared_budget_without_separate_quota(self):
         cfg = self.cfg.model_copy(
             update={"search_api_key": SecretStr("test-key"), "search_max_calls": 1}
         )
@@ -203,12 +204,12 @@ class ToolCallTests(unittest.IsolatedAsyncioTestCase):
                 ]
             )
             await llm.reply([], "查两件事", "test", history_tools=self.tools)
-        search.run.assert_awaited_once_with("天气", "test")
+        self.assertEqual(search.run.await_count, 3)
         results = tool_results(llm.step.call_args.args[0])
-        self.assertEqual(results["b"]["status"], "not_executed")
-        self.assertEqual(results["b-next"]["status"], "unsupported_tool")
+        self.assertEqual(results["b"]["status"], "no_matches")
+        self.assertEqual(results["b-next"]["status"], "no_matches")
 
-    async def test_image_results_precede_preview_and_selection_waits_for_memory(self):
+    async def test_image_results_precede_preview_and_memory_is_optional(self):
         png = base64.b64decode(
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWZk"
             "AAAAASUVORK5CYII="
@@ -252,16 +253,16 @@ class ToolCallTests(unittest.IsolatedAsyncioTestCase):
                     payload = json.loads(request.content)
                     seen.append(payload)
                     if len(seen) == 2:
-                        self.assertIsNone(tools.selected_emote)
+                        self.assertEqual(tools.selected_emote, "image.png")
                         self.assertIsNone(emotes.recall(emotes.digest("image.png")))
                         messages = payload["input" if provider == "openai" else "messages"]
-                        self.assertEqual(tool_results(messages)["choose"]["status"], "not_executed")
-                        self.assertEqual(
+                        self.assertEqual(tool_results(messages)["choose"]["status"], "queued")
+                        self.assertIn(
+                            "remember_emotes",
                             [
                                 t.get("name", t.get("function", {}).get("name"))
                                 for t in payload["tools"]
                             ],
-                            ["remember_emotes"],
                         )
                         self.assertIsInstance(messages[-1]["content"], list)
                         self.assertEqual(list(tool_results(messages[-3:-1])), ["list", "choose"])
@@ -285,19 +286,6 @@ class ToolCallTests(unittest.IsolatedAsyncioTestCase):
                     with self.assertRaisesRegex(ServiceError, "工具调用格式无效"):
                         await llm.reply([], "去群里打招呼", "test", history_tools=self.tools)
         self.tools.send_callback.assert_not_awaited()
-
-    async def test_planner_recovers_multiple_calls_and_can_stay_quiet(self):
-        async with httpx.AsyncClient() as client:
-            llm = LLM(client, self.cfg, Search(client, self.cfg))
-            llm.step = AsyncMock(
-                side_effect=[
-                    ("", [call("a"), call("b")], []),
-                    ('{"reply":false,"ended":false}', [], []),
-                ]
-            )
-            decision = await llm.plan_participation([], {}, {}, {}, 1, False, 99, self.tools)
-        self.assertFalse(decision["reply"])
-        self.assertEqual(tool_results(llm.step.call_args.args[0])["b"]["status"], "not_executed")
 
     async def test_service_sends_answer_instead_of_internal_batch_error(self):
         async with httpx.AsyncClient() as client:

@@ -86,6 +86,9 @@ class Assistant:
         )
         if (group_id <= 0 and not (private_allowed and group_id == -user_id)) or bot_id == user_id:
             return
+        from .events import Events
+
+        events = Events(self.archive.root, (bot_id, group_id)) if self.archive else None
         self.cleanup()
         if self.limits.duplicate((bot_id, group_id, message_id)):
             emit(cfg, "request_skipped", reason="duplicate")
@@ -165,8 +168,8 @@ class Assistant:
                             if history_tools is not None and send_emote is not None:
                                 history_tools.emotes = self.emotes
                             if history_tools is not None and self.commands.tasks is not None:
-                                history_tools.tasks = (
-                                    self.commands.tasks.session(key, role_lookup, str(message_id))
+                                history_tools.tasks = self.commands.tasks.session(
+                                    key, role_lookup, str(message_id)
                                 )
                             if history_tools is not None and self.commands.extensions is not None:
                                 history_tools.extensions = (
@@ -182,6 +185,13 @@ class Assistant:
                                         group_role = role
                                 except Exception:
                                     pass
+                            if history_tools is not None:
+                                from .response import Response
+
+                                if not hasattr(history_tools, "response"):
+                                    history_tools.response = Response(set())
+                                history_tools.allow_silent = True
+                                history_tools.events = events
                             reply = await self.llm.reply(
                                 self.memory.history(key),
                                 text,
@@ -197,7 +207,8 @@ class Assistant:
                                     if group_context
                                     else ""
                                 )
-                                + (self.commands.tasks.context(key) if self.commands.tasks else ""),
+                                + (self.commands.tasks.context(key) if self.commands.tasks else "")
+                                + (events.context() if events else ""),
                                 identity_context(
                                     cfg,
                                     bot_id,
@@ -217,7 +228,16 @@ class Assistant:
                                     else {}
                                 ),
                             )
-                    chunks = render_reply(reply, cfg)
+                    if not getattr(history_tools, "is_current", lambda: True)():
+                        raise Superseded
+                    response = getattr(history_tools, "response", None)
+                    if response is not None:
+                        reply = response.apply(reply)
+                    chunks = (
+                        [reply.text]
+                        if response is not None and response.state["action"] == "repeat"
+                        else render_reply(reply, cfg)
+                    )
                     emit(
                         cfg,
                         "reply_rendered",
@@ -231,6 +251,11 @@ class Assistant:
                         if index:
                             await asyncio.sleep(0.35)
                         await send(chunk)
+                        if events:
+                            events.publish(
+                                "message_sent",
+                                {"request": request_id, "index": index, "message_id": message_id},
+                            )
                     saved_reply = "\n".join(chunks)
                     if reply.image_data is not None:
                         if send_image is None:
@@ -273,6 +298,20 @@ class Assistant:
                             )
                             raise SendFailure from None
                         saved_reply += f"\n[已发送表情包：{reply.emote_id}]"
+                    if events:
+                        events.publish(
+                            "reply_finished",
+                            {
+                                "request": request_id,
+                                "message_id": message_id,
+                                "text_messages_sent": len(chunks),
+                                "image_sent": reply.image_data is not None
+                                or reply.emote_id is not None,
+                                "silent": not chunks
+                                and reply.image_data is None
+                                and reply.emote_id is None,
+                            },
+                        )
                     if reply.save:
                         if reply.poke_target is not None:
                             saved_reply += f"\n[已拍一拍：QQ {reply.poke_target}]"
@@ -294,6 +333,18 @@ class Assistant:
             finally:
                 self.limits.pending -= 1
         except Superseded:
+            if events:
+                events.publish(
+                    "superseded",
+                    {
+                        "request": request_id,
+                        "message_id": message_id,
+                        "hint": (
+                            "旧回合未继续发送；已有工具结果可供后续请求继续，"
+                            "是否补充或取消由主 agent 决定。"
+                        ),
+                    },
+                )
             self.limits.cooldowns.pop(key, None)
             emit(cfg, "send_skipped", reason="newer_message")
         except ServiceError as error:
@@ -307,6 +358,15 @@ class Assistant:
             generating_reply = False
             await self.safe_send(send_notice, "等待或处理超时，请稍后重试。", request_id)
         except SendFailure:
+            if events:
+                events.publish(
+                    "send_failed",
+                    {
+                        "request": request_id,
+                        "message_id": message_id,
+                        "hint": "发送结果不确定，不自动重发。",
+                    },
+                )
             logger.warning("request={} send_failure", request_id)
         except Exception as error:
             emit(cfg, "request_error", error_type=type(error).__name__)

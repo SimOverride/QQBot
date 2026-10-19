@@ -14,7 +14,15 @@ export const inject = ["agents", "sessions", "tools", "systemPrompt", "attachmen
 const output = (type, data = {}) => process.stdout.write("QQBOT_CHAT " + JSON.stringify({type, ...data}) + "\n");
 
 export function apply(ctx) {
-  let handle, pending, snapshot, disposers = [], text = "", reason, step = 0, called = false;
+  let handle, snapshot, disposers = [], text = "", reason, step = 0;
+  const pending = new Map();
+  let calls = [], flushCalls;
+  function enqueue(call) {
+    calls.push(call);
+    if (!flushCalls) flushCalls = setTimeout(() => {
+      output("calls", {calls}); calls = []; flushCalls = undefined;
+    }, 0);
+  }
   const lines = createInterface({input: process.stdin});
   async function content(messages, history = false) {
     const blocks = [];
@@ -43,15 +51,13 @@ export function apply(ctx) {
         ...fn,
         output: {schema: {type: "string"}, render: (_args, value) => JSON.parse(value)},
         execute: async (args, execution) => {
-          if (called) return JSON.stringify([{type: "text", text: JSON.stringify({status: "not_executed", reason: "sequential_tool_calls"})}]);
-          called = true;
           return await new Promise((resolve, reject) => {
-            const abort = () => { pending = null; reject(new Error("回合已取消")); };
+            const abort = () => { pending.delete(execution.callId); reject(new Error("回合已取消")); };
             execution.signal.addEventListener("abort", abort, {once: true});
-            pending = {id: execution.callId, resolve: value => {
+            pending.set(execution.callId, {resolve: value => {
               execution.signal.removeEventListener("abort", abort); resolve(value);
-            }};
-            output("call", {id: execution.callId, name: fn.name, arguments: JSON.stringify(args)});
+            }});
+            enqueue({call_id: execution.callId, name: fn.name, arguments: JSON.stringify(args)});
           });
         },
       }));
@@ -61,9 +67,9 @@ export function apply(ctx) {
   const ready = (async () => {
     await ctx.get("loader")?.await();
     const selection = ctx.agentDefaultModel.currentSelection();
-    handle = await ctx.agents.create({
-      sessionId: `qqbot-chat-${randomUUID()}`,
-      meta: {cwd: process.cwd()},
+    const options = {
+      sessionId: process.env.QQBOT_SESSION_ID || `qqbot-chat-${randomUUID()}`,
+      meta: {cwd: process.env.QQBOT_RUNTIME_CWD || process.cwd()},
       agentOptions: {provider: selection.provider, model: selection.model, maxTokens: Number(process.env.QQBOT_OUTPUT_TOKENS)},
       setup: agentCtx => {
         installModelSelection(agentCtx, {current: selection, assembled: undefined});
@@ -75,13 +81,23 @@ export function apply(ctx) {
         agentCtx.systemPrompt.section({name: "qqbot", order: 0, complete: true, text: "{{qqbot_prompt}}"});
         configure(agentCtx);
         agentCtx.on("agent/pre-step", async (_payload, next) => {
-          called = false;
           if (++step > snapshot.max_steps) throw new Error("聊天步骤预算已用完");
+          if (snapshot.budget && (snapshot.budget.tokens <= 0 || snapshot.budget.seconds <= 0 || snapshot.budget.cost_exhausted)) {
+            throw new Error("本轮共享资源预算已用完");
+          }
           configure(agentCtx);
           return next();
         });
       },
-    });
+    };
+    try {
+      handle = process.env.QQBOT_SESSION_ID
+        ? await ctx.agents.resume({...options, resumeSessionId: options.sessionId})
+        : await ctx.agents.create(options);
+    } catch (error) {
+      if (error.name !== "SessionPersistenceNotFoundError") throw error;
+      handle = await ctx.agents.create(options);
+    }
     ctx.on("session/event", (session, event) => {
       if (session.id !== handle.agent.session.id) return;
       if (event.type === "assistant/message") {
@@ -95,12 +111,14 @@ export function apply(ctx) {
   async function start(item) {
     await ready;
     snapshot = item;
+    const eventOffset = handle.agent.session.snapshotEvents().length;
     configure(handle.agent.ctx);
     handle.agent.followup(createUserMessage({content: await content(item.messages, true), source: {kind: "user"}}));
     await handle.agent.whenIdle();
-    if (reason?.kind !== "completed") throw new Error("聊天回合未正常结束");
+    if (reason?.kind !== "completed") throw new Error("聊天回合未正常结束：" + JSON.stringify(reason));
+    await ctx.sessions.flush(handle.agent.session);
     if (item.view) {
-      try { await saveView(item.view, handle.agent.session.snapshotEvents(), ctx.sessions.messageProjections); }
+      try { await saveView(item.view, handle.agent.session.snapshotEvents().slice(eventOffset), ctx.sessions.messageProjections); }
       catch { output("view_error"); }
     }
     output("final", {text});
@@ -111,11 +129,13 @@ export function apply(ctx) {
       const item = JSON.parse(line);
       if (item.type === "start") { start(item).catch(error => output("error", {message: String(error)})); return; }
       if (item.type === "result") {
-        if (!pending || item.id !== pending.id) throw new Error("工具结果编号不匹配");
         snapshot = {...snapshot, ...item};
-        const value = await content(item.messages);
-        const waiting = pending; pending = null;
-        waiting.resolve(JSON.stringify(value));
+        for (const result of item.results) {
+          if (!pending.has(result.id)) throw new Error("工具结果编号不匹配");
+          const value = await content(result.messages);
+          const waiting = pending.get(result.id); pending.delete(result.id);
+          waiting.resolve(JSON.stringify(value));
+        }
       }
     }).catch(error => output("error", {message: String(error)}));
   });

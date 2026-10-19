@@ -1,0 +1,116 @@
+"""手动验证客户端 0.2.1-rc.2 原生持续会话；使用真实 API，不发送 QQ 消息。"""
+
+import asyncio
+import json
+import subprocess
+import tempfile
+from pathlib import Path
+
+from dotenv import dotenv_values
+
+from plugins.assistant.config import Config
+from plugins.assistant.dsh import Turn
+
+
+async def main():
+    env = dotenv_values(".env")
+    cfg = Config(deepseek_api_key=env.get("DEEPSEEK_API_KEY", ""), model_trace_enabled=False)
+    with tempfile.TemporaryDirectory(prefix="qqbot-agent-test-") as directory:
+        root = Path(directory)
+        for index, question in enumerate(
+            ("请记住本会话测试口令是蓝色纸鹤，仅回复收到。", "上一回合测试口令是什么？仅回答口令。")
+        ):
+            turn = Turn(cfg, f"smoke-{index}")
+            turn.runtime = root / "runtime"
+            turn.view = {
+                "id": "qqbot-123-group-10",
+                "title": "测试群（10）",
+                "home": str(root / "view"),
+                "cwd": str(root),
+                "user": question,
+            }
+            try:
+                async with asyncio.timeout(120):
+                    text, calls, _ = await turn.step(
+                        [
+                            {"role": "system", "content": "这是隔离测试，仅按用户要求回答。"},
+                            {"role": "user", "content": question},
+                        ],
+                        False,
+                        [],
+                    )
+                assert not calls
+                if index == 1:
+                    assert "蓝色纸鹤" in text, "恢复会话未保留上轮上下文"
+            finally:
+                await turn.close()
+        from plugins.tasks.desktop import launch
+        from plugins.tasks.runner import Runner, environment
+
+        package = Runner(root, cfg).package()
+        native_env = environment()
+        executable = launch(package, native_env)[0]
+        native_env["QQBOT_DSH_PACKAGE"] = str(package)
+        checked = await asyncio.to_thread(
+            subprocess.run,
+            [
+                executable,
+                "--expose-internals",
+                str(Path(__file__).with_name("dsh_view_check.mjs").resolve()),
+                "read",
+                str(root / "view"),
+                "qqbot-123-group-10",
+            ],
+            env=native_env,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        assert checked.returncode == 0, "浏览镜像读取失败"
+        counts = json.loads(checked.stdout)
+        assert counts["users"] == 2 and counts["assistants"] == 2, counts
+        turn = Turn(cfg, "smoke-tools")
+        try:
+            functions = [
+                {
+                    "name": name,
+                    "description": "独立读取测试标记",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False,
+                    },
+                }
+                for name in ("read_alpha", "read_beta")
+            ]
+            messages = [
+                {"role": "system", "content": "先调用所有要求的工具，再根据结果回答。"},
+                {
+                    "role": "user",
+                    "content": "请调用 read_alpha 和 read_beta 两个工具，读取结果后回复完成。",
+                },
+            ]
+            seen = set()
+            async with asyncio.timeout(120):
+                for _ in range(5):
+                    text, calls, output = await turn.step(messages, True, functions)
+                    if not calls:
+                        break
+                    messages.extend(output)
+                    for call in calls:
+                        seen.add(call["name"])
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": call["call_id"],
+                                "content": "测试读取成功",
+                            }
+                        )
+            assert seen == {"read_alpha", "read_beta"}, seen
+        finally:
+            await turn.close()
+        print("客户端原生两轮创建、恢复、持久化和浏览镜像通过。")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

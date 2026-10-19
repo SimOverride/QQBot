@@ -56,7 +56,7 @@ class ImageSendTests(unittest.IsolatedAsyncioTestCase):
                 def factory(library, review):
                     return EmoteCollector(library, review, AsyncMock(return_value=PNG))
 
-                with patch("plugins.assistant.llm.EmoteCollector", side_effect=factory):
+                with patch("plugins.assistant.tools.EmoteCollector", side_effect=factory):
                     reply = await model.reply([], "用图解释", "test", history_tools=tools)
                 self.assertEqual(reply.image_data, PNG)
                 self.assertIsNone(reply.emote_id)

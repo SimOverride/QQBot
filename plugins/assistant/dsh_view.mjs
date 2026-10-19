@@ -23,7 +23,14 @@ export async function saveView(view, events, projections) {
   const record = randomUUID();
   const path = join(folder, `${Date.now()}-${record}.json`);
   const images = events.filter(e => e.type === "user/message").flatMap(e => e.data.content || []).filter(p => p.type === "image");
-  const payload = {view: {...view, record, images}, events: events.filter(e => types.has(e.type))};
+  // 持续执行会话的回合编号从当前累计值开始，镜像按自身顺序续接。
+  const firstTurn = events.find(e => e.type === "turn/start")?.data.turn || 1;
+  const normalized = events.filter(e => types.has(e.type)).map(event => {
+    const copy = structuredClone(event);
+    if (typeof copy.data.turn === "number") copy.data.turn -= firstTurn - 1;
+    return copy;
+  });
+  const payload = {view: {...view, record, images}, events: normalized};
   await writeFile(path + ".tmp", JSON.stringify(payload), {flag: "wx"});
   await rename(path + ".tmp", path);
   await syncViews(view.home, view.cwd, projections);

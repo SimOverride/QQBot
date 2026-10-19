@@ -64,9 +64,19 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
         self.manager.result_writer = AsyncMock(return_value="整理后的结论是：优先完成登录功能。")
         await self.manager.notify(record, self.bot)
         message = str(self.bot.send_group_msg.call_args.kwargs["message"])
-        self.assertEqual(message, "这是结果：\n整理后的结论是：优先完成登录功能。")
+        self.assertEqual(message, "整理后的结论是：优先完成登录功能。")
         self.assertIn("验收", self.manager.store.get(task["id"])["summary"])
         self.assertNotIn(task["id"], message)
+
+    async def test_agent_can_suppress_notification_without_claiming_sent(self):
+        task = await self.request((123, 10, 1))
+        record = self.manager.store.get(task["id"])
+        record.update(status="completed", summary="已完成")
+        self.manager.store.save(record)
+        self.manager.result_writer = AsyncMock(return_value="")
+        await self.manager.notify(record, self.bot)
+        self.bot.send_group_msg.assert_not_awaited()
+        self.assertEqual(self.manager.store.get(task["id"])["notification"], "silent")
 
     async def test_result_summary_failure_does_not_dump_technical_report(self):
         task = await self.request((123, 10, 1))

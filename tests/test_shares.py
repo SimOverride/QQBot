@@ -271,7 +271,7 @@ class ShareTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_model_tools_with_search_disabled_for_both_providers(self):
         tmp = self.enterContext(tempfile.TemporaryDirectory())
-        cfg = Config(model_trace_enabled=False, emotes_auto_collect=False, history_max_calls=2)
+        cfg = Config(model_trace_enabled=False, emotes_auto_collect=False, agent_max_calls=2)
         archive = LongTermMemory(Path(tmp) / "memory.db", cfg)
         self.addCleanup(archive.close)
         for provider in ("deepseek", "openai"):
@@ -326,7 +326,6 @@ class ShareTests(unittest.IsolatedAsyncioTestCase):
         archive = LongTermMemory(Path(tmp) / "memory.db", cfg)
         self.addCleanup(archive.close)
         llm = SimpleNamespace(
-            plan_participation=AsyncMock(return_value={}),
             reply=AsyncMock(return_value=Reply("收到")),
         )
         service = Assistant(cfg, llm, archive=archive)
@@ -346,7 +345,7 @@ class ShareTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_model_discovers_shares_after_forward_read(self):
         tmp = self.enterContext(tempfile.TemporaryDirectory())
-        cfg = Config(model_trace_enabled=False, emotes_auto_collect=False, history_max_calls=3)
+        cfg = Config(model_trace_enabled=False, emotes_auto_collect=False, agent_max_calls=3)
         archive = LongTermMemory(Path(tmp) / "memory.db", cfg)
         self.addCleanup(archive.close)
         tools = HistoryTools(archive, (99, 10, 2))
