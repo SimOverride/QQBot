@@ -95,6 +95,7 @@ def setup() -> None:
     directory_worker: asyncio.Task | None = None
     heartbeat_worker: asyncio.Task | None = None
     plugin_worker: asyncio.Task | None = None
+    view_worker: asyncio.Task | None = None
     extensions = None
     tasks = None
     runtime = Runtime(Path(__file__).resolve().parents[2])
@@ -106,6 +107,7 @@ def setup() -> None:
     async def startup():
         nonlocal service, client, cleaner, archive, sharing, conversations, directory_worker
         nonlocal heartbeat_worker, plugin_worker, extensions, tasks
+        nonlocal view_worker
         config.validate_runtime()
         root = Path(__file__).resolve().parents[2]
         from ..extensions.manager import Manager as ExtensionManager
@@ -145,6 +147,18 @@ def setup() -> None:
                 await asyncio.sleep(2)
 
         plugin_worker = asyncio.create_task(plugin_loop())
+
+        async def view_loop():
+            from .dsh import sync_views
+
+            while True:
+                try:
+                    await sync_views(config)
+                except Exception as error:
+                    logger.warning("dsh_view_sync_failure={}", type(error).__name__)
+                await asyncio.sleep(15)
+
+        view_worker = asyncio.create_task(view_loop())
 
         service.vision = Vision(config)
         service.emotes = Emotes(
@@ -212,6 +226,10 @@ def setup() -> None:
 
     @driver.on_shutdown
     async def shutdown():
+        if view_worker:
+            view_worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await view_worker
         if plugin_worker:
             plugin_worker.cancel()
             with suppress(asyncio.CancelledError):

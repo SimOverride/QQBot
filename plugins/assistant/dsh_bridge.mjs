@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
+import { saveView } from "./dsh_view.mjs";
 
 const require = createRequire(process.env.QQBOT_DSH_PACKAGE + "/package.json");
 const load = name => import(pathToFileURL(require.resolve(name)).href);
@@ -98,6 +99,10 @@ export function apply(ctx) {
     handle.agent.followup(createUserMessage({content: await content(item.messages, true), source: {kind: "user"}}));
     await handle.agent.whenIdle();
     if (reason?.kind !== "completed") throw new Error("聊天回合未正常结束");
+    if (item.view) {
+      try { await saveView(item.view, handle.agent.session.snapshotEvents(), ctx.sessions.messageProjections); }
+      catch { output("view_error"); }
+    }
     output("final", {text});
   }
   let serial = Promise.resolve();

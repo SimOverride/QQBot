@@ -3,9 +3,10 @@
 import asyncio
 import base64
 import copy
+import hashlib
 import json
-import tempfile
 import os
+import tempfile
 from contextvars import ContextVar
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from plugins.tasks.runner import Runner, environment, process_options, stop_proc
 from .emote_collect import image_data
 from .http import ServiceError
 from .image_download import download_image
+from .knowledge import display_name, read_directory, scope_name
 from .llm import LLM
 from .prompt_store import refresh_tools
 from .trace import emit
@@ -23,8 +25,61 @@ from .trace import emit
 _turn = ContextVar("dsh_chat_turn", default=None)
 
 
+def view_home(config):
+    home = config.dsh_view_home.strip() or os.environ.get("DSH_HOME", "").strip()
+    return Path(home).expanduser().resolve() if home else Path.home() / ".dsh"
+
+
+def view_title(scope):
+    """显示平台名称及号码，会话身份仍由机器人账号和会话范围确定。"""
+    bot, group, _ = scope.key
+    archive = getattr(scope, "archive", None)
+    root = archive.root if archive is not None else Path(__file__).resolve().parents[2]
+    directory = read_directory(root)
+    bucket = "groups" if group > 0 else "users"
+    name = directory.get(str(bot), {}).get(bucket, {}).get(str(abs(group)), {}).get("name")
+    if not name and archive is not None:
+        name = (
+            scope_name(archive.db, bot, group, directory)
+            if group > 0
+            else display_name(archive.db, bot, abs(group), directory)
+        )
+    if not name or name == f"群名待同步（{group}）":
+        name = "群名待同步" if group > 0 else "昵称待同步"
+    return f"{name}（{abs(group)}）"
+
+
+async def sync_views(config):
+    """仅在存在待同步记录时启动短进程，由原生写锁决定是否可追加。"""
+    root = Path(__file__).resolve().parents[2]
+    home = view_home(config)
+    namespace = hashlib.sha256(str(root).lower().encode()).hexdigest()[:16]
+    if not any((home / "qqbot-pending" / namespace).glob("*.json")):
+        return
+    package = Runner(root, config).package()
+    env = environment()
+    executable = launch(package, env)[0]
+    env["QQBOT_DSH_PACKAGE"] = str(package)
+    process = await asyncio.create_subprocess_exec(
+        executable,
+        "--expose-internals",
+        str(Path(__file__).with_name("dsh_view_sync.mjs")),
+        str(home),
+        str(root),
+        env=env,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+        **process_options(),
+    )
+    try:
+        async with asyncio.timeout(20):
+            await process.wait()
+    finally:
+        await stop_process(process)
+
+
 class Turn:
-    """单个请求的独立执行器；结束即回收，不保留未发送问答。"""
+    """单个请求的独立执行器；结束即回收，浏览记录不回灌模型历史。"""
 
     def __init__(self, config, request_id):
         self.config, self.request_id = config, request_id
@@ -221,15 +276,14 @@ class Chat(LLM):
 
     async def reply(self, history, user, request_id, *args, **kwargs):
         turn = Turn(self.config, request_id)
-        scope = kwargs.get("history_tools")
+        scope = kwargs.get("history_tools", args[3] if len(args) > 3 else None)
         if scope is not None and getattr(scope, "key", None):
             bot, group, sender = scope.key
-            home = self.config.dsh_view_home.strip() or os.environ.get("DSH_HOME", "").strip()
             turn.view = {
-                "home": str(Path(home).expanduser().resolve() if home else Path.home() / ".dsh"),
+                "home": str(view_home(self.config)),
                 "cwd": str(Path(__file__).resolve().parents[2]),
                 "id": f"qqbot-{bot}-{'group' if group > 0 else 'private'}-{abs(group)}",
-                "title": f"QQBot · {bot} · {'群' if group > 0 else '私聊'} {abs(group)}",
+                "title": view_title(scope),
                 "user": f"【QQ {sender} · 请求 {request_id}】\n{user}",
             }
         token = _turn.set(turn)
