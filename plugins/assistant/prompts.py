@@ -12,6 +12,7 @@ def system_prompt(search_enabled: bool, personality: dict[str, str] | None = Non
         + (prompt_text("search.enabled") if search_enabled else prompt_text("search.disabled"))
         + prompt_text("prompts.system_prompt.1")
         + json.dumps(personality if personality is not None else DEFAULTS, ensure_ascii=False)
+        + prompt_text("chat.expression")
     )
 
 

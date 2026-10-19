@@ -3,10 +3,10 @@
 import asyncio
 import json
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
+from .desktop import installation, launch
 from .process import ProcessJob
 
 
@@ -68,15 +68,7 @@ class Runner:
         self.processes = {}
 
     def package(self):
-        if self.config.dsh_package_dir:
-            path = Path(self.config.dsh_package_dir)
-        else:
-            path = Path(os.environ.get("APPDATA", "")) / "npm/node_modules/@deepseek-ai/dsh"
-        manifest = json.loads((path / "package.json").read_text(encoding="utf-8"))
-        if manifest.get("version") != "0.1.0-rc.7":
-            raise ValueError("当前适配器仅验证过 dsh 0.1.0-rc.7，请核对版本")
-        if not shutil.which("node"):
-            raise ValueError("未找到 Node.js")
+        path = installation(self.config.dsh_package_dir)
         if not self.config.deepseek_api_key.get_secret_value():
             raise ValueError("未配置 DEEPSEEK_API_KEY")
         return path.resolve()
@@ -138,8 +130,7 @@ class Runner:
             QQBOT_MAX_STEPS=str(self.config.task_max_steps),
         )
         process = await asyncio.create_subprocess_exec(
-            shutil.which("node"),
-            str(package / "lib/bin.js"),
+            *launch(package, env),
             "--profile",
             "headless",
             "--patch",

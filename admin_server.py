@@ -15,6 +15,7 @@ import uvicorn
 from dotenv import dotenv_values
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
+from pydantic import SecretStr
 from starlette.concurrency import run_in_threadpool
 
 import migration
@@ -31,6 +32,7 @@ from plugins.assistant.personality import ProfileStore
 from plugins.assistant.prompt_store import prompt_text
 from plugins.assistant.runtime import status as runtime_status
 from plugins.assistant.search import Search
+from profile_lab import SCENARIOS, inspect_persona
 
 ROOT = Path(__file__).resolve().parent
 
@@ -462,6 +464,44 @@ def create_app(root=ROOT):
     @app.get("/api/knowledge-proposal")
     def knowledge_proposal(resource: str):
         return store.proposal(resource)
+
+    @app.get("/api/profile-lab")
+    def profile_scenarios():
+        return SCENARIOS
+
+    @app.post("/api/profile-lab")
+    async def profile_lab(request: Request):
+        from plugins.assistant.dsh import Chat
+        from plugins.assistant.llm import render_reply
+
+        data = await body(request)
+        kind, _ = store.resolve(data["resource"])
+        if kind != "persona":
+            raise ValueError("请选择人设模板")
+        current = store.get(data["resource"])
+        if current["revision"] != data["revision"]:
+            raise ValueError("当前人设已变化，请重新载入")
+        store.validate(data["resource"], data["value"])
+        if data.get("action") == "check":
+            return inspect_persona(data["value"])
+        if data.get("action") != "trial" or data.get("scenario") not in SCENARIOS:
+            raise ValueError("请选择有效试聊场景")
+        cfg = config_for(store.root)
+        # 试聊不访问真实记忆、不提供工具、不保存诊断正文或发送QQ。
+        cfg.search_api_key = SecretStr("")
+        cfg.model_trace_enabled = False
+        scene = SCENARIOS[data["scenario"]]
+        results = {}
+        async with asyncio.timeout(180), ai_slot:
+            async with httpx.AsyncClient() as client:
+                model = Chat(client, cfg, Search(client, cfg))
+                for label, value in (("saved", current["value"]), ("draft", data["value"])):
+                    reply = await model.reply([], scene["text"], "profile-trial-" + label,
+                                              {"persona": value})
+                    results[label] = render_reply(reply, cfg)
+        if store.get(data["resource"])["revision"] != current["revision"]:
+            raise ValueError("试聊期间人设已变化，请重新载入")
+        return {"scenario": scene, "results": results, "revision": current["revision"]}
 
     @app.post("/api/preview")
     async def preview(request: Request):

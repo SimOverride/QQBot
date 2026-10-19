@@ -16,7 +16,7 @@
 
 - `plugins/tasks/store.py` 使用 `data/tasks.sqlite3` 存储申请、执行任务和事件；审批消费与任务创建在同一事务中完成。申请以 `a_`、任务以 `t_` 开头。
 - `plugins/tasks/manager.py` 提供 `manage_task` 模型工具与 `/任务` 确定性命令，按真实身份核验权限。队列按入库顺序调度。通知结果记录为待发、尝试中、已发或结果不明；结果不明不盲目重发。
-- `plugins/tasks/runner.py` 通过 Node.js 启动本机 dsh，固定兼容 `0.1.0-rc.7`，不自动升级个人安装。每任务使用独立 Harness 配置目录，不加载个人插件。凭据仅向子进程传递 DeepSeek API 密钥，关闭遥测；不转发完整机器人环境。
+- `plugins/tasks/runner.py` 通过客户端随附运行时启动本机 dsh，固定兼容客户端 `0.2.1-rc.2`，不自动升级个人安装。每任务使用独立 Harness 配置目录，不加载个人插件。凭据仅向子进程传递 DeepSeek API 密钥，关闭遥测；不转发完整机器人环境。
 - `plugins/tasks/bridge.mjs` 使用本机 agent API，将补充需求送至下一步骤边界，转发公开回复、工具调用、工具结果、待办、Token 用量及结束原因，不转发内部推理。stdin/stdout 使用有界 JSON 行协议，退出和取消回收本任务进程树。
 - `plugins/assistant/service.py` 在回复上下文中注入当前范围的任务状态；`groupchat.py` 在参与判断中加入同范围状态；模型可查询最近事件获取细节。通知成功时写入消息归档。
 - `plugins/tasks/generated.py` 在 `data/generated/插件编号/内容哈希` 上独立复测，至少两个单元测试通过且 JSON 协议冒烟通过才发布。相同内容版本哈希验证后通过独立 Python 进程调用，超时或输出超限终止。
@@ -38,15 +38,15 @@
 
 任务创建默认只简短确认需求及必要的待审批状态，不主动罗列编号、执行流程、文件格式或验收标准；确实缺少影响执行的信息时才询问。排队和启动不重复通知。完成时以“这是结果：”直接给出实际成果、结论或可用入口，不附带技术报告；完整记录仍保留，用户追问或主动查看任务时再提供。失败或中断不能伪装完成，审批私信仍保留必要审核信息。
 
-本机安装 Node.js 与 `@deepseek-ai/dsh@0.1.0-rc.7`。使用 `.env` 的 `DEEPSEEK_API_KEY`，模型默认 `deepseek-v4-flash`，与聊天模型可不同。
+本机安装 DeepSeek Harness 客户端 `0.2.1-rc.2`。使用 `.env` 的 `DEEPSEEK_API_KEY`，聊天与任务共用 `DSH_MODEL`，默认 `deepseek-v4-flash`。安装定位及版本校验见 [DSH 聊天执行](DSH.md)。
 
 | 配置 | 默认值 | 作用 |
 | --- | --- | --- |
 | `TASK_MAX_CONCURRENCY` | `2` | 全部群共享，范围 1 至 16 |
 | `TASK_TIMEOUT_SECONDS` | `1800` | 单次 dsh 执行时限 |
 | `TASK_MAX_STEPS` | `80` | 单次 dsh 步骤预算 |
-| `DSH_PACKAGE_DIR` | 空 | 自动找当前用户全局 npm 安装，可指定包目录 |
-| `DSH_MODEL` | `deepseek-v4-flash` | dsh 模型 |
+| `DSH_PACKAGE_DIR` | 空 | 自动查找客户端，可指定客户端安装目录或可执行文件 |
+| `DSH_MODEL` | `deepseek-v4-flash` | 聊天与任务模型 |
 
 修改配置后重启机器人。群内先 @机器人，自然语言说明执行需求，例如“帮本群开发一个记分插件”。只是询问方案不会主动创建任务。
 

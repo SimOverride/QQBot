@@ -23,7 +23,6 @@ from .contacts import Contacts
 from .emotes import Emotes
 from .groupchat import GroupConversation, GroupSettings
 from .history_tools import HistoryTools
-from .llm import LLM
 from .longterm import LongTermMemory
 from .message_context import event_metadata
 from .personality import ProfileStore
@@ -111,14 +110,17 @@ def setup() -> None:
         root = Path(__file__).resolve().parents[2]
         from ..extensions.manager import Manager as ExtensionManager
         from ..extensions.schedule import Schedule
+        from ..tasks.runner import Runner
+        from .dsh import Chat
         from .knowledge import read_directory
 
+        Runner(root, config).package()
         contacts.directory_path = root / "data/contacts.json"
         contacts.directory = read_directory(root)
         profiles = ProfileStore(root / "personas" / "默认.txt")
         archive = LongTermMemory(root / "data" / "memory.sqlite3", config)
         client = httpx.AsyncClient(follow_redirects=False)
-        service = Assistant(config, LLM(client, config, Search(client, config)), profiles, archive)
+        service = Assistant(config, Chat(client, config, Search(client, config)), profiles, archive)
         extensions = ExtensionManager(root, service.commands, [Schedule()], archive)
         service.commands.extensions = extensions
         from ..tasks.generated import load as load_generated

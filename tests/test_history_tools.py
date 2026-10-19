@@ -91,7 +91,10 @@ class HistoryTests(unittest.IsolatedAsyncioTestCase):
                 seen.append(payload)
                 if len(seen) == 1:
                     functions = payload["tools"]
-                    self.assertEqual(len(functions), 1)
+                    self.assertEqual(
+                        {f.get("function", f)["name"] for f in functions},
+                        {"read_history", "read_capabilities"},
+                    )
                     call = {"name": "read_history", "arguments": json.dumps(args(sender=99))}
                     if provider == "openai":
                         return httpx.Response(

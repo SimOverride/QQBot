@@ -392,6 +392,9 @@ class LLM:
 
     @scoped("tools")
     async def investigate(self, messages, request_id, history_tools, planning=False):
+        from .modules import Modules
+
+        modules = Modules(history_tools)
         renderer = for_request(self.config, history_tools)
         sources = []
         searches = 0
@@ -434,6 +437,7 @@ class LLM:
         poke = getattr(history_tools, "poke", None)
         if not planning and messages:
             messages[0]["content"] += prompt_text("llm.action_intent.0")
+            messages[0]["content"] += prompt_text("chat.modules")
         if not planning and poke is not None:
             messages[0]["content"] += prompt_text("llm.poke.0")
         if planning and history_tools.allow_silent:
@@ -467,13 +471,11 @@ class LLM:
                 functions.append(FORWARD_FUNCTION)
             if shares is not None and shares.allowed:
                 functions.append(SHARE_FUNCTION)
-            extension_names = set()
-            if not planning and tasks is not None:
-                functions.extend(tasks.functions())
-            if not planning and extensions is not None:
-                extra = extensions.functions()
+            module_names = set()
+            if not planning:
+                extra = modules.functions()
                 functions.extend(extra)
-                extension_names = {f["name"] for f in extra}
+                module_names = {f["name"] for f in extra}
             if not planning and self.search.enabled and searches < self.config.search_max_calls:
                 functions.append(SEARCH_FUNCTION)
             if not planning and getattr(history_tools, "send_callback", None):
@@ -555,10 +557,8 @@ class LLM:
                 name = call["name"]
                 if name not in {f["name"] for f in functions}:
                     result = {"status": "unsupported_tool"}
-                elif name == "manage_task" and tasks is not None:
-                    result = await tasks.execute(name, args)
-                elif name in extension_names:
-                    result = await extensions.execute(name, args)
+                elif name in module_names:
+                    result = await modules.execute(name, args, functions)
                 elif name == "read_forward":
                     result = await history_tools.forward.run(args)
                     if shares is not None:
@@ -1077,6 +1077,10 @@ def render_reply(reply: Reply, config: Config) -> list[str]:
             lines.append(line)
     parts.append("".join(lines).strip())
     parts = [p for p in parts if p]
+    if "<分条>" not in body and not reply.sources:
+        from .expression import split_chat
+
+        parts = split_chat(body, min(3, config.reply_max_messages))
     if len(parts) <= config.reply_max_messages and all(
         len(p) <= config.reply_chunk_chars or "```" in p or "~~~" in p for p in parts
     ):

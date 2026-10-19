@@ -206,6 +206,7 @@ function renderEditor(){
       label.append(title);const shown=personScope==='general'?current.display_value?.['总体认知']:typeof contents==='string'?current.display_value?.['会话印象']?.[personScope]:current.display_value?.['会话印象']?.[personScope]?.[field];const parts=personScope==='general'?current.display_parts?.['总体认知']:typeof contents==='string'?current.display_parts?.['会话印象']?.[personScope]:current.display_parts?.['会话印象']?.[personScope]?.[field];showKnowledge(label,input,shown??value,parts);$('#fields').append(label);
     }
   }else fields(draft,$('#fields'));
+  if(kind==='persona')renderProfileLab();
   if(kind==='person'||kind==='group'){
     const rebuild=document.createElement('button');rebuild.className='quiet';rebuild.textContent='根据聊天重新整理';
     rebuild.onclick=()=>{if(busy)return;$('#instruction').value='根据提供的聊天记录重新整理当前认知，合并重复信息，总体认知与私聊印象各用一段文字，群内个人认知保留角色、互动习惯、互动关系、补充认知四类，说明依据与不确定之处。';suggest();};$('#editor .actions').append(rebuild);
@@ -223,6 +224,45 @@ function renderEditor(){
     const remove=document.createElement('button');remove.className='quiet';remove.textContent='删除';
     remove.onclick=()=>{if(!busy)review(null,true);};$('#editor .actions').append(remove);
   }
+}
+function renderProfileLab(){
+  const panel=document.createElement('section');panel.className='profile-lab';
+  const controls=document.createElement('div');controls.className='toolbar';
+  const check=document.createElement('button');check.className='quiet';check.textContent='检查人设草稿';
+  const scenario=document.createElement('select');scenario.setAttribute('aria-label','固定试聊场景');
+  for(const [id,title] of [['chat','普通闲聊'],['help','认真求助'],['joke','接梗'],['correct','接受纠正'],['end','结束话题']]){
+    const option=document.createElement('option');option.value=id;option.textContent=title;scenario.append(option);
+  }
+  const trial=document.createElement('button');trial.className='quiet';trial.textContent='对比试聊（调用模型）';
+  controls.append(check,scenario,trial);
+  const note=document.createElement('p');note.className='note';note.textContent='比较已保存人设与当前草稿。每次两轮生成，仅使用固定虚构场景；不发QQ、不写记忆、不执行工具。结果有随机性，不是评分。';
+  const result=document.createElement('div');result.setAttribute('aria-live','polite');
+  panel.append(controls,note,result);$('#editor .panel-body').append(panel);
+  async function run(action){
+    if(busy)return;
+    const resource=current.resource,revision=current.revision,value=structuredClone(draft),version=selectionVersion;
+    busy=true;check.disabled=trial.disabled=scenario.disabled=true;result.textContent=action==='check'?'正在检查…':'正在生成两组回答…';
+    try{
+      const data=await api('/api/profile-lab',{resource,revision,value,action,scenario:scenario.value});
+      if(!panel.isConnected||version!==selectionVersion||current?.resource!==resource)return;
+      result.textContent='';
+      if(action==='check'){
+        const list=document.createElement('ul');for(const warning of data.warnings){const li=document.createElement('li');li.textContent=warning;list.append(li);}
+        const summary=document.createElement('p');summary.textContent=data.warnings.length?data.note:'未发现规则提示。'+data.note;result.append(summary,list);
+      }else{
+        const input=document.createElement('p');input.textContent='场景：'+data.scenario.text;result.append(input);
+        const columns=document.createElement('div');columns.className='trial-columns';
+        for(const [key,label] of [['saved','已保存人设'],['draft','草稿人设']]){
+          const column=document.createElement('section'),title=document.createElement('strong');title.textContent=label;column.append(title);
+          for(const message of data.results[key]){const bubble=document.createElement('p');bubble.className='trial-bubble';bubble.textContent=message;column.append(bubble);}
+          columns.append(column);
+        }result.append(columns);
+      }
+      if(JSON.stringify(draft)!==JSON.stringify(value)){const stale=document.createElement('p');stale.textContent='草稿已继续修改，以上结果对应点击时的版本。';result.append(stale);}
+    }catch(error){if(panel.isConnected)result.textContent=error.message;}
+    finally{busy=false;check.disabled=trial.disabled=scenario.disabled=false;}
+  }
+  check.onclick=()=>run('check');trial.onclick=()=>run('trial');
 }
 async function refreshResources(id){
   current=null;draft=null;proposal=null;chat=[];

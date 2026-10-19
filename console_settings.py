@@ -16,6 +16,11 @@ from plugins.extensions.store import Store
 
 # 仅开放运行参数；身份、监听地址、启动路径不由此页面修改。
 FIELDS = {
+    "聊天与任务执行": {
+        "dsh_package_dir": "DSH 客户端安装目录（留空自动查找）",
+        "dsh_model": "DSH 聊天与任务模型",
+        "dsh_view_home": "DSH 客户端数据目录（留空使用 ~/.dsh）",
+    },
     "模型": {
         "llm_provider": "模型服务",
         "deepseek_model": "DeepSeek 型号",

@@ -1,4 +1,4 @@
-// 对接本机 dsh 0.1.0-rc.7，不加载个人配置或向机器人转发内部推理。
+// 对接本机 DSH 客户端 0.2.1-rc.2，不加载个人配置或转发内部推理。
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline";
