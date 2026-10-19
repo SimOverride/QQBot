@@ -1,4 +1,8 @@
-// 后台补写客户端占用期间留下的记录，不启动模型或加载个人插件。
-import { syncViews } from "./dsh_view.mjs";
-try { await syncViews(process.argv[2], process.argv[3]); }
-catch { process.exitCode = 1; }
+// 补写浏览记录，显式恢复时保留旧副本。
+import { syncViews, recoverViews } from "./dsh_view.mjs";
+try {
+  const [home, cwd, mode, ...ids] = process.argv.slice(2);
+  const result = mode === "recover" ? await recoverViews(home, cwd, ids) : await syncViews(home, cwd);
+  console.log(JSON.stringify(result));
+  if ((result.report || result).failures.length) process.exitCode = 2;
+} catch (error) { console.log(JSON.stringify({error: error.name})); process.exitCode = 1; }

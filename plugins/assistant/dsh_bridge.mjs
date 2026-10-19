@@ -10,7 +10,7 @@ const load = name => import(pathToFileURL(require.resolve(name)).href);
 const { installModelSelection } = await load("@deepseek-ai/dsh-agent");
 const { createUserMessage } = await load("@deepseek-ai/dsh-llm");
 export const name = "qqbot-chat";
-export const inject = ["agents", "sessions", "tools", "systemPrompt", "attachments", "agentDefaultModel"];
+export const inject = ["agents", "sessions", "tools", "systemPrompt", "attachments", "agentDefaultModel", "llm"];
 const output = (type, data = {}) => process.stdout.write("QQBOT_CHAT " + JSON.stringify({type, ...data}) + "\n");
 
 export function apply(ctx) {
@@ -33,6 +33,9 @@ export function apply(ctx) {
       for (const part of parts) {
         if (part.type === "text" || part.type === "input_text") blocks.push({type: "text", text: part.text});
         else if (part.type === "image_url" || part.type === "input_image") {
+          const selection = ctx.agentDefaultModel.currentSelection();
+          const info = await ctx.llm.resolveModelInfo(selection.provider, selection.model);
+          if (!info.inputModalities?.includes("image")) throw new Error("当前 DSH 模型不支持图片，请配置客户端视觉模型 deepseek-flash");
           const url = typeof part.image_url === "string" ? part.image_url : part.image_url.url;
           const match = /^data:(image\/[a-z]+);base64,(.*)$/s.exec(url);
           if (!match) throw new Error("图片必须由后台验证并下载");
@@ -118,7 +121,10 @@ export function apply(ctx) {
     if (reason?.kind !== "completed") throw new Error("聊天回合未正常结束：" + JSON.stringify(reason));
     await ctx.sessions.flush(handle.agent.session);
     if (item.view) {
-      try { await saveView(item.view, handle.agent.session.snapshotEvents().slice(eventOffset), ctx.sessions.messageProjections); }
+      try {
+        const report = await saveView(item.view, handle.agent.session.snapshotEvents().slice(eventOffset), ctx.sessions.messageProjections);
+        if (report.failures.length) output("view_error");
+      }
       catch { output("view_error"); }
     }
     output("final", {text});

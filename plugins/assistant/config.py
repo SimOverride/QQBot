@@ -24,7 +24,7 @@ class Config(BaseModel):
     task_timeout_seconds: int = Field(1800, ge=30, le=86400)
     task_max_steps: int = Field(80, ge=1, le=500)
     dsh_package_dir: str = ""
-    dsh_model: str = "deepseek-v4-flash"
+    dsh_model: str = "deepseek-flash"
     dsh_view_home: str = ""
     onebot_access_token: SecretStr = SecretStr("")
     deepseek_api_key: SecretStr = SecretStr("")

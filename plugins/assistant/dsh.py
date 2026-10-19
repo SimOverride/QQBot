@@ -22,6 +22,7 @@ from .llm import LLM
 from .prompt_store import refresh_tools
 from .sessions import epoch as session_epoch
 from .trace import emit
+from nonebot.log import logger
 
 _turn = ContextVar("dsh_chat_turn", default=None)
 
@@ -75,6 +76,8 @@ async def sync_views(config):
     try:
         async with asyncio.timeout(20):
             await process.wait()
+            if process.returncode:
+                logger.warning("DSH 浏览记录暂未同步，已保留待补写队列（状态 {}）", process.returncode)
     finally:
         await stop_process(process)
 

@@ -33,24 +33,32 @@ export async function saveView(view, events, projections) {
   const payload = {view: {...view, record, images}, events: normalized};
   await writeFile(path + ".tmp", JSON.stringify(payload), {flag: "wx"});
   await rename(path + ".tmp", path);
-  await syncViews(view.home, view.cwd, projections);
+  return await syncViews(view.home, view.cwd, projections);
 }
 
 export async function syncViews(home, cwd, projections = []) {
   const folder = queuePath(home, cwd);
   let files;
-  try { files = await readdir(folder); } catch (error) { if (error.code === "ENOENT") return; throw error; }
+  try { files = await readdir(folder); } catch (error) { if (error.code === "ENOENT") return {synced: 0, failures: []}; throw error; }
+  const mapping = await readMapping(home, cwd);
   const blocked = new Set();
+  const report = {synced: 0, failures: []};
   for (const file of files.filter(f => /^\d+-[a-f0-9-]+\.json$/.test(f)).sort()) {
     const path = join(folder, file);
     try {
       const {view, events} = JSON.parse(await readFile(path, "utf8"));
       if (view.home !== home || view.cwd !== cwd || blocked.has(view.id)) continue;
-      try { await appendView(view, events, projections); }
-      catch { blocked.add(view.id); continue; }
+      try { await appendView({...view, id: mapping[view.id] || view.id}, events, projections); }
+      catch (error) {
+        blocked.add(view.id);
+        report.failures.push({id: view.id, name: error.name});
+        continue;
+      }
       await unlink(path);
+      report.synced++;
     } catch (error) { if (error.code !== "ENOENT") throw error; }
   }
+  return report;
 }
 
 async function appendView(view, events, projections) {
@@ -98,4 +106,41 @@ async function appendView(view, events, projections) {
     await writer?.close();
     await plugin?.dispose();
   }
+}
+
+const mappingPath = (home, cwd) => join(home, "qqbot-views", createHash("sha256").update(cwd.toLowerCase()).digest("hex").slice(0, 16) + ".json");
+async function readMapping(home, cwd) {
+  try { return JSON.parse(await readFile(mappingPath(home, cwd), "utf8")); }
+  catch (error) { if (error.code === "ENOENT") return {}; throw error; }
+}
+
+// 显式重建浏览副本，保留原记录和机器人的连续执行上下文。
+export async function recoverViews(home, cwd, ids) {
+  const mapping = await readMapping(home, cwd);
+  const ctx = new Context();
+  const plugin = ctx.plugin(persistence, {root: join(home, "sessions")});
+  await plugin.await();
+  try {
+    for (const logical of ids) {
+      let reader, writer;
+      try {
+        reader = await ctx.sessionPersistence.open(mapping[logical] || logical, "read");
+        const saved = await reader.read();
+        const id = randomUUID();
+        writer = await ctx.sessionPersistence.create({...reader.header, id, cwd, createdAt: Date.now()},
+          {inheritedEventCount: reader.inheritedEventCount});
+        assertReleasedV4Relationships({header: writer.header, events: saved.events,
+          inheritedEventCount: reader.inheritedEventCount}, new Set(KNOWN_SESSION_EVENT_TYPES));
+        await writer.append(saved.events);
+        await writer.flush();
+        mapping[logical] = id;
+        const path = mappingPath(home, cwd);
+        await mkdir(join(home, "qqbot-views"), {recursive: true});
+        const temporary = path + "." + randomUUID() + ".tmp";
+        await writeFile(temporary, JSON.stringify(mapping), {flag: "wx"});
+        await rename(temporary, path);
+      } finally { await writer?.close(); await reader?.close(); }
+    }
+  } finally { await plugin.dispose(); }
+  return {mapping, report: await syncViews(home, cwd)};
 }

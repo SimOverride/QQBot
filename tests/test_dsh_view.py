@@ -75,3 +75,5 @@ class ViewTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(other["users"], 1)
             locked = json.loads(await run("locked", home, "qqbot-test"))
             self.assertEqual(locked["users"], 5)
+            recovered = json.loads(await run("recover", home, "qqbot-test"))
+            self.assertEqual(recovered["users"], 7)
