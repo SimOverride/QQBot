@@ -83,6 +83,17 @@ async function api(path, data, options={}) {
   return options.blob?response:response.json();
 }
 function dirty(){return settingsChanged.size>0 || current && text(draft)!==text(current.value);}
+function addAgentReset(holder){
+  const button=document.createElement('button');button.className='quiet';button.textContent='重置全部 agent 会话';holder.append(button);
+  button.onclick=async()=>{
+    if(busy)return;
+    if(!window.confirm('重置全部群聊和私聊的 agent 执行会话？下一轮将重新加载当前规则。聊天记录、认知、人设和后台任务保留；已执行的操作不会撤回，尚未发出的旧回复将在有效性检查时停止。未保存的提示词草稿不会生效。'))return;
+    busy=true;button.disabled=true;
+    try{const result=await api('/api/agent/reset',{confirm:'reset_all'});status(result.message);}
+    catch(e){status(e.message,true);}
+    finally{busy=false;button.disabled=false;}
+  };
+}
 async function navigate(next){
   closeMessagePreview();
   if(busy){status('正在等待模型建议，请稍后切换');return;}
@@ -386,6 +397,7 @@ async function renderSettings(){
     wrap.append(input);parent.append(wrap);return input;
   }
   const area=$('#default-settings');
+  addAgentReset(area.parentElement);
   const slider=control(area,'默认积极性',defaults.activity,'range');slider.min=0;slider.max=100;slider.step=1;
   const amount=document.createElement('output');amount.textContent=slider.value;slider.after(amount);
   const persona=control(area,'默认人设',defaults.persona,'select',defaults.personas);

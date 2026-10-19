@@ -20,6 +20,7 @@ from .image_download import download_image
 from .knowledge import display_name, read_directory, scope_name
 from .llm import LLM
 from .prompt_store import refresh_tools
+from .sessions import epoch as session_epoch
 from .trace import emit
 
 _turn = ContextVar("dsh_chat_turn", default=None)
@@ -312,15 +313,16 @@ class Chat(LLM):
             from .events import Events
 
             events = Events(project, scope.key)
-            epoch_file = project / "data" / "agent-events" / str(bot) / f"{group}.epoch"
-            epoch = epoch_file.read_text() if epoch_file.exists() else "initial"
-            policy = json.dumps([sorted(self.config.bot_owners), sorted(scope.scopes), epoch])
+            epoch = session_epoch(project, bot, group)
+            # 未手动重置时保持原有会话路径，部署本功能不会隐式重置。
+            version = epoch[1] if epoch[0] == "initial" else epoch
+            policy = json.dumps([sorted(self.config.bot_owners), sorted(scope.scopes), version])
             generation = hashlib.sha256(policy.encode()).hexdigest()[:16]
             turn.runtime = project / "data" / "agent" / str(bot) / str(group) / generation
             original_current = getattr(scope, "is_current", lambda: True)
             scope.is_current = lambda: (
                 original_current()
-                and (epoch_file.read_text() if epoch_file.exists() else "initial") == epoch
+                and session_epoch(project, bot, group) == epoch
             )
             user += events.context()
             turn.view = {

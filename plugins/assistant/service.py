@@ -250,6 +250,8 @@ class Assistant:
                     for index, chunk in enumerate(chunks):
                         if index:
                             await asyncio.sleep(0.35)
+                        if not getattr(history_tools, "is_current", lambda: True)():
+                            raise Superseded
                         await send(chunk)
                         if events:
                             events.publish(
@@ -258,6 +260,8 @@ class Assistant:
                             )
                     saved_reply = "\n".join(chunks)
                     if reply.image_data is not None:
+                        if not getattr(history_tools, "is_current", lambda: True)():
+                            raise Superseded
                         if send_image is None:
                             raise ServiceError("当前会话无法发送搜索图片。")
                         try:
@@ -276,6 +280,8 @@ class Assistant:
                             raise SendFailure from None
                         saved_reply += "\n[已发送搜索图片]"
                     if reply.emote_id is not None:
+                        if not getattr(history_tools, "is_current", lambda: True)():
+                            raise Superseded
                         if send_emote is None:
                             raise ServiceError("当前会话无法发送表情包。")
                         try:

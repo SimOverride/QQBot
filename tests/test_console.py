@@ -17,9 +17,34 @@ from plugins.assistant.config import Config
 from plugins.assistant.llm import LLM
 from plugins.assistant.longterm import LongTermMemory
 from plugins.assistant.prompts import system_prompt
+from plugins.assistant.sessions import epoch
 
 
 class ConsoleTests(unittest.TestCase):
+    def test_reset_all_requires_confirmation_and_preserves_data(self):
+        before = epoch(self.root, 123, 10)
+        files = {}
+        for name in ("personas/默认.txt", "data/task-marker.json", "data/agent/123/10/old/session.json", "data/agent-events/123/10.json"):
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if not path.exists():
+                path.write_text("[]", encoding="utf-8")
+            files[path] = path.read_bytes()
+        messages = self.archive.db.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        self.assertEqual(self.client.post('/api/agent/reset', json={"confirm": "reset_all"}).status_code, 403)
+        self.assertEqual(self.client.post('/api/agent/reset', json={}, headers=self.headers).status_code, 400)
+        self.assertEqual(epoch(self.root, 123, 10), before)
+        result = self.client.post('/api/agent/reset', json={"confirm": "reset_all"}, headers=self.headers)
+        self.assertEqual(result.status_code, 200)
+        self.assertNotEqual(epoch(self.root, 123, 10), before)
+        self.assertNotEqual(epoch(self.root, 88, -20)[0], 'initial')
+        self.assertEqual(self.archive.db.execute("SELECT COUNT(*) FROM messages").fetchone()[0], messages)
+        for path, content in files.items():
+            self.assertEqual(path.read_bytes(), content)
+        previous = epoch(self.root, 123, 10)
+        self.assertEqual(self.client.post('/api/agent/reset', json={"confirm": "reset_all"}, headers=self.headers).status_code, 200)
+        self.assertNotEqual(epoch(self.root, 123, 10), previous)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

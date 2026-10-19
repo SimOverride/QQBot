@@ -32,6 +32,7 @@ from plugins.assistant.personality import ProfileStore
 from plugins.assistant.prompt_store import prompt_text
 from plugins.assistant.runtime import status as runtime_status
 from plugins.assistant.search import Search
+from plugins.assistant.sessions import reset as reset_sessions
 from profile_lab import SCENARIOS, inspect_persona
 
 ROOT = Path(__file__).resolve().parent
@@ -136,6 +137,19 @@ def create_app(root=ROOT):
     @app.get("/api/runtime")
     def runtime():
         return runtime_status(root)
+
+    @app.post("/api/agent/reset")
+    async def reset_agent(request: Request):
+        data = await body(request)
+        if data != {"confirm": "reset_all"}:
+            raise ValueError("请确认重置全部 agent 会话")
+
+        def publish():
+            with migration.project_lock(root, name=".migration.lock"):
+                reset_sessions(root)
+            return {"message": "已重置全部 agent 会话，下一轮将新建执行上下文；聊天记录、认知、人设和后台任务保留。"}
+
+        return await run_in_threadpool(publish)
 
     @app.get("/api/bot-avatar")
     async def bot_avatar():

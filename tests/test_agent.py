@@ -15,9 +15,57 @@ from plugins.assistant.events import Events
 from plugins.assistant.history_tools import HistoryTools
 from plugins.assistant.llm import LLM, Reply
 from plugins.assistant.longterm import LongTermMemory
+from plugins.assistant.sessions import reset, epoch
+from plugins.assistant.service import Assistant
 
 
 class AgentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reset_all_invalidates_active_scopes_and_changes_next_runtime(self):
+        cfg = Config(model_trace_enabled=False)
+        with tempfile.TemporaryDirectory() as folder:
+            archive = LongTermMemory(Path(folder) / "memory.db", cfg)
+            chat = Chat(None, cfg, SimpleNamespace(enabled=False))
+            paths = []
+            scopes = [HistoryTools(archive, key) for key in ((99, 10, 1), (99, -2, 2), (88, 10, 2))]
+
+            async def reply(*args, **kwargs):
+                paths.append(_turn.get().runtime)
+                return Reply("完成")
+
+            try:
+                with patch.object(LLM, "reply", reply):
+                    for scope in scopes:
+                        await chat.reply([], "测试", "test", history_tools=scope)
+                    self.assertTrue(all(scope.is_current() for scope in scopes))
+                    reset(archive.root)
+                    self.assertTrue(all(not scope.is_current() for scope in scopes))
+                    for scope in scopes:
+                        fresh = HistoryTools(archive, scope.key)
+                        await chat.reply([], "测试", "test", history_tools=fresh)
+                        self.assertTrue(fresh.is_current())
+                self.assertTrue(all(a != b for a, b in zip(paths[:3], paths[3:])))
+            finally:
+                archive.close()
+
+    async def test_reset_between_chunks_stops_text_and_image(self):
+        cfg = Config(model_trace_enabled=False)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            original = epoch(root, 99, 10)
+            scope = SimpleNamespace(is_current=lambda: epoch(root, 99, 10) == original)
+            model = SimpleNamespace(reply=AsyncMock(return_value=Reply("第一条\n<分条>\n第二条", image_data=b"image")))
+            service = Assistant(cfg, model)
+            sent = []
+
+            async def send(text):
+                sent.append(text)
+                reset(root)
+
+            image = AsyncMock()
+            await service.handle(99, 10, 2, 1, "测试", send, history_tools=scope, send_image=image)
+            self.assertEqual(sent, ["第一条"])
+            image.assert_not_awaited()
+
     async def test_parallel_reads_finish_before_write_barrier(self):
         cfg = Config(model_trace_enabled=False, emotes_auto_collect=False)
         with tempfile.TemporaryDirectory() as folder:
