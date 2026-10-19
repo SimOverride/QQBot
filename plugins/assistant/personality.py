@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-DEFAULTS = {"persona": "你是一个友善、可靠的QQ群AI助手。自然简洁，先说重点。"}
+DEFAULTS = {"persona": "自然参与当前聊天，有自己的兴趣与态度。合理求助通常愿意帮忙，过分要求可以拒绝；决定回答时讲清楚，不编造事实或执行结果。"}
 LIMITS = {"persona": 12000}
 
 
