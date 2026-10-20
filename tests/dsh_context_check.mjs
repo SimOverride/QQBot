@@ -1,0 +1,20 @@
+// 背景去重保留新消息、修订、删除以及重置后的首次加载。
+import assert from "node:assert/strict";
+import { contextDelta } from "../plugins/assistant/dsh_context.mjs";
+const row = {id: 1, scope: 10, text: "旧消息"};
+const input = data => [{role:"user", content:"【首次历史背景】旧问答"}, {role:"user", content:"【动态背景快照】"+JSON.stringify(data)}, {role:"user", content:"当前请求"}];
+const data = {group: {recent_group_messages:[row], topic:"闲聊"}, knowledge: {name:"甲", fact:"原值"}};
+const first = contextDelta(input(data), []);
+assert.equal(first.incoming.length,3);
+const saved = [{type:"user/message",data:{source:{backgrounds:first.backgrounds}}}];
+assert.equal(contextDelta(input(data),saved).incoming.length,1);
+const changed = structuredClone(data);
+changed.group.recent_group_messages.push({id:2,scope:10,text:"新消息"});
+changed.knowledge.fact="修订";
+delete changed.knowledge.name;
+const update=contextDelta(input(changed),saved);
+const text=update.incoming[0].content;
+assert.ok(text.includes("新消息") && !text.includes("旧消息"));
+assert.ok(text.includes("修订") && text.includes('"name":null'));
+assert.equal(contextDelta(input(changed),[]).incoming.length,3);
+console.log("背景增量验证通过");

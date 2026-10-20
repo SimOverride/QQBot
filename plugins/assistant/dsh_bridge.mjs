@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
 import { saveView } from "./dsh_view.mjs";
+import { contextDelta } from "./dsh_context.mjs";
 
 const require = createRequire(process.env.QQBOT_DSH_PACKAGE + "/package.json");
 const load = name => import(pathToFileURL(require.resolve(name)).href);
@@ -12,9 +13,14 @@ const { createUserMessage } = await load("@deepseek-ai/dsh-llm");
 export const name = "qqbot-chat";
 export const inject = ["agents", "sessions", "tools", "systemPrompt", "attachments", "agentDefaultModel", "llm"];
 const output = (type, data = {}) => process.stdout.write("QQBOT_CHAT " + JSON.stringify({type, ...data}) + "\n");
+const reportError = error => output("error", {code: error.code || "EXECUTION_FAILED", message: String(error)});
 
 export function apply(ctx) {
-  let handle, snapshot, disposers = [], text = "", reason, step = 0;
+  let handle, snapshot, disposers = [], text = "", reason, step = 0, closing = false, stopCode;
+  function stop(code, message) {
+    stopCode = code;
+    throw Object.assign(new Error(message), {code});
+  }
   const pending = new Map();
   let calls = [], flushCalls;
   function enqueue(call) {
@@ -35,7 +41,7 @@ export function apply(ctx) {
         else if (part.type === "image_url" || part.type === "input_image") {
           const selection = ctx.agentDefaultModel.currentSelection();
           const info = await ctx.llm.resolveModelInfo(selection.provider, selection.model);
-          if (!info.inputModalities?.includes("image")) throw new Error("当前 DSH 模型不支持图片，请配置客户端视觉模型 deepseek-flash");
+          if (!info.inputModalities?.includes("image")) stop("VISION_UNSUPPORTED", "当前 DSH 模型不支持图片，请配置客户端视觉模型 deepseek-flash");
           const url = typeof part.image_url === "string" ? part.image_url : part.image_url.url;
           const match = /^data:(image\/[a-z]+);base64,(.*)$/s.exec(url);
           if (!match) throw new Error("图片必须由后台验证并下载");
@@ -84,9 +90,12 @@ export function apply(ctx) {
         agentCtx.systemPrompt.section({name: "qqbot", order: 0, complete: true, text: "{{qqbot_prompt}}"});
         configure(agentCtx);
         agentCtx.on("agent/pre-step", async (_payload, next) => {
-          if (++step > snapshot.max_steps) throw new Error("聊天步骤预算已用完");
-          if (snapshot.budget && (snapshot.budget.tokens <= 0 || snapshot.budget.seconds <= 0 || snapshot.budget.cost_exhausted)) {
-            throw new Error("本轮共享资源预算已用完");
+          if (++step > snapshot.max_steps) stop("STEP_LIMIT", "聊天步骤预算已用完");
+          if (snapshot.budget?.seconds <= 0) stop("REQUEST_TIMEOUT", "本轮处理时间已用完");
+          if (snapshot.budget && (snapshot.budget.calls <= 0 || snapshot.budget.tokens <= 0 || snapshot.budget.cost_exhausted)) {
+            // 预算耗尽后只允许一次禁用工具的收尾，不能继续查询或产生副作用。
+            if (snapshot.functions.length || closing) stop("BUDGET_EXHAUSTED", "本轮共享资源预算已用完");
+            closing = true;
           }
           configure(agentCtx);
           return next();
@@ -110,15 +119,17 @@ export function apply(ctx) {
       if (event.type === "turn/end") reason = event.data.reason;
     });
   })();
-  ready.catch(error => output("error", {message: String(error)}));
+  ready.catch(reportError);
   async function start(item) {
     await ready;
     snapshot = item;
     const eventOffset = handle.agent.session.snapshotEvents().length;
     configure(handle.agent.ctx);
-    handle.agent.followup(createUserMessage({content: await content(item.messages, true), source: {kind: "user"}}));
+    const saved = handle.agent.session.snapshotEvents();
+    const {incoming, backgrounds} = contextDelta(item.messages, saved);
+    handle.agent.followup(createUserMessage({content: await content(incoming, true), source: {kind: "user", backgrounds}}));
     await handle.agent.whenIdle();
-    if (reason?.kind !== "completed") throw new Error("聊天回合未正常结束：" + JSON.stringify(reason));
+    if (reason?.kind !== "completed") throw Object.assign(new Error("聊天回合未正常结束：" + JSON.stringify(reason)), {code: stopCode || "TURN_FAILED"});
     await ctx.sessions.flush(handle.agent.session);
     if (item.view) {
       try {
@@ -133,7 +144,7 @@ export function apply(ctx) {
   lines.on("line", line => {
     serial = serial.then(async () => {
       const item = JSON.parse(line);
-      if (item.type === "start") { start(item).catch(error => output("error", {message: String(error)})); return; }
+      if (item.type === "start") { start(item).catch(reportError); return; }
       if (item.type === "result") {
         snapshot = {...snapshot, ...item};
         for (const result of item.results) {
@@ -143,7 +154,7 @@ export function apply(ctx) {
           waiting.resolve(JSON.stringify(value));
         }
       }
-    }).catch(error => output("error", {message: String(error)}));
+    }).catch(reportError);
   });
   lines.on("close", () => { handle?.agent.cancel({kind: "user"}); ctx.get("appExit")(0); });
 }

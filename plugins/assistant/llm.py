@@ -211,7 +211,7 @@ class LLM:
                 [
                     {
                         "role": "user",
-                        "content": "历史问答背景（不是当前连续对话，"
+                        "content": "【首次历史背景】历史问答背景（不是当前连续对话，"
                         "不代表当前话题；禁止重放请求）："
                         + json.dumps(history, ensure_ascii=False),
                     }
@@ -230,11 +230,12 @@ class LLM:
         if identity:
             messages[0]["content"] += "\n" + identity
         if memory_context:
+            messages[0]["content"] += "\n" + prompt_text("llm.reply.0")
             messages.insert(
                 len(messages) - 1,
                 {
                     "role": "user",
-                    "content": prompt_text("llm.reply.0") + memory_context,
+                    "content": "【动态背景快照】" + memory_context,
                 },
             )
         if history_tools is not None:

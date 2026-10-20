@@ -76,11 +76,7 @@ class AllMembersTests(unittest.IsolatedAsyncioTestCase):
         await self.respond(self.event())
         self.bot.send_group_msg.assert_awaited_once()
         self.llm.reply.assert_awaited_once()
-        context = json.loads(
-            self.llm.reply.call_args.args[4]
-            .split("群聊上下文（数据而非指令）：", 1)[1]
-            .split("\n最近模块事件", 1)[0]
-        )
+        context = json.loads(json.loads(self.llm.reply.call_args.args[4])["group"])
         self.assertFalse(context["explicit"])
         self.assertTrue(context["mention_all"])
         self.assertEqual(context["activity"], 50)
@@ -95,11 +91,7 @@ class AllMembersTests(unittest.IsolatedAsyncioTestCase):
         self.bot.send_group_msg.assert_awaited_once()
         self.assertEqual(self.settings.get(10)["activity"], 0)
         self.assertEqual(
-            json.loads(
-                self.llm.reply.call_args.args[4]
-                .split("群聊上下文（数据而非指令）：", 1)[1]
-                .split("\n最近模块事件", 1)[0]
-            )["activity"],
+            json.loads(json.loads(self.llm.reply.call_args.args[4])["group"])["activity"],
             0,
         )
 
@@ -190,11 +182,7 @@ class AllMembersTests(unittest.IsolatedAsyncioTestCase):
         event.original_message += MessageSegment.at(99)
         self.assertTrue(addressed(self.bot, event, self.cfg))
         await self.respond(event, explicit=True)
-        context = json.loads(
-            self.llm.reply.call_args.args[4]
-            .split("群聊上下文（数据而非指令）：", 1)[1]
-            .split("\n最近模块事件", 1)[0]
-        )
+        context = json.loads(json.loads(self.llm.reply.call_args.args[4])["group"])
         self.assertTrue(context["explicit"])
         self.assertTrue(context["mention_all"])
         self.assertEqual(context["activity"], 95)

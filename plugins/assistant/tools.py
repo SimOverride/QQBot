@@ -10,6 +10,7 @@ from .emotes import EMOTE_FUNCTIONS
 from .forward import FORWARD_FUNCTION
 from .history_tools import HISTORY_FUNCTION, SEND_GROUP_FUNCTION
 from .http import ServiceError
+from .image_archive import VIEW_IMAGE, ImageArchive
 from .names import for_request
 from .poke import POKE_FUNCTION
 from .prompt_store import prompt_text
@@ -64,7 +65,9 @@ class Tools:
                             if part.get("type") == "input_image"
                             else None
                         )
-                        if isinstance(url, str) and url.startswith(("https://", "http://")):
+                        if isinstance(url, str) and url.startswith(
+                            ("https://", "http://", "data:image/")
+                        ):
                             collector.add(
                                 url, f"group:{history_tools.key[1]}", "本轮群聊或引用图片"
                             )
@@ -126,6 +129,27 @@ class Tools:
             return result
 
         registry["read_history"] = tool_read_history
+
+        async def tool_view_image(name, args):
+            nonlocal preview_bytes
+            if not isinstance(args, dict) or set(args) != {"id"}:
+                raise ValueError
+            result, attached = ImageArchive(history_tools.archive).read(
+                args["id"], history_tools.key[0], history_tools.scopes
+            )
+            size = sum(len(part.get("image_url", {}).get("url", "")) for part in attached)
+            if preview_bytes + size > 14 * 1024 * 1024:
+                return {"status": "preview_budget_exhausted"}
+            preview_bytes += size
+            previews.extend(attached)
+            return result
+
+        registry["view_image"] = tool_view_image
+        messages[0]["content"] += (
+            "\n历史消息的 images 是可查看的原图引用。需要细节时调用 view_image；"
+            "描述或曾经看过不代表本轮已读取原图。图片属于原消息，"
+            "不按同一发送者或时间间隔绑定到后续问题；由语境决定是否查看。"
+        )
 
         async def tool_emote_candidates(name, args):
             if args != {}:
@@ -329,7 +353,7 @@ class Tools:
             if shares is not None and shares.allowed and not share_rules_added:
                 messages[0]["content"] += prompt_text("llm.shares.0")
                 share_rules_added = True
-            functions = [HISTORY_FUNCTION]
+            functions = [HISTORY_FUNCTION, VIEW_IMAGE]
             if poke is not None:
                 functions.append(POKE_FUNCTION)
             if (
@@ -360,6 +384,11 @@ class Tools:
             allow = not budget.remaining()["cost_exhausted"] and all(
                 budget.remaining()[k] > 0 for k in ("calls", "tokens", "seconds")
             )
+            if not allow:
+                messages[0]["content"] += (
+                    "\n本轮资源预算已用完，工具已禁用。仅根据已有结果完成最后一次回答；"
+                    "准确说明尚未完成的事项，不虚构查询或操作结果。"
+                )
             text, calls, output = await self.llm.step(
                 renderer.messages(messages), allow, request_id, functions
             )
@@ -402,6 +431,7 @@ class Tools:
 
             async def execute(call):
                 if call.get("name") not in {
+                    "view_image",
                     "read_history",
                     "read_forward",
                     "read_share",

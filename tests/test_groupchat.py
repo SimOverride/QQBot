@@ -66,11 +66,7 @@ class GroupChatTests(unittest.IsolatedAsyncioTestCase):
     async def test_activity_and_trigger_reach_main_agent(self):
         self.settings.set_activity(10, 10)
         await self.controller.respond(self.bot, self.event, "这是真的吗", GroupState(), True)
-        context = json.loads(
-            self.llm.reply.call_args.args[4]
-            .split("群聊上下文（数据而非指令）：", 1)[1]
-            .split("\n最近模块事件", 1)[0]
-        )
+        context = json.loads(json.loads(self.llm.reply.call_args.args[4])["group"])
         self.assertEqual(context["activity"], 10)
         self.assertTrue(context["explicit"])
         self.assertEqual(context["trigger_message_id"], 12)
@@ -279,11 +275,9 @@ class GroupChatTests(unittest.IsolatedAsyncioTestCase):
             message_id=9, sender=SimpleNamespace(user_id=99), message=Message("可以降低快门速度")
         )
         await self.controller.respond(self.bot, self.event, "为什么呢", GroupState(), False)
-        context = json.loads(
-            self.llm.reply.call_args.args[4]
-            .split("群聊上下文（数据而非指令）：", 1)[1]
-            .split("\n最近模块事件", 1)[0]
-        )["recent_group_messages"]
+        context = json.loads(json.loads(self.llm.reply.call_args.args[4])["group"])[
+            "recent_group_messages"
+        ]
         self.assertEqual(context[-1]["quoted_message"]["qq"], 99)
         self.assertEqual(context[-1]["quoted_message"]["text"], "可以降低快门速度")
 
@@ -318,7 +312,7 @@ class GroupChatTests(unittest.IsolatedAsyncioTestCase):
         self.llm.reply.assert_awaited_once()
         self.assertEqual(self.llm.reply.call_args.kwargs["images"], images)
 
-    async def test_coalesced_image_followup_preserves_original_author(self):
+    async def test_text_followup_does_not_automatically_attach_previous_image(self):
         self.service.vision = SimpleNamespace(
             prepare=AsyncMock(
                 return_value=[
@@ -326,17 +320,11 @@ class GroupChatTests(unittest.IsolatedAsyncioTestCase):
                 ]
             )
         )
-        from nonebot.adapters.onebot.v11 import Message, MessageSegment
 
-        source = SimpleNamespace(
-            user_id=2,
-            message_id=11,
-            original_message=Message([MessageSegment.image("https://gchat.qpic.cn/a")]),
-        )
-        state = GroupState(image_pending=(source, "[图片]", time.monotonic()))
+        state = GroupState()
         await self.controller.respond(self.bot, self.event, "这是什么", state, True)
-        self.assertIs(self.service.vision.prepare.call_args.args[1], source)
-        self.assertIsNone(state.image_pending)
+        self.service.vision.prepare.assert_not_awaited()
+        self.assertNotIn("images", self.llm.reply.call_args.kwargs)
 
     async def test_activity_changes_wake_frequency(self):
         delays = []

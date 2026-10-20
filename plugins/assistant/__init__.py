@@ -179,7 +179,7 @@ def setup() -> None:
 
         view_worker = asyncio.create_task(view_loop())
 
-        service.vision = Vision(config)
+        service.vision = Vision(config, archive)
         service.emotes = Emotes(
             root / config.emotes_dir, config.emotes_max_bytes, config.emotes_daily_import_limit
         )
@@ -286,6 +286,9 @@ def setup() -> None:
         try:
             contacts.observe(int(bot.self_id), event.group_id, event.user_id, event.sender)
             archive_event(archive, config, bot, event)
+            from .image_archive import ImageArchive
+
+            await ImageArchive(archive).collect(bot, event, event.group_id)
         except Exception as error:
             logger.warning("group_archive_failure={}", type(error).__name__)
 
@@ -346,6 +349,9 @@ def setup() -> None:
                 event.time,
                 metadata=event_metadata(event),
             )
+            from .image_archive import ImageArchive
+
+            await ImageArchive(archive).collect(bot, event, scope)
         except Exception as error:
             logger.warning("private_archive_failure={}", type(error).__name__)
 

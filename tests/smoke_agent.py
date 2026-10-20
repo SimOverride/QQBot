@@ -2,11 +2,11 @@
 
 import asyncio
 import base64
-import struct
-import zlib
 import json
+import struct
 import subprocess
 import tempfile
+import zlib
 from pathlib import Path
 
 from dotenv import dotenv_values
@@ -23,18 +23,45 @@ async def main():
         for index, question in enumerate(
             ("请记住本会话测试口令是蓝色纸鹤，仅回复收到。", "上一回合测试口令是什么？仅回答口令。")
         ):
+
             def chunk(kind, data):
-                return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+                return (
+                    struct.pack(">I", len(data))
+                    + kind
+                    + data
+                    + struct.pack(">I", zlib.crc32(kind + data))
+                )
 
             pixels = bytearray()
             for y in range(300):
                 pixels.append(0)
                 for x in range(400):
-                    inside = 60 < x < 300 and 60 < y < 240 if index == 0 else (x - 200) ** 2 + (y - 150) ** 2 < 110 ** 2
-                    pixels.extend((255, 0, 0) if inside and index == 0 else (0, 0, 255) if inside else (255, 255, 255))
-            png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 400, 300, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(pixels)) + chunk(b"IEND", b"")
+                    inside = (
+                        60 < x < 300 and 60 < y < 240
+                        if index == 0
+                        else (x - 200) ** 2 + (y - 150) ** 2 < 110**2
+                    )
+                    pixels.extend(
+                        (255, 0, 0)
+                        if inside and index == 0
+                        else (0, 0, 255)
+                        if inside
+                        else (255, 255, 255)
+                    )
+            png = (
+                b"\x89PNG\r\n\x1a\n"
+                + chunk(b"IHDR", struct.pack(">IIBBBBB", 400, 300, 8, 2, 0, 0, 0))
+                + chunk(b"IDAT", zlib.compress(pixels))
+                + chunk(b"IEND", b"")
+            )
             question += " 同时说明这次图片的颜色和形状。"
-            parts = [{"type": "text", "text": question}, {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(png).decode()}}]
+            parts = [
+                {"type": "text", "text": question},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64," + base64.b64encode(png).decode()},
+                },
+            ]
             turn = Turn(cfg, f"smoke-{index}")
             turn.runtime = root / "runtime"
             turn.view = {
@@ -55,7 +82,9 @@ async def main():
                         [],
                     )
                 assert not calls
-                assert ("红" in text if index == 0 else "蓝" in text and "圆" in text), "实际图片识别失败"
+                assert "红" in text if index == 0 else "蓝" in text and "圆" in text, (
+                    "实际图片识别失败"
+                )
                 if index == 1:
                     assert "蓝色纸鹤" in text, "恢复会话未保留上轮上下文"
             finally:
@@ -103,7 +132,8 @@ async def main():
                 {"role": "system", "content": "先调用所有要求的工具，再根据结果回答。"},
                 {
                     "role": "user",
-                    "content": "请调用 read_alpha 和 read_beta 两个工具，读取结果后回复完成。",
+                    "content": ("请调用 read_alpha 和 read_beta 两个工具，"
+                                "读取结果后说明随工具结果附上的图片颜色和形状。"),
                 },
             ]
             seen = set()
@@ -122,7 +152,18 @@ async def main():
                                 "content": "测试读取成功",
                             }
                         )
+                    if any(call["name"] == "read_alpha" for call in calls):
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": "工具返回的原图，不是新请求"},
+                                    parts[-1],
+                                ],
+                            }
+                        )
             assert seen == {"read_alpha", "read_beta"}, seen
+            assert "蓝" in text and "圆" in text, "工具返回的原图未被识别"
         finally:
             await turn.close()
         print("客户端原生两轮图片识别、上下文恢复、工具执行和浏览镜像通过。")

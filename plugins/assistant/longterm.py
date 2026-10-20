@@ -110,6 +110,10 @@ class LongTermMemory:
             "is_bot": row["usr"] == row["bot"],
             "mentions": metadata.get("mentions"),
             "reply_to": reply,
+            "images": [
+                {k: v for k, v in item.items() if k != "source_url"}
+                for item in metadata.get("images", [])
+            ],
             "related_user": row["related_usr"],
             "response_to": metadata.get("response_to"),
             "text": row["content"][:limit],

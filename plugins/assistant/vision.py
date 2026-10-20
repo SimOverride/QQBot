@@ -1,4 +1,4 @@
-"""Ephemeral native image inputs for the active chat model."""
+"""当前及明确引用图片输入；历史图片通过留档工具按需读取。"""
 
 import asyncio
 import re
@@ -43,8 +43,9 @@ def platform_url(value):
 class Vision:
     """Resolve platform image references without calling a separate model."""
 
-    def __init__(self, config):
+    def __init__(self, config, archive=None):
         self.config = config
+        self.archive = archive
         self.repetitions = {}
 
     @staticmethod
@@ -86,9 +87,44 @@ class Vision:
     async def prepare(self, bot, event):
         images = image_segments(event)
         content = []
+        cached = {}
+        if self.archive is not None and bot is not None:
+            import json
+
+            from .image_archive import ImageArchive
+
+            scope = getattr(event, "group_id", -event.user_id)
+            for origin, message in (
+                ("当前消息", event),
+                ("引用消息", getattr(event, "reply", None)),
+            ):
+                if message is None:
+                    continue
+                row = self.archive.db.execute(
+                    "SELECT metadata FROM messages WHERE bot=? AND grp=? AND message_id=?",
+                    (int(bot.self_id), scope, message.message_id),
+                ).fetchone()
+                refs = json.loads(row[0] or "{}").get("images", []) if row else []
+                for ref in refs:
+                    visible = {k: v for k, v in ref.items() if k != "source_url"}
+                    content.append(
+                        {
+                            "type": "text",
+                            "text": origin + "图片留档：" + json.dumps(visible, ensure_ascii=False),
+                        }
+                    )
+                    if ref.get("id"):
+                        _, parts = ImageArchive(self.archive).read(
+                            ref["id"], int(bot.self_id), {scope}
+                        )
+                        if parts:
+                            cached[(origin, ref["index"])] = parts[-1]["image_url"]["url"]
+        positions = {}
         failed = max(0, len(images) - self.config.vision_max_images)
         for index, (origin, seg) in enumerate(images[: self.config.vision_max_images], 1):
-            url = platform_url(seg.data.get("url"))
+            position = positions.get(origin, 0)
+            positions[origin] = position + 1
+            url = cached.get((origin, position)) or platform_url(seg.data.get("url"))
             file_id = seg.data.get("file", "")
             if not url and isinstance(file_id, str) and re.fullmatch(r"[\w.{}-]{1,256}", file_id):
                 try:

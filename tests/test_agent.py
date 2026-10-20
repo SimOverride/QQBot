@@ -15,8 +15,8 @@ from plugins.assistant.events import Events
 from plugins.assistant.history_tools import HistoryTools
 from plugins.assistant.llm import LLM, Reply
 from plugins.assistant.longterm import LongTermMemory
-from plugins.assistant.sessions import reset, epoch
 from plugins.assistant.service import Assistant
+from plugins.assistant.sessions import epoch, reset
 
 
 class AgentTests(unittest.IsolatedAsyncioTestCase):
@@ -53,7 +53,9 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
             root = Path(folder)
             original = epoch(root, 99, 10)
             scope = SimpleNamespace(is_current=lambda: epoch(root, 99, 10) == original)
-            model = SimpleNamespace(reply=AsyncMock(return_value=Reply("第一条\n<分条>\n第二条", image_data=b"image")))
+            model = SimpleNamespace(
+                reply=AsyncMock(return_value=Reply("第一条\n<分条>\n第二条", image_data=b"image"))
+            )
             service = Assistant(cfg, model)
             sent = []
 
@@ -157,3 +159,41 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(budget.tokens, 400)
         self.assertTrue(budget.remaining()["cost_exhausted"])
         self.assertFalse(budget.take())
+
+    async def test_exhausted_model_budget_disables_tools_and_requests_wrapup(self):
+        cfg = Config(model_trace_enabled=False, emotes_auto_collect=False)
+        for resource in ("tokens", "cost"):
+            with self.subTest(resource=resource), tempfile.TemporaryDirectory() as folder:
+                archive = LongTermMemory(Path(folder) / "memory.db", cfg)
+                try:
+                    scope = HistoryTools(archive, (99, 10, 2))
+                    scope.budget = budget = Budget(cfg)
+                    if resource == "cost":
+                        scope.budget.max_cost = 1
+                    model = LLM(None, cfg, SimpleNamespace(enabled=False))
+
+                    async def step(messages, allow, *args):
+                        if model.step.await_count == 1:
+                            self.assertTrue(allow)
+                            if resource == "tokens":
+                                scope.budget.usage({"totalTokens": cfg.agent_max_tokens})
+                            else:
+                                scope.budget.cost = 1
+                            return (
+                                "",
+                                [{"call_id": "a", "name": "read_capabilities", "arguments": "{}"}],
+                                [],
+                            )
+                        self.assertFalse(allow)
+                        self.assertIn("工具已禁用", messages[0]["content"])
+                        result = json.loads(messages[-1]["content"])
+                        self.assertEqual(result["status"], "budget_exhausted")
+                        return "根据已有结果收尾，未执行查询。", [], []
+
+                    model.step = AsyncMock(side_effect=step)
+                    reply = await model.reply([], "测试", "test", history_tools=scope)
+                    self.assertIn("收尾", reply.text)
+                    self.assertEqual(model.step.await_count, 2)
+                    self.assertEqual(budget.calls, 0)
+                finally:
+                    archive.close()

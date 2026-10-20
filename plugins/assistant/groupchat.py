@@ -119,7 +119,6 @@ class GroupState:
     last_sent: float = 0
     last_checked: float = 0
     seen: dict = field(default_factory=dict)
-    image_pending: tuple | None = None
     batches: dict = field(default_factory=dict)
     direct_tasks: dict = field(default_factory=dict)
     versions: dict = field(default_factory=dict)
@@ -157,8 +156,6 @@ class GroupConversation:
             vision.observe(bot, event)
         state.revision += 1
         state.versions[event.user_id] = state.versions.get(event.user_id, 0) + 1
-        if image_segments(event):
-            state.image_pending = (event, text, now)
         command = text.lstrip().startswith("/")
         active_direct = state.direct_tasks.get(event.user_id)
         if command:
@@ -279,15 +276,7 @@ class GroupConversation:
         if time.monotonic() - state.touched > 600:
             state.topic, state.active = "", False
         image_context = []
-        image_event = event
-        if (
-            not image_segments(event)
-            and state.image_pending is not None
-            and state.image_pending[0].user_id == event.user_id
-            and time.monotonic() - state.image_pending[2] < 90
-        ):
-            image_event = state.image_pending[0]
-        image_events = [item for item in events if image_segments(item)] or [image_event]
+        image_events = [item for item in events if image_segments(item)] or [event]
         if (
             not text.lstrip().startswith("/")
             and self.service.vision is not None
@@ -305,8 +294,6 @@ class GroupConversation:
                         )
             except TimeoutError:
                 image_context = [{"type": "text", "text": "[取图超时，不能猜测图片内容。]"}]
-        if image_context:
-            state.image_pending = None
         context = self.context(int(bot.self_id), event.group_id)
         knowledge = group_knowledge(int(bot.self_id), event.group_id)
         if knowledge:

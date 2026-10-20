@@ -106,7 +106,16 @@ class EmoteCollector:
             return {"status": "download_limit"}, []
         self.download_attempts += 1
         try:
-            data = await self.downloader(self.candidates[ident]["url"], self.max_bytes)
+            url = self.candidates[ident]["url"]
+            if url.startswith("data:image/"):
+                try:
+                    if len(url) > self.max_bytes * 4 // 3 + 256:
+                        raise ValueError
+                    data = base64.b64decode(url.split(",", 1)[1], validate=True)
+                except (ValueError, IndexError) as error:
+                    raise ServiceError("留档图片编码无效。") from error
+            else:
+                data = await self.downloader(url, self.max_bytes)
             if not data or len(data) > self.max_bytes:
                 raise ServiceError("候选图片为空或超过大小上限。")
             suffix, mime = image_data(data)

@@ -10,6 +10,8 @@ import tempfile
 from contextvars import ContextVar
 from pathlib import Path
 
+from nonebot.log import logger
+
 from plugins.tasks.desktop import launch
 from plugins.tasks.process import ProcessJob
 from plugins.tasks.runner import Runner, environment, process_options, stop_process
@@ -22,7 +24,6 @@ from .llm import LLM
 from .prompt_store import refresh_tools
 from .sessions import epoch as session_epoch
 from .trace import emit
-from nonebot.log import logger
 
 _turn = ContextVar("dsh_chat_turn", default=None)
 
@@ -77,7 +78,9 @@ async def sync_views(config):
         async with asyncio.timeout(20):
             await process.wait()
             if process.returncode:
-                logger.warning("DSH 浏览记录暂未同步，已保留待补写队列（状态 {}）", process.returncode)
+                logger.warning(
+                    "DSH 浏览记录暂未同步，已保留待补写队列（状态 {}）", process.returncode
+                )
     finally:
         await stop_process(process)
 
@@ -281,9 +284,23 @@ class Turn:
                     self.config,
                     "dsh_error",
                     request_id=self.request_id,
+                    code=event.get("code"),
                     detail=event.get("message"),
                 )
-                raise ServiceError("DSH 聊天执行失败，请检查本机安装和模型配置。")
+                notices = {
+                    "BUDGET_EXHAUSTED": "本轮资源预算已用完，未能完成收尾，请缩小问题范围后重试。",
+                    "STEP_LIMIT": "本轮处理步骤已达上限，请缩小问题范围后重试。",
+                    "REQUEST_TIMEOUT": "本轮处理时间已用完，请稍后重试。",
+                    "VISION_UNSUPPORTED": (
+                        "当前 DSH 模型不支持图片，请配置视觉模型 deepseek-flash。"
+                    ),
+                }
+                raise ServiceError(
+                    notices.get(
+                        event.get("code"),
+                        "DSH 本次聊天未完成，请稍后重试；详细原因请查看本机模型诊断日志。",
+                    )
+                )
         raise ServiceError("DSH 聊天执行器已断开。")
 
 
@@ -313,9 +330,6 @@ class Chat(LLM):
             bot, group, sender = scope.key
             archive = getattr(scope, "archive", None)
             project = archive.root if archive is not None else Path.cwd()
-            from .events import Events
-
-            events = Events(project, scope.key)
             epoch = session_epoch(project, bot, group)
             # 未手动重置时保持原有会话路径，部署本功能不会隐式重置。
             version = epoch[1] if epoch[0] == "initial" else epoch
@@ -324,10 +338,8 @@ class Chat(LLM):
             turn.runtime = project / "data" / "agent" / str(bot) / str(group) / generation
             original_current = getattr(scope, "is_current", lambda: True)
             scope.is_current = lambda: (
-                original_current()
-                and session_epoch(project, bot, group) == epoch
+                original_current() and session_epoch(project, bot, group) == epoch
             )
-            user += events.context()
             turn.view = {
                 "home": str(view_home(self.config)),
                 "cwd": str(Path(__file__).resolve().parents[2]),

@@ -85,6 +85,8 @@ def safe_path(root, name):
 
 
 def allowed(name):
+    if re.fullmatch(r"data/chat-images/[a-f0-9]{64}", name):
+        return True
     if re.fullmatch(r"data/agent-events/[1-9][0-9]*/-?[1-9][0-9]*\.(json|epoch)", name):
         return True
     if re.fullmatch(
@@ -253,7 +255,12 @@ def _export_data(root, output, bot_qq=None):
             if source.is_file():
                 files[name] = source
         task_folders = list((root / "data/task-workspaces").glob("t_*/work"))
-        for folder in (root / "data/generated", root / "data/agent-events", *task_folders):
+        for folder in (
+            root / "data/generated",
+            root / "data/agent-events",
+            root / "data/chat-images",
+            *task_folders,
+        ):
             if folder.exists():
                 for source in folder.rglob("*"):
                     name = source.relative_to(root).as_posix()
@@ -407,6 +414,18 @@ def merge_memory(local, incoming, output):
             for row in source["messages"]:
                 key = (row["bot"], row["grp"], row["message_id"])
                 old_keys[index][row["id"]] = key
+                if key in merged:
+                    current = json.loads(merged[key].get("metadata") or "{}")
+                    incoming_meta = json.loads(row.get("metadata") or "{}")
+                    if incoming_meta.get("images"):
+                        by_index = {item["index"]: item for item in incoming_meta["images"]}
+                        for item in current.get("images", []):
+                            if item.get("status") == "saved" or item["index"] not in by_index:
+                                by_index[item["index"]] = item
+                        current["images"] = list(by_index.values())
+                        merged[key] = dict(
+                            merged[key], metadata=json.dumps(current, ensure_ascii=False)
+                        )
                 merged.setdefault(key, row)
                 if row["id"] <= cursors.get((row["bot"], row["grp"], row["usr"]), 0):
                     processed.add(key)

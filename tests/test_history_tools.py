@@ -93,7 +93,7 @@ class HistoryTests(unittest.IsolatedAsyncioTestCase):
                     functions = payload["tools"]
                     self.assertEqual(
                         {f.get("function", f)["name"] for f in functions},
-                        {"read_history", "read_capabilities"},
+                        {"read_history", "read_capabilities", "view_image"},
                     )
                     call = {"name": "read_history", "arguments": json.dumps(args(sender=99))}
                     if provider == "openai":
