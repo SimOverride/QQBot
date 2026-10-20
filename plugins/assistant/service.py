@@ -50,9 +50,6 @@ class Assistant:
         self.commands.profiles = self.profiles
         self.limits = Limits(config)
         self.notices = Notices(llm, self.profiles, self.limits)
-        from .consolidation import Consolidation
-
-        self.consolidation = Consolidation(archive, archive.root, config) if archive else None
 
     @scoped("request")
     async def handle(
@@ -126,10 +123,6 @@ class Assistant:
         try:
             if not text:
                 await send_notice("目前没有可读取的文字内容，请发送文字消息。")
-                return
-            if len(text) > cfg.input_max_chars:
-                emit(cfg, "request_skipped", reason="input_too_long", chars=len(text))
-                await send_notice(f"输入过长，请缩短到 {cfg.input_max_chars} 字以内或拆分发送。")
                 return
             if self.limits.pending >= cfg.max_pending_requests:
                 emit(cfg, "request_skipped", reason="queue_full")
@@ -236,6 +229,8 @@ class Assistant:
                         raise Superseded
                     response = getattr(history_tools, "response", None)
                     if response is not None:
+                        if getattr(history_tools, "observe_only", False):
+                            response.state["action"] = "silent"
                         reply = response.apply(reply)
                     chunks = (
                         [reply.text]
@@ -263,51 +258,47 @@ class Assistant:
                                 {"request": request_id, "index": index, "message_id": message_id},
                             )
                     saved_reply = "\n".join(chunks)
-                    if reply.image_data is not None:
+                    media = list(reply.media)
+                    if not reply.media and reply.image_data is not None:
+                        media.append({"image_data": reply.image_data})
+                    if not reply.media and reply.emote_id is not None:
+                        media.append({"emote_id": reply.emote_id})
+                    media_sent = 0
+                    for item in media:
                         if not getattr(history_tools, "is_current", lambda: True)():
                             raise Superseded
-                        if send_image is None:
-                            raise ServiceError("当前会话无法发送搜索图片。")
+                        ident = item.get("emote_id")
                         try:
-                            await asyncio.wait_for(send_image(reply.image_data), 30)
-                            emit(cfg, "send_result", status="sent", image_source="web")
-                        except Superseded:
-                            raise
-                        except Exception as error:
-                            emit(
-                                cfg,
-                                "send_result",
-                                status="failed",
-                                image_source="web",
-                                error_type=type(error).__name__,
-                            )
-                            raise SendFailure from None
-                        saved_reply += "\n[已发送搜索图片]"
-                    if reply.emote_id is not None:
-                        if not getattr(history_tools, "is_current", lambda: True)():
-                            raise Superseded
-                        if send_emote is None:
-                            raise ServiceError("当前会话无法发送表情包。")
-                        try:
-                            await asyncio.wait_for(send_emote(reply.emote_id), 30)
-                            emit(cfg, "send_result", status="sent", emote_id=reply.emote_id)
-                            if self.emotes is not None:
+                            if ident is not None:
+                                from .emote_state import current
+
+                                if self.emotes is None or send_emote is None:
+                                    raise ServiceError("当前会话无法发送表情包。")
+                                if current(
+                                    self.emotes, bot_id, group_id, self.emotes.digest(ident)
+                                )["disabled"]:
+                                    continue
+                                await asyncio.wait_for(send_emote(ident), 30)
                                 try:
-                                    self.emotes.record_sent(reply.emote_id, bot_id, group_id)
+                                    self.emotes.record_sent(ident, bot_id, group_id)
                                 except Exception:
                                     logger.warning("emote_usage_write_failed")
+                                saved_reply += f"\n[已发送表情包：{ident}]"
+                            else:
+                                if send_image is None:
+                                    raise ServiceError("当前会话无法发送图片。")
+                                await asyncio.wait_for(send_image(item["image_data"]), 30)
+                                saved_reply += "\n[已发送搜索图片]"
+                            media_sent += 1
+                            emit(cfg, "send_result", status="sent", emote_id=ident)
                         except Superseded:
                             raise
                         except Exception as error:
                             emit(
-                                cfg,
-                                "send_result",
-                                status="failed",
-                                emote_id=reply.emote_id,
-                                error_type=type(error).__name__,
+                                cfg, "send_result", status="failed", error_type=type(error).__name__
                             )
                             raise SendFailure from None
-                        saved_reply += f"\n[已发送表情包：{reply.emote_id}]"
+                        await asyncio.sleep(0.35)
                     if events:
                         events.publish(
                             "reply_finished",
@@ -315,14 +306,11 @@ class Assistant:
                                 "request": request_id,
                                 "message_id": message_id,
                                 "text_messages_sent": len(chunks),
-                                "image_sent": reply.image_data is not None
-                                or reply.emote_id is not None,
-                                "silent": not chunks
-                                and reply.image_data is None
-                                and reply.emote_id is None,
+                                "image_sent": media_sent > 0,
+                                "silent": not chunks and media_sent == 0,
                             },
                         )
-                    if reply.save:
+                    if reply.save and (saved_reply or reply.poke_target is not None):
                         if reply.poke_target is not None:
                             saved_reply += f"\n[已拍一拍：QQ {reply.poke_target}]"
                         if self.archive:
@@ -401,46 +389,3 @@ class Assistant:
         self.commands.cleanup()
         self.memory.cleanup()
         self.limits.cleanup()
-
-    async def refresh_profiles(self):
-        if not self.archive:
-            return
-        for key in self.archive.candidates():
-            if key[1] <= 0 and key[1] != -key[2]:
-                continue
-            attempt_id = None
-            try:
-                async with self.memory.locked(key):
-                    text, last_id = self.archive.pending_text(key)
-                    cursor = self.archive.cursor(key)
-                    if not text:
-                        self.archive.advance(key, last_id)
-                        continue
-                async with self.limits.slot():
-                    async with self.memory.locked(key):
-                        if self.archive.pending_text(key) != (text, last_id):
-                            continue
-                        attempt_id = self.archive.claim_profile(key, cursor, last_id, text)
-                        if attempt_id is None:
-                            continue
-                    async with asyncio.timeout(self.config.llm_timeout_seconds):
-                        updates = await self.llm.extract_facts(text, uuid.uuid4().hex[:12])
-                async with self.memory.locked(key):
-                    # Never recreate deleted/corrected facts from an in-flight extraction.
-                    if not self.archive.profile_current(key, attempt_id):
-                        continue
-                    if text:
-                        self.archive.update_facts(key, last_id, text, updates)
-                    self.archive.advance(key, last_id)
-            except Exception as error:
-                if attempt_id is not None:
-                    self.archive.fail_profile(key, attempt_id, type(error).__name__)
-                logger.warning("profile_refresh_failure={}", type(error).__name__)
-        if self.consolidation:
-
-            async def summarize(kind, source):
-                async with self.limits.slot():
-                    async with asyncio.timeout(self.config.llm_timeout_seconds):
-                        return await self.llm.consolidate_knowledge(kind, source)
-
-            await self.consolidation.tick(summarize)

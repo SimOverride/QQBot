@@ -33,7 +33,12 @@ class GroupChatTests(unittest.IsolatedAsyncioTestCase):
             result = await kwargs["history_tools"].response.execute(self.decision)
             return self.answer if result["status"] == "selected" else Reply("", save=False)
 
-        self.llm = SimpleNamespace(reply=AsyncMock(side_effect=reply))
+        self.llm = SimpleNamespace(
+            reply=AsyncMock(side_effect=reply),
+            assess_wake=AsyncMock(
+                return_value={"wake": True, "continuation": True, "summary": "延续话题"}
+            ),
+        )
         self.service = Assistant(self.cfg, self.llm, archive=self.archive)
         self.service.commands.group_settings = self.settings
         self.contacts = SimpleNamespace(refresh_group=AsyncMock(), for_scope=lambda *a: {})
@@ -108,7 +113,8 @@ class GroupChatTests(unittest.IsolatedAsyncioTestCase):
         state = self.repeat_state()
         self.settings.set_activity(10, 0)
         await self.controller.respond(self.bot, self.event, "好耶！\n", state, False)
-        self.llm.reply.assert_not_awaited()
+        self.llm.reply.assert_awaited_once()
+        self.bot.send_group_msg.assert_not_awaited()
         self.settings.set_activity(10, 50)
         self.decision["action"] = "reply"
         self.answer = Reply("好耶！\n")
@@ -242,6 +248,7 @@ class GroupChatTests(unittest.IsolatedAsyncioTestCase):
 
         async def newer(*args, **kwargs):
             state.pending = (self.event, "新消息", time.monotonic())
+            state.versions[self.event.user_id] = 1
             return Reply("旧回复")
 
         self.llm.reply.side_effect = newer
@@ -341,7 +348,7 @@ class GroupChatTests(unittest.IsolatedAsyncioTestCase):
             with patch("plugins.assistant.groupchat.time.monotonic", return_value=100):
                 with patch.object(self.controller, "wait_pending", side_effect=wait):
                     await self.controller.worker(self.bot, state)
-        self.assertGreater(delays[0], delays[1])
+        self.assertEqual(delays[0], delays[1])
         self.assertEqual(self.controller.respond.await_count, 2)
 
     async def test_split_pause_stays_035_seconds(self):
@@ -350,3 +357,30 @@ class GroupChatTests(unittest.IsolatedAsyncioTestCase):
             await self.controller.respond(self.bot, self.event, "你好", GroupState(), True)
         self.assertEqual(self.bot.send_group_msg.await_count, 2)
         sleep.assert_awaited_once_with(0.35)
+
+    async def test_lightweight_gate_can_skip_main_agent(self):
+        self.llm.assess_wake.return_value = {
+            "wake": False,
+            "continuation": False,
+            "summary": "群友互聊",
+        }
+        await self.controller.respond(self.bot, self.event, "路过", GroupState(), False)
+        self.llm.reply.assert_not_awaited()
+        self.bot.send_group_msg.assert_not_awaited()
+
+    async def test_direct_request_bypasses_lightweight_gate(self):
+        await self.controller.respond(self.bot, self.event, "帮我看看", GroupState(), True)
+        self.llm.assess_wake.assert_not_awaited()
+        self.llm.reply.assert_awaited_once()
+
+    async def test_unrelated_new_message_does_not_discard_work(self):
+        state = GroupState()
+
+        async def reply(*args, **kwargs):
+            state.revision += 1
+            state.versions[3] = 1
+            return Reply("完成")
+
+        self.llm.reply.side_effect = reply
+        await self.controller.respond(self.bot, self.event, "看看", state, False)
+        self.bot.send_group_msg.assert_awaited_once()

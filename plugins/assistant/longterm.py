@@ -1,6 +1,5 @@
 """SQLite conversation archive and source-backed, self-reported user facts."""
 
-import hashlib
 import json
 import re
 import sqlite3
@@ -14,8 +13,6 @@ from .prompt_store import group_knowledge
 from .trace import emit
 
 FACT_FIELDS = set(GLOBAL_FIELDS) | set(SCENE_FIELDS)
-PROFILE_RETRY_DELAYS = (300, 1800)
-PROFILE_MAX_ATTEMPTS = 3
 
 
 class LongTermMemory:
@@ -173,21 +170,6 @@ class LongTermMemory:
             is not None
         )
 
-    def candidates(self) -> list[tuple]:
-        return [
-            tuple(row)
-            for row in self.db.execute(
-                "SELECT m.bot,m.grp,m.usr FROM messages m LEFT JOIN profile_cursor c "
-                "ON m.bot=c.bot AND m.grp=c.grp AND m.usr=c.usr "
-                "LEFT JOIN profile_retry r ON m.bot=r.bot AND m.grp=r.grp AND m.usr=r.usr "
-                "WHERE m.id>COALESCE(c.last_id,0) AND m.usr<>m.bot "
-                "AND (r.bot IS NULL OR r.cursor<>COALESCE(c.last_id,0) "
-                "OR (r.attempts<? AND r.retry_at<=?)) "
-                "GROUP BY m.bot,m.grp,m.usr HAVING COUNT(*)>=? ORDER BY MIN(m.id) LIMIT 2",
-                (PROFILE_MAX_ATTEMPTS, time.time(), self.config.memory_profile_min_messages),
-            )
-        ]
-
     def pending_text(self, key: tuple) -> tuple[str, int]:
         row = self.db.execute(
             "SELECT last_id FROM profile_cursor WHERE bot=? AND grp=? AND usr=?",
@@ -222,67 +204,6 @@ class LongTermMemory:
         return self.db.execute(
             "SELECT * FROM profile_retry WHERE bot=? AND grp=? AND usr=?", key
         ).fetchone()
-
-    def claim_profile(self, key, cursor, last_id, text):
-        """实际发起请求前占用一次预算；重启和并发刷新不能重复占用。"""
-        if self.cursor(key) != cursor or not self.source_exists(key, last_id):
-            return None
-        now = time.time()
-        fingerprint = hashlib.sha256(text.encode()).hexdigest()
-        previous = self.profile_retry(key)
-        attempts = 0
-        if previous and previous["cursor"] == cursor and previous["fingerprint"] == fingerprint:
-            if previous["attempts"] >= PROFILE_MAX_ATTEMPTS or previous["retry_at"] > now:
-                return None
-            attempts = previous["attempts"]
-        attempt_id = uuid.uuid4().hex
-        retry_at = now + max(300, self.config.llm_timeout_seconds + 60)
-        with self.db:
-            self.db.execute(
-                "INSERT OR REPLACE INTO profile_retry VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (*key, cursor, last_id, fingerprint, attempts + 1, retry_at, attempt_id, ""),
-            )
-        return attempt_id
-
-    def profile_current(self, key, attempt_id):
-        """只接受当前批次结果，人工重试或清空后旧请求不得写回。"""
-        row = self.profile_retry(key)
-        if row is None or row["attempt_id"] != attempt_id or self.cursor(key) != row["cursor"]:
-            return False
-        text, last_id = self.pending_text(key)
-        return (
-            last_id == row["last_id"]
-            and hashlib.sha256(text.encode()).hexdigest() == row["fingerprint"]
-        )
-
-    def fail_profile(self, key, attempt_id, error_type):
-        """首次失败五分钟、再次失败三十分钟后重试，第三次暂停等待维护。"""
-        if not self.profile_current(key, attempt_id):
-            return
-        row = self.profile_retry(key)
-        retry_at = (
-            time.time() + PROFILE_RETRY_DELAYS[row["attempts"] - 1]
-            if row["attempts"] < PROFILE_MAX_ATTEMPTS
-            else 0
-        )
-        with self.db:
-            self.db.execute(
-                "UPDATE profile_retry SET retry_at=?,error_type=? "
-                "WHERE bot=? AND grp=? AND usr=? AND attempt_id=?",
-                (retry_at, error_type, *key, attempt_id),
-            )
-        emit(
-            self.config,
-            "profile_retry",
-            bot=key[0],
-            group=key[1],
-            user=key[2],
-            batch_end=row["last_id"],
-            attempts=row["attempts"],
-            retry_at=retry_at,
-            suspended=row["attempts"] >= PROFILE_MAX_ATTEMPTS,
-            error_type=error_type,
-        )
 
     def advance(self, key: tuple, last_id: int):
         with self.db:
@@ -353,6 +274,8 @@ class LongTermMemory:
         ).fetchall()
         accepted = []
         for row in rows:
+            if not row["value"].strip():
+                continue
             source_group = row["grp"]
             if (
                 source_group == 0
@@ -496,62 +419,6 @@ class LongTermMemory:
             if row["grp"] > 0 or row["grp"] == -key[2]
         ][:12]
 
-    def update_facts(self, key: tuple, source_id: int, user_text: str, updates: list[dict]):
-        # Ignore model claims without a verbatim quote from this user's current message.
-        with self.db:
-            for item in updates[:6]:
-                if not isinstance(item, dict):
-                    continue
-                field, value, evidence = (item.get(k) for k in ("field", "value", "evidence"))
-                target = (
-                    (key[0], 0, key[2])
-                    if isinstance(field, str) and field in GLOBAL_FIELDS
-                    else key
-                )
-                if isinstance(field, str) and field in GROUP_FIELDS and key[1] <= 0:
-                    continue
-                if field == "会话印象" and key[1] > 0:
-                    field = "补充认知"
-                # 群内分类分别固定，不能因修改一项而停止其他分类的自动提取。
-                pinned_rows = self.db.execute(
-                    "SELECT field FROM facts WHERE bot=? AND grp=? AND usr=? "
-                    "AND evidence LIKE '后台维护者修正%'",
-                    target,
-                ).fetchall()
-                pinned = any(
-                    target[1] <= 0
-                    or (
-                        r["field"].split(":", 1)[0]
-                        if r["field"].split(":", 1)[0] in GROUP_FIELDS
-                        else "补充认知"
-                    )
-                    == field
-                    for r in pinned_rows
-                )
-                if pinned:
-                    continue
-                if not isinstance(field, str) or field not in FACT_FIELDS:
-                    continue
-                if not isinstance(value, str) or not 1 <= len(value.strip()) <= 160:
-                    continue
-                if not isinstance(evidence, str) or not 2 <= len(evidence) <= 200:
-                    continue
-                if evidence not in user_text:
-                    continue
-                self.db.execute(
-                    "INSERT INTO facts VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(bot,grp,usr,field) "
-                    "DO UPDATE SET value=excluded.value,evidence=excluded.evidence,"
-                    "source_id=excluded.source_id,updated=excluded.updated",
-                    (
-                        *target,
-                        field + ":" + hashlib.sha256(f"{key[1]}:{evidence}".encode()).hexdigest(),
-                        value.strip(),
-                        evidence,
-                        source_id,
-                        time.time(),
-                    ),
-                )
-
     def remember(self, key: tuple, field: str, value: str):
         if field not in FACT_FIELDS or not 1 <= len(value.strip()) <= KNOWLEDGE_LIMIT:
             raise ValueError(
@@ -605,6 +472,10 @@ class LongTermMemory:
                         )
             else:
                 self.db.execute("DELETE FROM facts WHERE bot=? AND grp=? AND usr=?", target)
+            self.db.execute(
+                "INSERT INTO facts VALUES(?,?,?,?,?,?,NULL,?)",
+                (*target, field, "", "本人通过管理指令设置（已忘记）", time.time()),
+            )
         self.advance_managed(key, field)
 
     def advance_managed(self, key, field):

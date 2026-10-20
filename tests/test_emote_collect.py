@@ -1,6 +1,7 @@
 """Autonomous emote collection without live network or QQ sends."""
 
 import base64
+import hashlib
 import json
 import socket
 import tempfile
@@ -42,20 +43,27 @@ class CollectTests(unittest.IsolatedAsyncioTestCase):
         self.temp.cleanup()
 
     async def test_view_save_memory_dedup_and_rate_limit(self):
-        self.assertEqual(self.collector.save(self.ident)["status"], "not_reviewed_or_ineligible")
+        self.assertEqual(
+            self.collector.save(self.ident, "白色图案，情绪不明")["status"],
+            "not_reviewed_or_ineligible",
+        )
         result, preview = await self.collector.inspect(self.ident)
-        self.assertTrue(result["eligible"])
+        self.assertEqual(result["status"], "inspected")
+        await self.collector.ensure_review(self.ident)
         self.assertEqual(preview[-1]["type"], "image_url")
-        saved = self.collector.save(self.ident)
+        saved = self.collector.save(self.ident, "白色图案，情绪不明")
         self.assertEqual(saved["status"], "saved")
         self.assertEqual(self.library.recall(saved["digest"]), "白色图案，情绪不明")
-        self.assertEqual(self.collector.save(self.ident)["status"], "already_saved")
+        self.assertEqual(
+            self.collector.save(self.ident, "白色图案，情绪不明")["status"], "already_saved"
+        )
         again = EmoteCollector(self.library, self.review, self.download)
         ident = again.add("https://other.example/same.png", "web:other")
         _, previews = await again.inspect(ident)
+        await again.ensure_review(ident)
         self.assertEqual(previews[-1]["type"], "image_url")
         self.assertEqual(self.review.await_count, 2)
-        self.assertEqual(again.save(ident)["status"], "already_saved")
+        self.assertEqual(again.save(ident, "白色图案，情绪不明")["status"], "already_saved")
         self.assertEqual(len(self.library.files()), 1)
         changed = PNG + b"different"
         self.assertEqual(
@@ -70,7 +78,11 @@ class CollectTests(unittest.IsolatedAsyncioTestCase):
         )
         self.review.return_value = {"eligible": False, "description": "私人照片，不适合收藏"}
         await self.collector.inspect(self.ident)
-        self.assertEqual(self.collector.save(self.ident)["status"], "not_reviewed_or_ineligible")
+        await self.collector.ensure_review(self.ident)
+        self.assertEqual(
+            self.collector.save(self.ident, "白色图案，情绪不明")["status"],
+            "not_reviewed_or_ineligible",
+        )
         self.assertEqual(self.library.files(), {})
         other = self.collector.add("https://images.example/html", "web:html")
         self.download.return_value = b"<html>not an image</html>"
@@ -86,14 +98,15 @@ class CollectTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["hint"], "图片下载失败。")
         self.assertEqual(self.collector.attempts, 0)
         result, _ = await self.collector.inspect(self.ident)
-        self.assertTrue(result["eligible"])
+        self.assertEqual(result["status"], "inspected")
+        await self.collector.ensure_review(self.ident)
         self.review.assert_awaited_once()
         other = self.collector.add("https://images.example/fail", "web:fail")
         self.download.side_effect = ServiceError("图片下载失败。")
         for _ in range(2):
             self.assertEqual((await self.collector.inspect(other))[0]["status"], "download_failed")
-        self.assertEqual((await self.collector.inspect(other))[0]["status"], "download_limit")
-        self.assertEqual(self.download.await_count, 4)
+        self.assertEqual((await self.collector.inspect(other))[0]["status"], "download_failed")
+        self.assertEqual(self.download.await_count, 5)
 
     async def test_main_agent_can_collect_then_remain_silent(self):
         cfg = Config()
@@ -114,15 +127,34 @@ class CollectTests(unittest.IsolatedAsyncioTestCase):
                 llm.step = AsyncMock(
                     side_effect=[
                         call("emote_candidates", {}, "a"),
-                        call("inspect_emote_image", {"id": "image-1"}, "b"),
-                        ('{"eligible":true,"description":"卡通反应图，表达惊讶"}', [], []),
-                        call("save_emote", {"id": "image-1"}, "c"),
+                        call(
+                            "inspect_emote_image",
+                            {
+                                "id": "candidate-"
+                                + hashlib.sha256(b"https://gchat.qpic.cn/image.png").hexdigest()[
+                                    :24
+                                ]
+                            },
+                            "b",
+                        ),
+                        call(
+                            "save_emote",
+                            {
+                                "id": "candidate-"
+                                + hashlib.sha256(b"https://gchat.qpic.cn/image.png").hexdigest()[
+                                    :24
+                                ],
+                                "description": "卡通反应图，表达惊讶",
+                            },
+                            "c",
+                        ),
+                        ('{"eligible":true,"description":"审核通过"}', [], []),
                         ("", [], []),
                     ]
                 )
 
                 # Patch only the network transport used by the candidate registry.
-                def factory(library, review):
+                def factory(library, review, **kwargs):
                     return EmoteCollector(library, review, self.download)
 
                 with patch("plugins.assistant.tools.EmoteCollector", side_effect=factory):
@@ -218,15 +250,34 @@ class CollectTests(unittest.IsolatedAsyncioTestCase):
                 llm.step = AsyncMock(
                     side_effect=[
                         call("search_emote_images", {"query": "鲸鱼娘 开心 表情包"}, "a"),
-                        call("inspect_emote_image", {"id": "image-1"}, "b"),
-                        ('{"eligible":true,"description":"卡通反应表情，表达开心"}', [], []),
-                        call("save_emote", {"id": "image-1"}, "c"),
+                        call(
+                            "inspect_emote_image",
+                            {
+                                "id": "candidate-"
+                                + hashlib.sha256(
+                                    b"https://example.com/image.png?temporary=secret"
+                                ).hexdigest()[:24]
+                            },
+                            "b",
+                        ),
+                        call(
+                            "save_emote",
+                            {
+                                "id": "candidate-"
+                                + hashlib.sha256(
+                                    b"https://example.com/image.png?temporary=secret"
+                                ).hexdigest()[:24],
+                                "description": "卡通反应表情，表达开心",
+                            },
+                            "c",
+                        ),
+                        ('{"eligible":true,"description":"审核通过"}', [], []),
                         call("choose_emote", {"id": saved_name}, "d"),
                         ("", [], []),
                     ]
                 )
 
-                def factory(library, review):
+                def factory(library, review, **kwargs):
                     return EmoteCollector(library, review, self.download)
 
                 with patch("plugins.assistant.tools.EmoteCollector", side_effect=factory):

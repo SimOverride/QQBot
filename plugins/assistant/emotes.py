@@ -57,9 +57,9 @@ EMOTE_FUNCTIONS = [
     ),
     tool(
         "choose_emote",
-        "从本地库为本次回复选一张表情包，程序稍后向当前私聊或群聊发送实际图片，无需输出图片标签。"
+        "从本地库选择表情加入本次回复图片队列，可多次选择，按顺序发送。"
         "选择成功表示待发送。"
-        "只选已成功查看原图并保存记忆、或已有内容记忆的id，不必每次发。可只发表情包，最终文本留空。",
+        "只选已查看原图或已有内容记忆的id；本群停用的图片不可发送。可只发表情包，最终文本留空。",
         {"id": {"type": "string"}},
     ),
 ]
@@ -193,7 +193,7 @@ class Emotes:
         return row[0] if row else None
 
     def remember(self, items, expected, descriptions=None):
-        if not isinstance(items, list) or not items or len(items) > 3:
+        if not isinstance(items, list) or not items:
             raise ServiceError("表情记忆参数无效。")
         writes, seen = [], set()
         for item in items:
@@ -255,7 +255,7 @@ class Emotes:
             result[path.name] = path
         return result
 
-    def list(self, args, bot=0, scope=0):
+    def list(self, args, bot=0, scope=0, archive=None):
         if (
             not isinstance(args, dict)
             or set(args) != {"query", "offset"}
@@ -267,14 +267,23 @@ class Emotes:
             return {"status": "invalid_arguments"}
         known, unknown = [], []
         usage = self.usage(bot, scope)
+        from .emote_state import states, visible_state
+
+        group_states = {
+            r["digest"]: r for r in states(self) if r["bot"] == bot and r["scope"] == scope
+        }
         query = args["query"].casefold()
         for name in self.files():
             try:
                 digest = self.digest(name)
             except ServiceError:
                 continue
+            state = group_states.get(digest, {})
+            if state.get("disabled"):
+                continue
             description = self.recall(digest)
             item = {
+                "group_memory": visible_state(archive, state).get("memory", ""),
                 "id": name,
                 "digest": digest,
                 "description": description or "尚未识别",

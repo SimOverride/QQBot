@@ -147,7 +147,12 @@ def create_app(root=ROOT):
         def publish():
             with migration.project_lock(root, name=".migration.lock"):
                 reset_sessions(root)
-            return {"message": "已重置全部 agent 会话，下一轮将新建执行上下文；聊天记录、认知、人设和后台任务保留。"}
+            return {
+                "message": (
+                    "已重置全部 agent 会话，下一轮将新建执行上下文；"
+                    "聊天记录、认知、人设和后台任务保留。"
+                )
+            }
 
         return await run_in_threadpool(publish)
 
@@ -282,6 +287,13 @@ def create_app(root=ROOT):
         if extension != suffix:
             raise ValueError("图片内容与文件扩展名不一致")
         return await run_in_threadpool(store.create_file, "emote", name, content)
+
+    @app.post("/api/emotes/restore")
+    async def restore_emote(request: Request):
+        data = await body(request)
+        return await run_in_threadpool(
+            store.restore_emote, data["resource"], data["bot"], data["group"], data["revision"]
+        )
 
     @app.get("/api/emotes")
     def emotes():
@@ -510,8 +522,9 @@ def create_app(root=ROOT):
             async with httpx.AsyncClient() as client:
                 model = Chat(client, cfg, Search(client, cfg))
                 for label, value in (("saved", current["value"]), ("draft", data["value"])):
-                    reply = await model.reply([], scene["text"], "profile-trial-" + label,
-                                              {"persona": value})
+                    reply = await model.reply(
+                        [], scene["text"], "profile-trial-" + label, {"persona": value}
+                    )
                     results[label] = render_reply(reply, cfg)
         if store.get(data["resource"])["revision"] != current["revision"]:
             raise ValueError("试聊期间人设已变化，请重新载入")

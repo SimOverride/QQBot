@@ -1,5 +1,6 @@
 """搜索图片直发与群复读提示，不联网、不发送真实 QQ 消息。"""
 
+import hashlib
 import json
 import tempfile
 import unittest
@@ -46,14 +47,32 @@ class ImageSendTests(unittest.IsolatedAsyncioTestCase):
                 model.step = AsyncMock(
                     side_effect=[
                         call("search_images", {"query": "结构示意图"}, "1"),
-                        call("inspect_image", {"id": "image-1"}, "2"),
+                        call(
+                            "inspect_image",
+                            {
+                                "id": "candidate-"
+                                + hashlib.sha256(b"https://example.com/diagram.png").hexdigest()[
+                                    :24
+                                ]
+                            },
+                            "2",
+                        ),
+                        call(
+                            "choose_image",
+                            {
+                                "id": "candidate-"
+                                + hashlib.sha256(b"https://example.com/diagram.png").hexdigest()[
+                                    :24
+                                ]
+                            },
+                            "3",
+                        ),
                         ('{"eligible":true,"description":"结构示意图"}', [], []),
-                        call("choose_image", {"id": "image-1"}, "3"),
                         ("这是结构示意图", [], []),
                     ]
                 )
 
-                def factory(library, review):
+                def factory(library, review, **kwargs):
                     return EmoteCollector(library, review, AsyncMock(return_value=PNG))
 
                 with patch("plugins.assistant.tools.EmoteCollector", side_effect=factory):
@@ -77,7 +96,9 @@ class ImageSendTests(unittest.IsolatedAsyncioTestCase):
         review.return_value = {"eligible": False, "description": "隐私资料"}
         await collector.inspect(web)
         self.assertIsNone(collector.choose(web))
-        self.assertEqual(collector.inspected[web]["data"], b"")
+        self.assertFalse(await collector.ensure_review(web))
+        self.assertIsNone(collector.choose(web))
+        self.assertEqual(collector.inspected[web]["data"], PNG)
 
     async def test_service_sends_actual_bytes_and_records_only_after_success(self):
         model = SimpleNamespace(reply=AsyncMock(return_value=Reply("说明", image_data=PNG)))

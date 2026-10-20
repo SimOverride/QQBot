@@ -182,8 +182,6 @@ class GroupConversation:
         if text.lstrip().startswith("/") or not text.strip() or text.strip() == "[非文本内容]":
             return
         mention_all = mentions_all(event)
-        if self.settings.get(event.group_id)["activity"] == 0 and not mention_all:
-            return
         # 普通后续消息仍进入归档上下文，但不挤掉尚未判断的全体提醒。
         if mention_all or state.pending is None or not mentions_all(state.pending[0]):
             state.pending = (event, text, now)
@@ -227,9 +225,8 @@ class GroupConversation:
             while state.pending:
                 state.attention.clear()
                 event = state.pending[0]
-                level = self.settings.get(event.group_id)["activity"]
                 # 全体提醒更快关注，仍合并短时消息并限制判断及主动发送频率。
-                interval = 8 if mentions_all(event) else max(8, 60 - level / 2)
+                interval = self.service.config.wake_interval_seconds
                 delay = max(
                     2,
                     interval - (time.monotonic() - state.last_checked),
@@ -253,7 +250,7 @@ class GroupConversation:
             "SELECT * FROM messages WHERE bot=? AND grp=? AND created>? ORDER BY id DESC LIMIT 30",
             (bot_id, group_id, time.time() - 900),
         ).fetchall()
-        return [self.service.archive.message_context(r) for r in reversed(rows)]
+        return [{**self.service.archive.message_context(r), "id": r["id"]} for r in reversed(rows)]
 
     @scoped("group")
     async def respond(self, bot, event, text, state, explicit, events=()):
@@ -270,9 +267,30 @@ class GroupConversation:
         sender_version = state.versions.get(event.user_id, 0)
         config = self.settings.get(event.group_id)
         mention_all = mentions_all(event)
-        if not explicit and config["activity"] == 0 and not mention_all:
-            emit(self.service.config, "group_skipped", reason="activity_disabled")
-            return
+        observe_only = not explicit and config["activity"] == 0
+        wake = {"wake": True, "continuation": False, "summary": "直接呼叫"}
+        if not explicit:
+            state.last_checked = time.monotonic()
+            try:
+                async with self.service.limits.slot():
+                    wake = await self.service.llm.assess_wake(
+                        {
+                            "messages": self.context(int(bot.self_id), event.group_id),
+                            "current": text,
+                            "topic": state.topic,
+                            "activity": config["activity"],
+                            "mention_all": mention_all,
+                            "bot_qq": int(bot.self_id),
+                            "interests": config["interests"],
+                            "participating": state.active,
+                        }
+                    )
+            except Exception as error:
+                # 分流失败不把用户请求永久吞掉，交由主 agent 判断。
+                emit(self.service.config, "wake_failed", error_type=type(error).__name__)
+                wake = {"wake": True, "continuation": False, "summary": "分流失败，需自行判断"}
+            if not wake["wake"]:
+                return
         if time.monotonic() - state.touched > 600:
             state.topic, state.active = "", False
         image_context = []
@@ -302,7 +320,7 @@ class GroupConversation:
             "message_id": event.message_id,
             "sender": event.user_id,
             "qq": event.user_id,
-            "text": text[:400],
+            "text": text,
             **event_metadata(event),
         }
         for item in context:
@@ -317,20 +335,20 @@ class GroupConversation:
             quoted = {
                 "message_id": getattr(referenced, "message_id", None),
                 "qq": getattr(getattr(referenced, "sender", None), "user_id", None),
-                "text": message_text(quoted_message)[:1600] if quoted_message else "",
+                "text": message_text(quoted_message) if quoted_message else "",
             }
             context.append({"trigger_message_id": event.message_id, "quoted_message": quoted})
         chat_tools = HistoryTools(
             self.service.archive, (int(bot.self_id), event.group_id, event.user_id)
         )
-        chat_tools.is_current = lambda: (
-            state.versions.get(event.user_id, 0) == sender_version
-            if explicit
-            else state.revision == generation
-        )
+        chat_tools.is_current = lambda: state.versions.get(event.user_id, 0) == sender_version
         chat_tools.emotes = self.service.emotes
-        chat_tools.poke = self.service.pokes.session(
-            bot, event.group_id, event.user_id, event.message_id, chat_tools.is_current
+        chat_tools.poke = (
+            None
+            if observe_only
+            else self.service.pokes.session(
+                bot, event.group_id, event.user_id, event.message_id, chat_tools.is_current
+            )
         )
         chat_tools.allow_silent = True
         chat_tools.forward = ForwardReader(bot, event)
@@ -357,6 +375,7 @@ class GroupConversation:
         from .response import Response
 
         chat_tools.response = Response(allowed_quotes, repeat_text, state.topic, state.active)
+        chat_tools.observe_only = observe_only
         decision = chat_tools.response.state
         sent = False
 
@@ -373,23 +392,14 @@ class GroupConversation:
                 # 普通回复生成不能绕过复读协议及冷却，重新输出同一句。
                 emit(self.service.config, "send_skipped", reason="repeat_requires_selection")
                 raise RuntimeError("repeat_requires_selection")
-            stale = (
-                state.versions.get(event.user_id, 0) != sender_version
-                if explicit
-                else state.revision != generation
-            )
+            if observe_only:
+                return
+            stale = state.versions.get(event.user_id, 0) != sender_version
             if stale:
                 from .service import Superseded
 
                 raise Superseded
-            if (
-                not explicit
-                and not sent
-                and (
-                    state.pending is not None
-                    or (self.settings.get(event.group_id)["activity"] == 0 and not mention_all)
-                )
-            ):
+            if not explicit and not sent and (self.settings.get(event.group_id)["activity"] == 0):
                 emit(self.service.config, "send_skipped", reason="superseded_group_reply")
                 raise RuntimeError("superseded_group_reply")
             msg = (
@@ -401,7 +411,8 @@ class GroupConversation:
             )
             if decision.get("action") == "repeat" and not sent:
                 if (
-                    not repeat_text
+                    state.revision != generation
+                    or not repeat_text
                     or state.repeat.candidate(event.message_id) != repeat_text
                     or recently_sent(
                         self.service.archive, int(bot.self_id), event.group_id, repeat_text
@@ -472,6 +483,8 @@ class GroupConversation:
                     "trigger_message_id": event.message_id,
                     "mention_all": mention_all,
                     "activity": config["activity"],
+                    "wake_assessment": wake,
+                    "observe_only": observe_only,
                     "explicit": explicit,
                     "repeat_candidate": repeat_text,
                     "participation_guidance": (
@@ -491,5 +504,5 @@ class GroupConversation:
         state.topic = decision["topic"]
         state.active = decision["active"]
         state.touched = time.monotonic()
-        if chat_tools.poke.sent_target is not None:
+        if chat_tools.poke is not None and chat_tools.poke.sent_target is not None:
             state.last_sent = time.monotonic()

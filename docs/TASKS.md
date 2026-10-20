@@ -19,7 +19,7 @@
 - `plugins/tasks/runner.py` 通过客户端随附运行时启动本机 dsh，固定兼容客户端 `0.2.1-rc.2`，不自动升级个人安装。每任务使用独立 Harness 配置目录，不加载个人插件。凭据仅向子进程传递 DeepSeek API 密钥，关闭遥测；不转发完整机器人环境。
 - `plugins/tasks/bridge.mjs` 使用本机 agent API，将补充需求送至下一步骤边界，转发公开回复、工具调用、工具结果、待办、Token 用量及结束原因，不转发内部推理。stdin/stdout 使用有界 JSON 行协议，退出和取消回收本任务进程树。
 - `plugins/assistant/service.py` 在回复上下文中注入当前范围的任务状态；`groupchat.py` 在参与判断中加入同范围状态；模型可查询最近事件获取细节。通知成功时写入消息归档。
-- `plugins/tasks/generated.py` 在 `data/generated/插件编号/内容哈希` 上独立复测，至少两个单元测试通过且 JSON 协议冒烟通过才发布。相同内容版本哈希验证后通过独立 Python 进程调用，超时或输出超限终止。
+- `plugins/tasks/generated.py` 在 `data/generated/插件编号/内容哈希` 上独立复测，实际运行的单元测试通过且 JSON 协议冒烟通过才发布，不按凑足固定测试数量验收。相同内容版本哈希验证后通过独立 Python 进程调用，超时或输出超限终止。
 - 工作产物位于 `data/task-workspaces/任务号/work`，运行配置与 dsh 原生会话位于相邻 `home`。生成插件配置仍在 `data/plugins.json`，范围仅含原始群，数据包含版本元信息与业务状态。
 - 任务台账、工作产物、发布版本纳入私有迁移；dsh 原生会话及运行配置不迁移。SQLite 使用 backup。目标记录优先，导入的未结束执行任务设为中断，必须明确继续；源机器路径和安装不自动适配。
 - `MODEL_TRACE_ENABLED` 控制诊断事件文件，默认开启。关闭诊断不删除任务运行所需的业务台账。固定执行约束仅记录版本，动态需求、补充、步骤、结果和错误保留，经凭据过滤后记录。
@@ -45,8 +45,8 @@
 | 配置 | 默认值 | 作用 |
 | --- | --- | --- |
 | `TASK_MAX_CONCURRENCY` | `2` | 全部群共享，范围 1 至 16 |
-| `TASK_TIMEOUT_SECONDS` | `1800` | 单次 dsh 执行时限 |
-| `TASK_MAX_STEPS` | `80` | 单次 dsh 步骤预算 |
+| `TASK_TIMEOUT_SECONDS` | `3600` | 单次 dsh 执行时限 |
+| `TASK_MAX_STEPS` | `256` | 单次 dsh 步骤预算 |
 | `DSH_PACKAGE_DIR` | 空 | 自动查找客户端，可指定客户端安装目录或可执行文件 |
 | `DSH_MODEL` | `deepseek-flash` | 聊天与任务模型 |
 

@@ -263,6 +263,10 @@ class ConsoleStore:
                     db.close()
             value = {"description": text}
             extra["digest"] = content_hash
+            from plugins.assistant.emote_state import states
+            from plugins.assistant.emotes import Emotes
+
+            extra["group_states"] = states(Emotes(key.parent), content_hash)
         result = {
             "resource": resource,
             "value": value,
@@ -774,6 +778,21 @@ class ConsoleStore:
                     [*args, offset],
                 )
             ]
+
+    def restore_emote(self, resource, bot, group, expected):
+        """后台恢复本群使用，保留原原因、依据和历史。"""
+        from plugins.assistant.emote_state import update
+        from plugins.assistant.emotes import Emotes
+
+        kind, path = self.resolve(resource)
+        if kind != "emote" or type(bot) is not int or type(group) is not int or group <= 0:
+            raise ValueError("表情群范围无效")
+        with migration.project_lock(self.root, name=".migration.lock"):
+            if (self.root / migration.JOURNAL).exists():
+                raise ValueError("导入尚未恢复")
+            library = Emotes(path.parent)
+            update(library, bot, group, library.digest(path.name), expected, disabled=0)
+        return self.get(resource)
 
     def emotes(self):
         root = migration.emote_dir(self.root)

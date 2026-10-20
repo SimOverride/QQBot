@@ -31,6 +31,9 @@ class AllMembersTests(unittest.IsolatedAsyncioTestCase):
         self.settings = GroupSettings(self.root / "groups.json")
         self.llm = SimpleNamespace(
             reply=AsyncMock(return_value=Reply("知道啦")),
+            assess_wake=AsyncMock(
+                return_value={"wake": True, "continuation": False, "summary": "有新消息"}
+            ),
         )
         service = Assistant(self.cfg, self.llm, archive=self.archive)
         contacts = SimpleNamespace(refresh_group=AsyncMock(), for_scope=lambda *a: {})
@@ -85,10 +88,11 @@ class AllMembersTests(unittest.IsolatedAsyncioTestCase):
     async def test_zero_activity_still_wakes_all_and_can_reply(self):
         self.settings.set_activity(10, 0)
         await self.respond(self.event(2, all_members=False))
-        self.llm.reply.assert_not_awaited()
-        await self.respond(self.event())
         self.llm.reply.assert_awaited_once()
-        self.bot.send_group_msg.assert_awaited_once()
+        self.controller.service.limits.cooldowns.clear()
+        await self.respond(self.event())
+        self.assertEqual(self.llm.reply.await_count, 2)
+        self.bot.send_group_msg.assert_not_awaited()
         self.assertEqual(self.settings.get(10)["activity"], 0)
         self.assertEqual(
             json.loads(json.loads(self.llm.reply.call_args.args[4])["group"])["activity"],
@@ -159,7 +163,7 @@ class AllMembersTests(unittest.IsolatedAsyncioTestCase):
                 self.bot, self.event(3, all_members=False), "跟一句", False
             )
             await asyncio.wait_for(state.task, 1)
-        self.assertGreater(delays[0], 30)
+        self.assertLessEqual(delays[0], 8)
         self.assertLessEqual(delays[1], 8)
         self.controller.respond.assert_awaited_once()
         self.assertIs(self.controller.respond.call_args.args[1], all_event)
@@ -169,7 +173,7 @@ class AllMembersTests(unittest.IsolatedAsyncioTestCase):
         state = GroupState()
 
         async def newer(*args, **kwargs):
-            state.revision += 1
+            state.versions[2] = 1
             return Reply("旧回复")
 
         self.llm.reply.side_effect = newer

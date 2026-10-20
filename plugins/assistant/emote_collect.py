@@ -1,7 +1,8 @@
-"""Per-turn candidate registry; no arbitrary paths or model-invented URLs."""
+"""可恢复的图片候选；查看与保存审核分离，不接受模型自造路径。"""
 
 import base64
 import hashlib
+import json
 
 from .emotes import tool
 from .http import ServiceError
@@ -10,23 +11,23 @@ from .image_download import download_image
 COLLECT_FUNCTIONS = [
     tool(
         "emote_candidates",
-        "查看本轮群聊图片候选，由当前人设与聊天语境判断收藏偏好，优先考虑群内复读和人设相关表情。",
-        {},
+        "分页查看当前会话图片候选，offset从0开始；由你判断是否查看或收藏。",
+        {"offset": {"type": "integer"}},
     ),
     tool(
         "search_emote_images",
-        "按当前语境自主联网找合适的表情包。先用本地图库，缺合适的再搜；不把群聊隐私放进查询。",
+        "按当前语境自主联网找合适的表情包。不把群聊隐私放进查询。",
         {"query": {"type": "string"}},
     ),
     tool(
         "inspect_emote_image",
-        "下载并查看候选原图，只审核敏感内容和隐私等限制；是否收藏由当前聊天模型决定。只接受候选id。",
+        "下载并查看候选原图，不触发审核或收藏；收藏或发送时独立审核。只接受候选id。",
         {"id": {"type": "string"}},
     ),
     tool(
         "save_emote",
-        "收藏已查看且审核通过的候选，自动去重并保存图片内容记忆。每轮最多2张。保存不代表已发送。",
-        {"id": {"type": "string"}},
+        "收藏已查看的候选，保存前独立审核并去重。description由你描述实际画面与用途，保存不代表发送。",
+        {"id": {"type": "string"}, "description": {"type": "string"}},
     ),
 ]
 
@@ -38,13 +39,13 @@ IMAGE_FUNCTIONS = [
     ),
     tool(
         "inspect_image",
-        "查看搜索候选原图并做安全审核，只接受本轮候选id。",
+        "查看搜索候选原图，不触发审核；发送时独立审核。",
         {"id": {"type": "string"}},
     ),
     tool(
         "choose_image",
         "选择已查看且安全审核通过的搜索图片随本次回复发送，不收藏入库。"
-        "每次回复与本地表情合计最多一张，后选覆盖先选。",
+        "按调用顺序加入本次回复图片队列。",
         {"id": {"type": "string"}},
     ),
 ]
@@ -63,31 +64,47 @@ def image_data(data):
 
 
 class EmoteCollector:
-    def __init__(self, library, review, downloader=download_image, max_bytes=5 * 1024 * 1024):
+    def __init__(
+        self, library, review, downloader=download_image, max_bytes=5 * 1024 * 1024, cache_path=None
+    ):
         self.library, self.review, self.downloader = library, review, downloader
         self.max_bytes = library.max_bytes if library is not None else max_bytes
         self.candidates, self.inspected = {}, {}
+        self.cache_path = cache_path
+        if cache_path and cache_path.exists():
+            self.candidates = json.loads(cache_path.read_text(encoding="utf-8"))
         self.saved = 0
         self.attempts = 0
         self.download_attempts = 0
 
     def add(self, url, source, hint=""):
-        if len(self.candidates) >= 15:
-            return None
         for ident, item in self.candidates.items():
             if item["url"] == url:
                 return ident
-        ident = f"image-{len(self.candidates) + 1}"
+        ident = "candidate-" + hashlib.sha256(url.encode()).hexdigest()[:24]
         self.candidates[ident] = {"url": url, "source": source, "hint": hint[:200]}
+        if self.cache_path and url.startswith(("http://", "https://")):
+            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.cache_path.with_suffix(".tmp")
+            temporary.write_text(
+                json.dumps(
+                    {k: v for k, v in self.candidates.items() if not v["url"].startswith("data:")},
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            temporary.replace(self.cache_path)
         return ident
 
-    def listing(self):
+    def listing(self, offset=0):
+        entries = list(self.candidates.items())
         return {
             "status": "ok",
             "candidates": [
                 {"id": ident, "source": item["source"], "hint": item["hint"]}
-                for ident, item in self.candidates.items()
+                for ident, item in entries[offset : offset + 30]
             ],
+            "next_offset": offset + 30 if offset + 30 < len(entries) else None,
         }
 
     async def inspect(self, ident):
@@ -96,14 +113,10 @@ class EmoteCollector:
         if ident in self.inspected:
             item = self.inspected[ident]
             return {
-                "status": "reviewed",
+                "status": "inspected",
                 "eligible": item["eligible"],
                 "description": item["description"],
             }, []
-        if self.attempts >= 2:
-            return {"status": "inspection_limit"}, []
-        if self.download_attempts >= 4:
-            return {"status": "download_limit"}, []
         self.download_attempts += 1
         try:
             url = self.candidates[ident]["url"]
@@ -127,23 +140,30 @@ class EmoteCollector:
             "type": "image_url",
             "image_url": {"url": f"data:{mime};base64," + base64.b64encode(data).decode("ascii")},
         }
-        # 内容描述不是安全审核记录，不能因为曾经记忆过就跳过审核。
-        verdict = await self.review(preview)
-        eligible = isinstance(verdict, dict) and verdict.get("eligible") is True
-        description = verdict.get("description", "") if isinstance(verdict, dict) else ""
-        if not isinstance(description, str) or not 1 <= len(description.strip()) <= 1200:
-            eligible, description = False, "审核未通过或无法确定图像内容"
         self.inspected[ident] = {
-            "data": data if eligible else b"",
+            "data": data,
             "digest": digest,
             "suffix": suffix,
-            "eligible": eligible,
-            "description": description,
+            "eligible": None,
+            "description": "",
+            "preview": preview,
         }
-        return {"status": "reviewed", "eligible": eligible, "description": description}, [
-            {"type": "text", "text": "候选原图，安全审核不代表收藏偏好，id=" + ident},
+        return {"status": "inspected", "id": ident}, [
+            {"type": "text", "text": "候选原图，id=" + ident},
             preview,
         ]
+
+    async def ensure_review(self, ident):
+        item = self.inspected.get(ident)
+        if item is None:
+            return False
+        if item["eligible"] is None:
+            verdict = await self.review(item["preview"])
+            item["eligible"] = isinstance(verdict, dict) and verdict.get("eligible") is True
+            item["description"] = (
+                verdict.get("description", "") if isinstance(verdict, dict) else ""
+            )
+        return item["eligible"] is True
 
     def choose(self, ident):
         item = self.inspected.get(ident)
@@ -151,7 +171,9 @@ class EmoteCollector:
             return None
         return item if item and item["eligible"] else None
 
-    def save(self, ident):
+    def save(self, ident, description):
+        if not isinstance(description, str) or not 1 <= len(description.strip()) <= 1200:
+            return {"status": "invalid_description"}
         if self.library is None:
             return {"status": "library_unavailable"}
         item = self.inspected.get(ident)
@@ -159,10 +181,8 @@ class EmoteCollector:
             return {"status": "not_reviewed_or_ineligible"}
         if "saved_id" in item:
             return {"status": "already_saved", "id": item["saved_id"]}
-        if self.saved >= 2:
-            return {"status": "save_limit"}
         result = self.library.import_image(
-            item["data"], item["suffix"], item["description"], self.candidates[ident]["source"]
+            item["data"], item["suffix"], description.strip(), self.candidates[ident]["source"]
         )
         if result.get("status") in ("saved", "already_saved"):
             item["saved_id"] = result["id"]

@@ -34,9 +34,9 @@ class TaskRoutingTests(unittest.IsolatedAsyncioTestCase):
                 )
                 args = model.step.call_args.args
                 self.assertIn("manage_task", [f["name"] for f in args[3]])
-                self.assertIn("且你决定接受时，调用manage_task", args[0][0]["content"])
-                self.assertIn("未接受的请求不创建任务、不承诺执行", args[0][0]["content"])
-                self.assertIn("由执行器核实托管条件", args[0][0]["content"])
+                self.assertIn("manage_task负责后台任务", args[0][0]["content"])
+                self.assertIn("执行委托来自当前真实用户请求", args[0][0]["content"])
+                self.assertIn("发送结果以执行器返回为准", args[0][0]["content"])
             finally:
                 archive.close()
 

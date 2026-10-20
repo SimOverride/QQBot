@@ -12,7 +12,7 @@
 
 ## 开发
 
-- 通用参与与投入规则集中在 `prompts/catalog.json` 的 `chat.expression`，`prompts.system_prompt.1` 允许人设影响行为选择；`llm.tasks.0` 以接受委托为任务申请前提。`llm.py` 仅在歧义影响回答或行动时要求澄清。`docs/当前完整提示词说明.txt` 汇总代码默认提示词与小鲸鱼正文，实际请求以后台预览为准。
+- 自然表达说明位于 `prompts/catalog.json` 的 `chat.expression`，`prompts.system_prompt.1` 允许人设影响行为选择；`llm.tasks.0` 以接受委托为任务申请前提。主agent按语境自行判断是否需要澄清。`docs/当前完整提示词说明.txt` 汇总代码默认提示词与小鲸鱼正文，实际请求以后台预览为准。
 - 模板存放于 `personas/*.txt`，`默认.txt` 为基础默认文件。UTF-8 编码、CRLF 行尾，每份正文 1 至 12000 字。
 - 五份内置模板均有“拍一拍互动”章节：默认随意应声，小鲸鱼轻微嘴硬，猫娘轻快回应，损友在熟人间接梗，技术宅简短直接且不打断排错。每份均描述拍回、主动拍人、收住互动及安静略过的具体场景；示例不是固定台词。
 - `plugins/assistant/personality.py` 的 `ProfileStore` 每次请求读取模板，通过单一 `persona` 字段注入回复、参与判断和通知改写。

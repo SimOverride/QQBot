@@ -36,4 +36,4 @@
 
 “聊天与任务执行”中的客户端安装目录对应 `DSH_PACKAGE_DIR`，模型对应 `DSH_MODEL`；聊天与任务共用这两项。客户端数据目录对应 `DSH_VIEW_HOME`，用于按群/私聊汇总聊天浏览记录，留空使用当前用户的 DSH 数据目录。辅助模型选择不改变 DSH 的模型。保存后按设置页提示重启机器人，详见 [DSH 配置](DSH.md)。
 
-主聊天使用共享预算 `AGENT_MAX_CALLS`、`AGENT_MAX_TOKENS` 和完整请求超时；费用限制 `AGENT_MAX_COST` 默认 0（不启用），启用时维护者需按同一币种配置 `AGENT_INPUT_PRICE`、`AGENT_OUTPUT_PRICE` 每百万 Token 单价。单价不自动联网更新，累计费用为保守估算。`SEARCH_MAX_CALLS` 仅用于无业务工具的独立模型请求，不限制主 DSH 聊天。积极性滑块影响普通唤醒频率和传给 agent 的参与意愿，没有回应分数阈值。
+主聊天使用共享预算 `AGENT_MAX_CALLS`、`AGENT_MAX_TOKENS` 和完整请求超时；费用限制 `AGENT_MAX_COST` 默认 0（不启用），启用时维护者需按同一币种配置 `AGENT_INPUT_PRICE`、`AGENT_OUTPUT_PRICE` 每百万 Token 单价。单价不自动联网更新，累计费用为保守估算。`SEARCH_MAX_CALLS` 仅用于无业务工具的独立模型请求，不限制主 DSH 聊天。积极性滑块仅影响参与意愿，0禁止主动发言但允许静默维护。普通消息由轻量 API 分流，间隔使用 WAKE_INTERVAL_SECONDS；主聊天输出使用独立的 DSH_OUTPUT_TOKENS。输入拒绝上限、回复总条数及旧定时认知提取配置已移除。

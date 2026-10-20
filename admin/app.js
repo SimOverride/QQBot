@@ -217,6 +217,25 @@ function renderEditor(){
       label.append(title);const shown=personScope==='general'?current.display_value?.['总体认知']:typeof contents==='string'?current.display_value?.['会话印象']?.[personScope]:current.display_value?.['会话印象']?.[personScope]?.[field];const parts=personScope==='general'?current.display_parts?.['总体认知']:typeof contents==='string'?current.display_parts?.['会话印象']?.[personScope]:current.display_parts?.['会话印象']?.[personScope]?.[field];showKnowledge(label,input,shown??value,parts);$('#fields').append(label);
     }
   }else fields(draft,$('#fields'));
+  if(kind==='emote'){
+    const section=document.createElement('section');
+    const heading=document.createElement('h3');heading.textContent='各群使用情况';section.append(heading);
+    for(const row of current.group_states||[]){
+      const block=document.createElement('div');block.className='field';
+      const state=document.createElement('strong');state.textContent=`机器人 ${row.bot} / 群 ${row.scope}：${row.disabled?'已停用':'可用'}`;
+      const reason=document.createElement('p');reason.textContent='停用原因：'+(row.reason||'未停用');
+      const memory=document.createElement('p');memory.textContent='使用经验：'+(row.memory||'暂无');
+      const details=document.createElement('details'),summary=document.createElement('summary'),evidence=document.createElement('pre');
+      summary.textContent='查看反馈依据与变更记录';evidence.textContent=JSON.stringify({反馈:JSON.parse(row.evidence),历史:JSON.parse(row.history)},null,2);details.append(summary,evidence);
+      block.append(state,reason,memory,details);
+      if(row.disabled){const restore=document.createElement('button');restore.textContent='恢复本群使用';restore.className='quiet';
+        restore.onclick=async()=>{if(busy||dirty())return status('请先保存或放弃当前草稿');busy=true;try{const saved=await api('/api/emotes/restore',{resource:current.resource,bot:row.bot,group:row.scope,revision:row.updated});current=saved;draft=structuredClone(saved.value);renderEditor();status('已恢复本群使用');}catch(e){status(e.message,true);}finally{busy=false;}};
+        block.append(restore);}
+      section.append(block);
+    }
+    if(!(current.group_states||[]).length){const empty=document.createElement('p');empty.textContent='暂无群使用经验或停用记录';section.append(empty);}
+    $('#fields').append(section);
+  }
   if(kind==='persona')renderProfileLab();
   if(kind==='person'||kind==='group'){
     const rebuild=document.createElement('button');rebuild.className='quiet';rebuild.textContent='根据聊天重新整理';
@@ -231,7 +250,7 @@ function renderEditor(){
   if(evidence?.length)$('#evidence').innerHTML=`<details><summary>查看认知依据与来源</summary><pre>${esc(text(evidence))}</pre></details>`;
   $('#save-manual').onclick=saveManual;
   if($('#reset-default'))$('#reset-default').onclick=()=>{draft=current.default;renderEditor();status('默认值已载入草稿，点击保存后生效');};
-  if(['persona','emote'].includes(kind)&&!(kind!=='emote'&&title==='默认')){
+  if(kind==='persona'&&title!=='默认'){
     const remove=document.createElement('button');remove.className='quiet';remove.textContent='删除';
     remove.onclick=()=>{if(!busy)review(null,true);};$('#editor .actions').append(remove);
   }

@@ -5,6 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CATALOG_PATH = ROOT / "prompts/catalog.json"
+RETIRED_PROMPTS = {"llm.extract_facts.0", "llm.knowledge_cleanup.0"}
 
 
 def read_console(root=None):
@@ -25,6 +26,9 @@ def validate_console(value):
         raise ValueError("后台配置字段须为对象")
     defaults = catalog()
     for key, text in value.get("prompts", {}).items():
+        # 历史私有包保留的提取提示词不再执行，迁移仍须接受有效字符串。
+        if key in RETIRED_PROMPTS and isinstance(text, str):
+            continue
         if key not in defaults or not isinstance(text, str) or not 1 <= len(text.strip()) <= 20000:
             raise ValueError("后台提示词配置不兼容")
         if any("{" + p + "}" not in text for p in defaults[key]["placeholders"]):

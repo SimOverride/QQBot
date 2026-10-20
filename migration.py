@@ -497,7 +497,10 @@ def merge_memory(local, incoming, output):
 
 def merge_emotes(local, incoming, output):
     """表情内容以哈希去重，描述取较新版本，收藏时间取较晚值以保留限额。"""
+    from plugins.assistant.emote_state import SCHEMA
+
     schemas = {
+        "emote_group_state": SCHEMA,
         "emote_memory": "digest TEXT PRIMARY KEY, description TEXT NOT NULL, updated REAL NOT NULL",
         "emote_imports": "digest TEXT PRIMARY KEY, source TEXT NOT NULL, created REAL NOT NULL",
         "emote_usage": (
@@ -527,9 +530,19 @@ def merge_emotes(local, incoming, output):
                     columns = {r[1] for r in dst.execute(f'PRAGMA table_info("{table}")')}
                     if set(row) != columns:
                         raise ValueError("表情数据库字段不兼容")
-                    key = row["id"] if table == "emote_usage" else row["digest"]
+                    key = (
+                        (row["bot"], row["scope"], row["digest"])
+                        if table == "emote_group_state"
+                        else row["id"]
+                        if table == "emote_usage"
+                        else row["digest"]
+                    )
                     previous = records[table].get(key)
-                    field = "updated" if table in ("emote_memory", "emote_proposals") else "created"
+                    field = (
+                        "updated"
+                        if table in ("emote_memory", "emote_proposals", "emote_group_state")
+                        else "created"
+                    )
                     if previous is None or row[field] > previous[field]:
                         records[table][key] = row
         for table, rows in records.items():

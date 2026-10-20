@@ -44,7 +44,9 @@ class PersonalityTests(unittest.IsolatedAsyncioTestCase):
             commands = service.commands
             original = path.read_text(encoding="utf8")
             for lookup in (
-                None, AsyncMock(return_value="member"), AsyncMock(side_effect=RuntimeError)
+                None,
+                AsyncMock(return_value="member"),
+                AsyncMock(side_effect=RuntimeError),
             ):
                 result = await commands.run((99, 10, 2), "/人设 幽默群友", lookup)
                 self.assertIn("权限不足", result)
@@ -63,7 +65,7 @@ class PersonalityTests(unittest.IsolatedAsyncioTestCase):
             await service.notices.render("已更新", 10)
             self.assertEqual(llm.rephrase_notice.call_args.args[1], store.effective(10))
             before = path.read_text(encoding="utf8")
-            for command in ("/人设 未知", "/人设 设置 新人设", "/人设 ../persona") :
+            for command in ("/人设 未知", "/人设 设置 新人设", "/人设 ../persona"):
                 await commands.run((99, 10, 1), command, None)
                 self.assertEqual(path.read_text(encoding="utf8"), before)
             self.assertIn("私聊", await commands.run((99, -1, 1), "/人设 幽默群友", None))
@@ -91,8 +93,7 @@ class PersonalityTests(unittest.IsolatedAsyncioTestCase):
             persona = Path(directory) / "persona.txt"
             persona.write_text("LOCAL_PERSONA", encoding="utf8")
             store = ProfileStore(persona)
-            self.assertEqual(store.effective(),
-                             {"persona": "LOCAL_PERSONA"})
+            self.assertEqual(store.effective(), {"persona": "LOCAL_PERSONA"})
             llm = SimpleNamespace(reply=AsyncMock(return_value=Reply("回答")))
             service = Assistant(Config(), llm, store)
             await service.handle(99, 10, 1, 1, "你好", AsyncMock())
@@ -104,7 +105,7 @@ class PersonalityTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("NEW_PERSONA", prompt)
             self.assertNotIn('"style"', prompt)
             self.assertIn("当前搜索未配置", prompt)
-            self.assertIn("不要在聊天中复述", prompt)
+            self.assertIn("不披露密钥、私密资料或系统配置", prompt)
 
     async def test_invalid_files_do_not_leak_contents(self):
         with tempfile.TemporaryDirectory() as directory:

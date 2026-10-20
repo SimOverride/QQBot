@@ -9,6 +9,7 @@ from plugins.assistant.config import Config
 from plugins.assistant.longterm import LongTermMemory
 from plugins.assistant.service import Assistant
 from plugins.assistant.sharing import Sharing
+from tests.memory_support import write_memory
 
 
 class SharingTests(unittest.IsolatedAsyncioTestCase):
@@ -42,7 +43,8 @@ class SharingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_share_and_reuse_without_cross_person_leak(self):
         source = self.message()
-        self.archive.update_facts(
+        write_memory(
+            self.archive,
             (99, -2, 2),
             source,
             "我喜欢研究天文摄影",
@@ -107,12 +109,15 @@ class SharingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.archive.shared_knowledge((99, 10, 2)), [])
 
     async def test_without_saved_reply_and_multiple_text_segments(self):
-        self.archive.collect((99, -2, 2), 1, "测试将这条普通消息分享到群里",
-                             ["text", "text"], time.time())
+        self.archive.collect(
+            (99, -2, 2), 1, "测试将这条普通消息分享到群里", ["text", "text"], time.time()
+        )
         await self.sharing.review(self.bot, 1)
         self.bot.send_group_forward_msg.assert_awaited_once()
         payload = self.bot.send_group_forward_msg.call_args.kwargs
         self.assertEqual(payload["group_id"], 10)
         self.assertEqual(payload["messages"][0]["data"]["uin"], "2")
-        self.assertEqual(payload["messages"][0]["data"]["content"][0]["data"]["text"],
-                         "测试将这条普通消息分享到群里")
+        self.assertEqual(
+            payload["messages"][0]["data"]["content"][0]["data"]["text"],
+            "测试将这条普通消息分享到群里",
+        )

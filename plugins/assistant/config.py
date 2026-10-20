@@ -12,17 +12,13 @@ class Config(BaseModel):
         default_factory=dict,
     )
     proactive_share_enabled: bool = True
-    memory_profile_min_messages: PositiveInt = 10
-    memory_profile_output_tokens: int = Field(4096, ge=512, le=8192)
-    knowledge_cleanup_enabled: bool = True
-    knowledge_cleanup_interval_hours: int = Field(24, ge=1, le=720)
     llm_provider: Literal["deepseek", "openai"] = "deepseek"
     llm_thinking_enabled: bool = False
     model_trace_enabled: bool = True
     model_trace_retention_days: int = Field(7, ge=1, le=365)
     task_max_concurrency: int = Field(2, ge=1, le=16)
-    task_timeout_seconds: int = Field(1800, ge=30, le=86400)
-    task_max_steps: int = Field(80, ge=1, le=500)
+    task_timeout_seconds: int = Field(3600, ge=30, le=86400)
+    task_max_steps: int = Field(256, ge=1, le=500)
     dsh_package_dir: str = ""
     dsh_model: str = "deepseek-flash"
     dsh_view_home: str = ""
@@ -31,7 +27,7 @@ class Config(BaseModel):
     deepseek_model: str = ""
     openai_api_key: SecretStr = SecretStr("")
     openai_model: str = ""
-    vision_max_images: int = Field(3, ge=1, le=5)
+    vision_max_images: int = Field(12, ge=1, le=64)
     emotes_dir: str = "emotes"
     emotes_auto_collect: bool = True
     emotes_daily_import_limit: int = Field(20, ge=1, le=100)
@@ -40,14 +36,16 @@ class Config(BaseModel):
     search_api_key: SecretStr = SecretStr("")
     search_max_results: int = Field(5, ge=1, le=5)
     search_timeout_seconds: PositiveFloat = 15
-    agent_max_calls: int = Field(24, ge=1, le=128)
+    agent_max_calls: int = Field(96, ge=1, le=1024)
     agent_max_cost: float = Field(0, ge=0)
     agent_input_price: float = Field(0, ge=0)
     agent_output_price: float = Field(0, ge=0)
-    agent_max_tokens: int = Field(120000, ge=1024, le=2000000)
-    search_max_calls: int = Field(2, ge=1, le=4)
+    agent_max_tokens: int = Field(1000000, ge=1024, le=20000000)
+    search_max_calls: int = Field(16, ge=1, le=128)
     llm_timeout_seconds: PositiveFloat = 60
-    request_timeout_seconds: PositiveFloat = 180
+    request_timeout_seconds: PositiveFloat = 600
+    dsh_output_tokens: PositiveInt = 16384
+    wake_interval_seconds: PositiveFloat = 8
     llm_max_concurrency: PositiveInt = 2
     llm_max_output_tokens: PositiveInt = 2048
     queue_timeout_seconds: PositiveFloat = 3
@@ -55,10 +53,8 @@ class Config(BaseModel):
     session_ttl_seconds: PositiveFloat = 1800
     session_max_turns: PositiveInt = 8
     session_max_chars: PositiveInt = 12000
-    input_max_chars: PositiveInt = 4000
     dedup_ttl_seconds: PositiveFloat = 300
     reply_chunk_chars: int = Field(1500, ge=300, le=4000)
-    reply_max_messages: int = Field(3, ge=1, le=5)
     max_pending_requests: PositiveInt = 32
 
     @property

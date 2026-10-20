@@ -20,21 +20,33 @@ from plugins.assistant.service import Assistant
 
 
 def config(**kwargs):
-    return Config(**{"deepseek_api_key": "test-secret",
-                     "deepseek_model": "test-model", **kwargs})
+    return Config(**{"deepseek_api_key": "test-secret", "deepseek_model": "test-model", **kwargs})
 
 
 def completion(text="回答", calls=None):
-    return {"choices": [{"finish_reason": "tool_calls" if calls else "stop", "message": {
-        "role": "assistant", "content": text, "tool_calls": calls,
-    }}]}
+    return {
+        "choices": [
+            {
+                "finish_reason": "tool_calls" if calls else "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": text,
+                    "tool_calls": calls,
+                },
+            }
+        ]
+    }
 
 
 def tool(query="今日天气", name="web_search", arguments=None):
-    return {"id": "call_1", "type": "function", "function": {
-        "name": name, "arguments": arguments if arguments is not None
-        else json.dumps({"query": query}),
-    }}
+    return {
+        "id": "call_1",
+        "type": "function",
+        "function": {
+            "name": name,
+            "arguments": arguments if arguments is not None else json.dumps({"query": query}),
+        },
+    }
 
 
 class ConfigAndRoutingTests(unittest.TestCase):
@@ -49,8 +61,9 @@ class ConfigAndRoutingTests(unittest.TestCase):
 
     def test_explicit_at_uses_original_segments(self):
         bot = SimpleNamespace(self_id="99")
-        event = SimpleNamespace(group_id=10, user_id=1, to_me=True,
-                                original_message=Message("你好"))
+        event = SimpleNamespace(
+            group_id=10, user_id=1, to_me=True, original_message=Message("你好")
+        )
         self.assertFalse(addressed(bot, event, config()))
         event.original_message = MessageSegment.at(99) + Message("你好")
         self.assertTrue(addressed(bot, event, config()))
@@ -62,22 +75,22 @@ class ConfigAndRoutingTests(unittest.TestCase):
 
     def test_render_bounds_without_reference_links(self):
         cfg = config(reply_chunk_chars=300, reply_max_messages=3)
-        reply = Reply("观点[1][99] https://invented.invalid\n" * 100,
-                      [SearchResult("来源", "https://example.com", "资料")])
+        reply = Reply(
+            "观点[1][99] https://invented.invalid\n" * 100,
+            [SearchResult("来源", "https://example.com", "资料")],
+        )
         chunks = render_reply(reply, cfg)
         text = "".join(chunks)
-        self.assertLessEqual(len(chunks), 3)
+        self.assertGreater(len(chunks), 3)
         self.assertTrue(all(len(c) <= 300 for c in chunks))
-        self.assertNotIn("[99]", text)
-        self.assertNotIn("invented.invalid", text)
-        self.assertNotIn("https://example.com", text)
-        self.assertNotIn("[1]", text)
-        self.assertNotIn("来源：", text)
+        self.assertEqual(text, reply.text.strip())
 
     def test_search_reply_keeps_explanation_without_markdown_links(self):
-        reply = Reply("根据[官方说明](https://example.com)，可以使用[1]。",
-                      [SearchResult("来源", "https://example.com", "资料")])
-        self.assertEqual(render_reply(reply, config()), ["根据官方说明，可以使用。"])
+        reply = Reply(
+            "根据[官方说明](https://example.com)，可以使用[1]。",
+            [SearchResult("来源", "https://example.com", "资料")],
+        )
+        self.assertEqual(render_reply(reply, config()), [reply.text])
 
     def test_non_search_reply_preserves_urls_and_indices(self):
         text = "访问 https://example.com，读取 items[1]。"
@@ -174,11 +187,14 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("test-secret", str(body))
 
     async def test_deepseek_autonomous_search(self):
-        reply, requests = await self.run_model([
-            completion(None, [tool()]),
-            {"results": [{"title": "来源", "url": "https://example.com", "content": "资料"}]},
-            completion("总结[1]"),
-        ], config(search_api_key="search-secret"))
+        reply, requests = await self.run_model(
+            [
+                completion(None, [tool()]),
+                {"results": [{"title": "来源", "url": "https://example.com", "content": "资料"}]},
+                completion("总结[1]"),
+            ],
+            config(search_api_key="search-secret"),
+        )
         self.assertEqual(len(reply.sources), 1)
         search_body = json.loads(requests[1].content)
         self.assertEqual(search_body["query"], "今日天气")
@@ -189,16 +205,35 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_openai_responses_preserves_reasoning_items(self):
         reasoning = {"type": "reasoning", "id": "rs_1", "encrypted_content": "opaque"}
-        reply, requests = await self.run_model([
-            {"status": "completed", "output": [reasoning, {
-                "type": "function_call", "call_id": "call_1", "name": "web_search",
-                "arguments": '{"query":"天气"}',
-            }]},
-            {"results": [{"title": "来源", "url": "https://example.com", "content": "资料"}]},
-            {"status": "completed", "output": [{"type": "message", "content": [
-                {"type": "output_text", "text": "总结[1]"}]}]},
-        ], config(llm_provider="openai", openai_api_key="openai-secret", openai_model="gpt-test",
-                  search_api_key="search-secret"))
+        reply, requests = await self.run_model(
+            [
+                {
+                    "status": "completed",
+                    "output": [
+                        reasoning,
+                        {
+                            "type": "function_call",
+                            "call_id": "call_1",
+                            "name": "web_search",
+                            "arguments": '{"query":"天气"}',
+                        },
+                    ],
+                },
+                {"results": [{"title": "来源", "url": "https://example.com", "content": "资料"}]},
+                {
+                    "status": "completed",
+                    "output": [
+                        {"type": "message", "content": [{"type": "output_text", "text": "总结[1]"}]}
+                    ],
+                },
+            ],
+            config(
+                llm_provider="openai",
+                openai_api_key="openai-secret",
+                openai_model="gpt-test",
+                search_api_key="search-secret",
+            ),
+        )
         self.assertEqual(reply.text, "总结[1]")
         self.assertEqual(requests[0].url.path, "/v1/responses")
         body = json.loads(requests[2].content)
@@ -207,41 +242,58 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["input"][-1]["type"], "function_call_output")
 
     async def test_bad_tool_calls_never_reach_search(self):
-        for call in (tool(name="shell"), tool(arguments="not-json"), tool(query=""),
-                     tool(query="a" * 501), tool(arguments='{"query":"x","other":1}')):
+        for call in (
+            tool(name="shell"),
+            tool(arguments="not-json"),
+            tool(query=""),
+            tool(query="a" * 501),
+            tool(arguments='{"query":"x","other":1}'),
+        ):
             with self.subTest(call=call), self.assertRaises(ServiceError):
                 await self.run_model([completion(None, [call])], config(search_api_key="key"))
 
     async def test_search_failure_and_no_results(self):
         for result in ({"results": []}, httpx.Response(500), {"unexpected": True}):
             with self.subTest(result=result), self.assertRaises(ServiceError):
-                await self.run_model([completion(None, [tool()]), result],
-                                     config(search_api_key="key"))
+                await self.run_model(
+                    [completion(None, [tool()]), result], config(search_api_key="key")
+                )
 
     async def test_summary_failure_returns_sources_without_saving(self):
-        reply, requests = await self.run_model([
-            completion(None, [tool()]),
-            {"results": [{"title": "来源", "url": "https://example.com", "content": "资料"}]},
-            httpx.Response(503),
-        ], config(search_api_key="key"))
+        reply, requests = await self.run_model(
+            [
+                completion(None, [tool()]),
+                {"results": [{"title": "来源", "url": "https://example.com", "content": "资料"}]},
+                httpx.Response(503),
+            ],
+            config(search_api_key="key"),
+        )
         self.assertFalse(reply.save)
         self.assertEqual(len(reply.sources), 1)
         self.assertEqual(len(requests), 3)
 
     async def test_search_budget_stops_tool_loop(self):
-        reply, requests = await self.run_model([
-            completion(None, [tool()]),
-            {"results": [{"title": "来源", "url": "https://example.com", "content": "资料"}]},
-            completion(None, [tool()]),
-        ], config(search_api_key="key", search_max_calls=1))
+        reply, requests = await self.run_model(
+            [
+                completion(None, [tool()]),
+                {"results": [{"title": "来源", "url": "https://example.com", "content": "资料"}]},
+                completion(None, [tool()]),
+            ],
+            config(search_api_key="key", search_max_calls=1),
+        )
         self.assertFalse(reply.save)
         self.assertEqual(len(requests), 3)
         self.assertNotIn("tools", json.loads(requests[-1].content))
 
     async def test_provider_errors_are_safe(self):
-        for response in (httpx.Response(401, text="secret"), httpx.Response(429),
-                         httpx.Response(200, text="not json"), {}, completion(""),
-                         httpx.ReadTimeout("secret")):
+        for response in (
+            httpx.Response(401, text="secret"),
+            httpx.Response(429),
+            httpx.Response(200, text="not json"),
+            {},
+            completion(""),
+            httpx.ReadTimeout("secret"),
+        ):
             with self.subTest(response=response), self.assertRaises(ServiceError) as caught:
                 await self.run_model([response])
             self.assertNotIn("secret", str(caught.exception))
@@ -254,8 +306,15 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.send = AsyncMock()
 
     async def handle(self, text, mid=1, **kwargs):
-        await self.service.handle(99, kwargs.get("group", 10), kwargs.get("user", 1),
-                                  mid, text, self.send, kwargs.get("role_lookup"))
+        await self.service.handle(
+            99,
+            kwargs.get("group", 10),
+            kwargs.get("user", 1),
+            mid,
+            text,
+            self.send,
+            kwargs.get("role_lookup"),
+        )
 
     async def test_natural_intent_does_not_require_command(self):
         await self.handle("帮我狠狠吐槽一下这个方案")
@@ -284,7 +343,8 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_help_ping_empty_and_long_input(self):
         for i, text in enumerate(("/帮助", "/ping", " ", "x" * 4001)):
             await self.handle(text, mid=i)
-        self.llm.reply.assert_not_awaited()
+        self.llm.reply.assert_awaited_once()
+        self.assertEqual(self.llm.reply.call_args.args[1], "x" * 4001)
         self.assertEqual(self.send.await_count, 4)
 
     async def test_send_failure_does_not_save_or_retry(self):

@@ -195,11 +195,10 @@ def setup() -> None:
                 await asyncio.sleep(60)
                 service.cleanup()
                 try:
-                    await service.refresh_profiles()
                     for connected_bot in get_bots().values():
                         await sharing.tick(connected_bot)
                 except Exception as error:
-                    logger.warning("profile_worker_failure={}", type(error).__name__)
+                    logger.warning("sharing_worker_failure={}", type(error).__name__)
 
         cleaner = asyncio.create_task(cleanup_loop())
 

@@ -19,6 +19,8 @@ FIELDS = {
     "聊天与任务执行": {
         "dsh_package_dir": "DSH 客户端安装目录（留空自动查找）",
         "dsh_model": "DSH 聊天与任务模型",
+        "dsh_output_tokens": "主 Agent 每次输出 Token",
+        "wake_interval_seconds": "群消息分流最短间隔（秒）",
         "dsh_view_home": "DSH 客户端数据目录（留空使用 ~/.dsh）",
     },
     "模型": {
@@ -32,16 +34,11 @@ FIELDS = {
         "session_max_turns": "上下文轮数",
         "session_max_chars": "上下文字符上限",
         "session_ttl_seconds": "上下文有效时间（秒）",
-        "input_max_chars": "输入字符上限",
         "agent_max_calls": "主 Agent 工具总预算",
         "agent_max_tokens": "主 Agent Token 总预算",
         "agent_max_cost": "主 Agent 费用预算（0不启用）",
         "agent_input_price": "每百万输入 Token 单价",
         "agent_output_price": "每百万输出 Token 单价",
-        "memory_profile_min_messages": "认知提取最少消息数",
-        "memory_profile_output_tokens": "认知提取输出 Token 上限",
-        "knowledge_cleanup_enabled": "自动整理认知",
-        "knowledge_cleanup_interval_hours": "认知整理间隔（小时）",
     },
     "请求限制": {
         "llm_timeout_seconds": "模型请求超时（秒）",
@@ -51,7 +48,6 @@ FIELDS = {
         "queue_timeout_seconds": "队列等待时间（秒）",
         "user_cooldown_seconds": "用户冷却（秒）",
         "reply_chunk_chars": "每条回复字符数",
-        "reply_max_messages": "回复消息条数上限",
     },
     "搜索和图片": {
         "search_max_results": "搜索结果数量",

@@ -155,7 +155,7 @@ class Turn:
             DSH_PERMISSION_MODE="workspace-write",
             DEEPSEEK_API_KEY=self.config.deepseek_api_key.get_secret_value(),
             QQBOT_DSH_PACKAGE=str(package),
-            QQBOT_OUTPUT_TOKENS=str(self.config.llm_max_output_tokens),
+            QQBOT_OUTPUT_TOKENS=str(self.config.dsh_output_tokens),
             QQBOT_SESSION_ID=self.view["id"] if self.runtime else "",
             QQBOT_RUNTIME_CWD=str(home),
         )
@@ -222,7 +222,7 @@ class Turn:
             "type": "result" if self.pending else "start",
             "system": messages[0]["content"],
             "functions": refresh_tools(functions) if allow else [],
-            "output_tokens": self.config.llm_max_output_tokens,
+            "output_tokens": self.config.dsh_output_tokens,
             "max_steps": self.config.agent_max_calls + 2,
             "messages": await self.prepare(messages[self.offset or 1 :]),
             "view": self.view,
@@ -305,7 +305,7 @@ class Turn:
 
 
 class Chat(LLM):
-    """正式聊天使用 DSH；认知提取、审核等独立模型操作保持各自职责。"""
+    """正式聊天使用 DSH；轻量唤醒判断、审核等辅助操作使用独立 API。"""
 
     async def reply(self, history, user, request_id, *args, **kwargs):
         scope = kwargs.get("history_tools", args[3] if len(args) > 3 else None)

@@ -18,31 +18,50 @@ from plugins.assistant.llm import LLM
 from plugins.assistant.longterm import LongTermMemory
 from plugins.assistant.prompts import system_prompt
 from plugins.assistant.sessions import epoch
+from tests.memory_support import write_memory
 
 
 class ConsoleTests(unittest.TestCase):
     def test_reset_all_requires_confirmation_and_preserves_data(self):
         before = epoch(self.root, 123, 10)
         files = {}
-        for name in ("personas/默认.txt", "data/task-marker.json", "data/agent/123/10/old/session.json", "data/agent-events/123/10.json"):
+        for name in (
+            "personas/默认.txt",
+            "data/task-marker.json",
+            "data/agent/123/10/old/session.json",
+            "data/agent-events/123/10.json",
+        ):
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             if not path.exists():
                 path.write_text("[]", encoding="utf-8")
             files[path] = path.read_bytes()
         messages = self.archive.db.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-        self.assertEqual(self.client.post('/api/agent/reset', json={"confirm": "reset_all"}).status_code, 403)
-        self.assertEqual(self.client.post('/api/agent/reset', json={}, headers=self.headers).status_code, 400)
+        self.assertEqual(
+            self.client.post("/api/agent/reset", json={"confirm": "reset_all"}).status_code, 403
+        )
+        self.assertEqual(
+            self.client.post("/api/agent/reset", json={}, headers=self.headers).status_code, 400
+        )
         self.assertEqual(epoch(self.root, 123, 10), before)
-        result = self.client.post('/api/agent/reset', json={"confirm": "reset_all"}, headers=self.headers)
+        result = self.client.post(
+            "/api/agent/reset", json={"confirm": "reset_all"}, headers=self.headers
+        )
         self.assertEqual(result.status_code, 200)
         self.assertNotEqual(epoch(self.root, 123, 10), before)
-        self.assertNotEqual(epoch(self.root, 88, -20)[0], 'initial')
-        self.assertEqual(self.archive.db.execute("SELECT COUNT(*) FROM messages").fetchone()[0], messages)
+        self.assertNotEqual(epoch(self.root, 88, -20)[0], "initial")
+        self.assertEqual(
+            self.archive.db.execute("SELECT COUNT(*) FROM messages").fetchone()[0], messages
+        )
         for path, content in files.items():
             self.assertEqual(path.read_bytes(), content)
         previous = epoch(self.root, 123, 10)
-        self.assertEqual(self.client.post('/api/agent/reset', json={"confirm": "reset_all"}, headers=self.headers).status_code, 200)
+        self.assertEqual(
+            self.client.post(
+                "/api/agent/reset", json={"confirm": "reset_all"}, headers=self.headers
+            ).status_code,
+            200,
+        )
         self.assertNotEqual(epoch(self.root, 123, 10), previous)
 
     def setUp(self):
@@ -70,6 +89,36 @@ class ConsoleTests(unittest.TestCase):
         self.client = TestClient(self.app, base_url="http://127.0.0.1:8090")
         self.addCleanup(self.client.close)
         self.headers = {"X-Console-Token": self.app.state.token}
+
+    def test_emote_group_state_and_restore_endpoint(self):
+        from plugins.assistant.emote_state import update
+        from plugins.assistant.emotes import Emotes
+        from tests.test_emote_collect import PNG
+
+        library = Emotes(self.root / "emotes")
+        (library.root / "test.png").write_bytes(PNG)
+        state = update(
+            library,
+            123,
+            10,
+            library.digest("test.png"),
+            0,
+            disabled=1,
+            reason="本群反馈不适用",
+            evidence=[{"message_id": 1}],
+        )
+        response = self.client.get("/api/resource", params={"id": "emote:test.png"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["group_states"][0]["reason"], "本群反馈不适用")
+        payload = dict(resource="emote:test.png", bot=123, group=10, revision=state["updated"])
+        self.assertEqual(self.client.post("/api/emotes/restore", json=payload).status_code, 403)
+        response = self.client.post("/api/emotes/restore", json=payload, headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["group_states"][0]["disabled"])
+        self.assertEqual(
+            self.client.post("/api/emotes/restore", json=payload, headers=self.headers).status_code,
+            400,
+        )
 
     def test_message_reference_preview_is_ordered_and_scoped(self):
         self.archive.collect((123, 10, 123), 9, "机器人回复", ["text"], 110, related_user=20)
@@ -270,7 +319,8 @@ class ConsoleTests(unittest.TestCase):
         value = old["value"]
         value["总体认知"] = "绘画"
         self.store.put(key, value, old["revision"])
-        self.archive.update_facts(
+        write_memory(
+            self.archive,
             (123, 10, 20),
             1,
             "喜欢游戏",
@@ -575,7 +625,8 @@ class ConsoleTests(unittest.TestCase):
 
     def test_scene_edit_preserves_other_sources_and_scoped_suggestion(self):
         self.archive.collect((123, -20, 20), 2, "私聊专用资料", ["text"], 101)
-        self.archive.update_facts(
+        write_memory(
+            self.archive,
             (123, 10, 20),
             1,
             "喜欢游戏",
@@ -627,7 +678,8 @@ class ConsoleTests(unittest.TestCase):
             source,
             dict(self.archive.db.execute("SELECT * FROM facts WHERE field='角色'").fetchone()),
         )
-        self.archive.update_facts(
+        write_memory(
+            self.archive,
             (123, 10, 20),
             1,
             "喜欢游戏",

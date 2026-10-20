@@ -119,7 +119,7 @@ class Improvements(unittest.IsolatedAsyncioTestCase):
         bot.get_forward_msg.side_effect = RuntimeError()
         reader.allowed["broken"] = 0
         self.assertEqual((await reader.run({"id": "broken"}))["status"], "unavailable")
-        reader.allowed["deep"] = 2
+        reader.allowed["deep"] = 8
         self.assertEqual((await reader.run({"id": "deep"}))["status"], "limit")
 
     def test_message_boundaries_preserve_code(self):

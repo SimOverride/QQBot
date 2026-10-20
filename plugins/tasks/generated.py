@@ -17,7 +17,7 @@ plugin.py 定义 run(request)，接收 {"text":用户请求,"data":当前群的�
 返回 {"text":中文结果,"data":更新后的数据字典}，只通过返回数据持久化。
 不得自行连接 QQ、指定群号、访问环境密钥、修改工作目录外文件或启动后台进程。
 通过标准输入接收一行 JSON，调用 run，标准输出仅打印一行 JSON（不打印调试文字）。
-test_plugin.py 使用 unittest，至少包含一个实际功能测试及一个无效输入测试；自行运行修复。
+test_plugin.py 使用 unittest，按实际功能与风险选择有效测试，自行运行并修复；不得空测试凑数。
 这是按需调用插件；不具备自主定时或消息订阅能力，如需求依赖这些能力则明确说明，不伪装完成。
 不要修改已有部署；后端在独立快照上重新测试，成功后自动发布，群范围由后端绑定。
 """
@@ -121,7 +121,7 @@ async def publish(manager, task):
         "import sys,unittest;sys.path.insert(0,'.');"
         "s=unittest.defaultTestLoader.discover('.',pattern='test_plugin.py');"
         "n=s.countTestCases();r=unittest.TextTestRunner().run(s);"
-        "sys.exit(0 if n>=2 and r.wasSuccessful() else 1)"
+        "sys.exit(0 if n>0 and r.wasSuccessful() else 1)"
     )
     await invoke([sys.executable, "-I", "-B", "-c", test], folder)
     result(

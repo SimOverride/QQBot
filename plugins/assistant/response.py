@@ -46,8 +46,10 @@ class Response:
     def apply(self, reply):
         if self.state["action"] == "silent":
             reply.text, reply.emote_id, reply.image_data = "", None, None
+            reply.media = []
             reply.save = reply.poke_target is not None
         elif self.state["action"] == "repeat":
             reply.text, reply.emote_id, reply.image_data = self.repeat, None, None
+            reply.media = []
             reply.save = True
         return reply

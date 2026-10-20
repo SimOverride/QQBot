@@ -51,6 +51,7 @@ class HistoryTools:
         self.collector = None
         self.selected_emote = None
         self.selected_image = None
+        self.selected_media = []
         self.offered_emotes = set()
         self.emote_hashes = {}
         self.scopes = {key[1]}
@@ -256,8 +257,8 @@ class HistoryTools:
                         "message_id": r["message_id"],
                         "sender": r["usr"],
                         "time": datetime.fromtimestamp(r["created"], TZ).isoformat(),
-                        "text": r["content"][:1200],
-                        "truncated": len(r["content"]) > 1200,
+                        "text": r["content"],
+                        "truncated": False,
                     }
                     for r in rows
                 ],

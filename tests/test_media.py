@@ -196,7 +196,7 @@ class EmoteTests(unittest.IsolatedAsyncioTestCase):
             for part in msg["content"]
             if part.get("type") == "image_url"
         ]
-        self.assertEqual(previews, [])  # Image replaced by durable memory after learning.
+        self.assertEqual(len(previews), 1)  # 保存描述不抹掉本轮已查看的原图。
         self.assertIn("白色小图", self.emotes.recall(self.emotes.digest("开心.png")))
 
     async def test_service_sends_and_saves_image_only(self):

@@ -28,13 +28,13 @@ from tests.test_extensions import settings
 class ExpressionTests(unittest.TestCase):
     def test_natural_chunks_and_structure(self):
         cfg = Config()
-        self.assertEqual(render_reply(Reply("好呀\n明天再聊"), cfg), ["好呀明天再聊"])
+        self.assertEqual(render_reply(Reply("好呀\n明天再聊"), cfg), ["好呀\n明天再聊"])
         text = (
             "今天碰到一件特别有意思的事情，正打算回来告诉你，结果走着走着差点忘记了。"
             "后来看到那只猫，我又想起来了！"
         )
         chunks = render_reply(Reply(text), cfg)
-        self.assertEqual(len(chunks), 2)
+        self.assertEqual(len(chunks), 1)
         self.assertEqual("".join(chunks), text)
         for value in (
             "```python\nprint(1)\n```",
