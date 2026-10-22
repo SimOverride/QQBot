@@ -19,7 +19,7 @@ class GroupChatTests(unittest.IsolatedAsyncioTestCase):
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
         self.settings = GroupSettings(root / "groups.json")
-        self.cfg = Config(bot_owners={1}, user_cooldown_seconds=0.001)
+        self.cfg = Config(bot_owners={1}, user_cooldown_seconds=0.001, model_trace_enabled=False)
         self.archive = LongTermMemory(root / "memory.db", self.cfg)
         self.decision = {
             "action": "reply",
@@ -33,11 +33,27 @@ class GroupChatTests(unittest.IsolatedAsyncioTestCase):
             result = await kwargs["history_tools"].response.execute(self.decision)
             return self.answer if result["status"] == "selected" else Reply("", save=False)
 
+        async def assess(context):
+            start = (
+                context["topics"][0]["start"]
+                if context["topics"]
+                else context["incoming"][0]["message_id"]
+            )
+            return [
+                {
+                    "message_id": m["message_id"],
+                    "topic_start": start,
+                    "title": "天文摄影",
+                    "judgement": "延续天文摄影话题",
+                    "response_to_bot": None,
+                    "should_reply": True,
+                    "reply_reason": "可以补充拍摄建议",
+                }
+                for m in context["incoming"]
+            ]
+
         self.llm = SimpleNamespace(
-            reply=AsyncMock(side_effect=reply),
-            assess_wake=AsyncMock(
-                return_value={"wake": True, "continuation": True, "summary": "延续话题"}
-            ),
+            reply=AsyncMock(side_effect=reply), assess_topics=AsyncMock(side_effect=assess)
         )
         self.service = Assistant(self.cfg, self.llm, archive=self.archive)
         self.service.commands.group_settings = self.settings
@@ -67,14 +83,6 @@ class GroupChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message[0].type, "reply")
         self.assertEqual(str(message[0].data["id"]), "12")
         self.assertEqual(self.archive.count((99, 10, 99)), 1)
-
-    async def test_activity_and_trigger_reach_main_agent(self):
-        self.settings.set_activity(10, 10)
-        await self.controller.respond(self.bot, self.event, "这是真的吗", GroupState(), True)
-        context = json.loads(json.loads(self.llm.reply.call_args.args[4])["group"])
-        self.assertEqual(context["activity"], 10)
-        self.assertTrue(context["explicit"])
-        self.assertEqual(context["trigger_message_id"], 12)
 
     def repeat_state(self, text="好耶！\n"):
         from nonebot.adapters.onebot.v11 import Message
@@ -109,13 +117,8 @@ class GroupChatTests(unittest.IsolatedAsyncioTestCase):
         self.bot.send_group_msg.assert_awaited_once()
         self.assertEqual(self.archive.count((99, 10, 99)), 0)
 
-    async def test_repeat_zero_activity_and_normal_reply_cannot_bypass(self):
+    async def test_normal_reply_cannot_bypass_repeat_protocol(self):
         state = self.repeat_state()
-        self.settings.set_activity(10, 0)
-        await self.controller.respond(self.bot, self.event, "好耶！\n", state, False)
-        self.llm.reply.assert_awaited_once()
-        self.bot.send_group_msg.assert_not_awaited()
-        self.settings.set_activity(10, 50)
         self.decision["action"] = "reply"
         self.answer = Reply("好耶！\n")
         await self.controller.respond(self.bot, self.event, "好耶！\n", state, False)
@@ -163,15 +166,6 @@ class GroupChatTests(unittest.IsolatedAsyncioTestCase):
         self.llm.reply.assert_awaited_once()
         self.bot.send_group_msg.assert_not_awaited()
 
-    async def test_zero_disables_passive_but_explicit_still_works(self):
-        self.settings.set_activity(10, 0)
-        await self.controller.receive(self.bot, self.event, "hello", False)
-        self.llm.reply.assert_not_awaited()
-        await self.controller.receive(
-            self.bot, SimpleNamespace(group_id=10, user_id=2, message_id=13), "hello", True
-        )
-        self.llm.reply.assert_awaited_once()
-
     async def test_explicit_uses_main_agent_once(self):
         await self.controller.respond(self.bot, self.event, "你好", GroupState(), True)
         self.bot.send_group_msg.assert_awaited_once()
@@ -194,54 +188,6 @@ class GroupChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.pending[0].message_id, 13)
         self.assertEqual(len(self.controller.states), 1)
         await self.controller.close()
-
-    async def test_settings_permissions_persistence_and_isolation(self):
-        commands = self.service.commands
-        denied = await commands.run((99, 10, 2), "/积极性 90", None)
-        self.assertIn("权限不足", denied)
-        await commands.run((99, 10, 1), "/积极性 90", None)
-        self.assertEqual(GroupSettings(self.settings.path).get(10)["activity"], 90)
-        self.assertEqual(self.settings.get(20)["activity"], 50)
-        before = self.settings.path.read_text()
-        await commands.run((99, 10, 1), "/积极性 101", None)
-        self.assertEqual(before, self.settings.path.read_text())
-        data = json.loads(before)
-        data["groups"]["10"]["interests"] = ["天文"]
-        self.settings.write(data)
-        await commands.run((99, 10, 1), "/积极性 60", None)
-        self.assertEqual(self.settings.get(10)["interests"], ["天文"])
-
-    async def test_new_group_chat_and_live_role_permissions(self):
-        self.event.group_id = 30
-        await self.controller.receive(self.bot, self.event, "你好", True)
-        self.bot.send_group_msg.assert_awaited()
-        self.assertEqual(self.bot.send_group_msg.call_args.kwargs["group_id"], 30)
-        self.bot.get_group_member_info = AsyncMock(
-            return_value={
-                "group_id": 30,
-                "user_id": 2,
-                "role": "admin",
-            }
-        )
-        self.event.message_id = 13
-        await self.controller.receive(self.bot, self.event, "/积极性 90", True)
-        self.assertEqual(self.settings.get(30)["activity"], 90)
-        self.bot.get_group_member_info.assert_awaited_once_with(
-            group_id=30, user_id=2, no_cache=True
-        )
-        self.bot.get_group_member_info.return_value["role"] = "member"
-        self.event.message_id = 14
-        await self.controller.receive(self.bot, self.event, "/积极性 20", True)
-        self.assertEqual(self.settings.get(30)["activity"], 90)
-        self.bot.get_group_member_info.return_value.update(user_id=3, role="owner")
-        self.event.message_id = 15
-        await self.controller.receive(self.bot, self.event, "/积极性 20", True)
-        self.assertEqual(self.settings.get(30)["activity"], 90)
-
-    async def test_low_activity_does_not_veto_awakened_agent(self):
-        self.settings.set_activity(10, 10)
-        await self.controller.respond(self.bot, self.event, "你好", GroupState(), False)
-        self.bot.send_group_msg.assert_awaited_once()
 
     async def test_new_message_during_generation_suppresses_stale_reply(self):
         state = GroupState()
@@ -333,24 +279,6 @@ class GroupChatTests(unittest.IsolatedAsyncioTestCase):
         self.service.vision.prepare.assert_not_awaited()
         self.assertNotIn("images", self.llm.reply.call_args.kwargs)
 
-    async def test_activity_changes_wake_frequency(self):
-        delays = []
-        self.controller.respond = AsyncMock()
-        for level in (10, 90):
-            self.settings.set_activity(10, level)
-            state = GroupState(last_checked=100, last_sent=100)
-            state.pending = (self.event, "普通消息", 100)
-
-            async def wait(current, delay):
-                delays.append(delay)
-                return False
-
-            with patch("plugins.assistant.groupchat.time.monotonic", return_value=100):
-                with patch.object(self.controller, "wait_pending", side_effect=wait):
-                    await self.controller.worker(self.bot, state)
-        self.assertEqual(delays[0], delays[1])
-        self.assertEqual(self.controller.respond.await_count, 2)
-
     async def test_split_pause_stays_035_seconds(self):
         self.answer = Reply("第一条消息\n<分条>\n第二条消息")
         with patch("plugins.assistant.service.asyncio.sleep", new_callable=AsyncMock) as sleep:
@@ -358,20 +286,17 @@ class GroupChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.bot.send_group_msg.await_count, 2)
         sleep.assert_awaited_once_with(0.35)
 
-    async def test_lightweight_gate_can_skip_main_agent(self):
-        self.llm.assess_wake.return_value = {
-            "wake": False,
-            "continuation": False,
-            "summary": "群友互聊",
-        }
+    async def test_topic_assessment_failure_stays_silent(self):
+        self.llm.assess_topics.side_effect = ValueError("判断失败")
         await self.controller.respond(self.bot, self.event, "路过", GroupState(), False)
         self.llm.reply.assert_not_awaited()
         self.bot.send_group_msg.assert_not_awaited()
 
-    async def test_direct_request_bypasses_lightweight_gate(self):
+    async def test_direct_request_survives_topic_assessment_failure(self):
+        self.llm.assess_topics.side_effect = ValueError("判断失败")
         await self.controller.respond(self.bot, self.event, "帮我看看", GroupState(), True)
-        self.llm.assess_wake.assert_not_awaited()
         self.llm.reply.assert_awaited_once()
+        self.bot.send_group_msg.assert_awaited_once()
 
     async def test_unrelated_new_message_does_not_discard_work(self):
         state = GroupState()

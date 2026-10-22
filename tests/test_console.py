@@ -464,13 +464,13 @@ class ConsoleTests(unittest.TestCase):
     def test_group_knowledge_is_scoped_and_runtime_visible(self):
         key = "group:123:10"
         value = self.store.get(key)["value"]
-        value.update(summary="游戏开发群", knowledge="每周五联机", activity=60)
+        value.update(summary="游戏开发群", knowledge="每周五联机")
         self.save(key, value)
         current = json.loads(self.archive.context((123, 10, 20), "游戏", set()))
         other = json.loads(self.archive.context((123, 11, 20), "游戏", set()))
         self.assertEqual(current["group_knowledge"]["summary"], "游戏开发群")
         self.assertEqual(other["group_knowledge"], {})
-        self.assertEqual(self.store.get(key)["value"]["activity"], 60)
+        self.assertNotIn("activity", self.store.get(key)["value"])
 
     def test_prompt_hot_reload_and_placeholder_validation(self):
         key = "prompt:prompts.system_prompt.0"

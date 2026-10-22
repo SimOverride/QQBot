@@ -344,3 +344,17 @@ dialog h2{font-size:18px}
 .message-preview-row.self .message-preview-bubble{background:#e3efff;border-color:#d2e3fc;border-radius:10px 2px 10px 10px}
 
 .profile-lab{border-top:1px solid var(--border,#ddd);margin-top:16px;padding-top:16px}.trial-columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.trial-columns section{min-width:0}.trial-bubble{padding:10px;border-radius:8px;background:var(--bg,#f4f5f7);white-space:pre-wrap;overflow-wrap:anywhere}@media(max-width:700px){.trial-columns{grid-template-columns:1fr}}
+
+/* 话题按实际归属展示完整聊天；窄屏只调整内容区，左侧菜单始终保留。 */
+.topic-layout{display:grid;grid-template-columns:minmax(190px,280px) minmax(0,1fr);gap:18px;align-items:start}
+.topic-filters select{width:auto;min-width:180px}.topic-filters input{flex:1;max-width:360px}
+#selection[hidden]{display:none}
+.topic-list{max-height:78vh;overflow:auto}.topic-list>button{margin:12px}.topic-detail{min-width:0;overflow:hidden}
+.topic-meta{padding:15px 18px;border-bottom:1px solid var(--border);font-size:13px;color:var(--text-2);overflow-wrap:anywhere}
+.topic-chat{background:#f3f5f8;padding:20px;max-height:74vh;overflow:auto;overscroll-behavior:contain}
+.topic-chat .message-preview-row{margin-bottom:22px}.topic-chat .message-preview-column{max-width:85%}
+.topic-start{margin:0 auto 20px;text-align:center;color:#766035;font-size:12px;border-block:1px dashed #d8c79e;padding:9px}
+.topic-reasons{font-size:11px;color:var(--text-2);margin-top:7px;overflow-wrap:anywhere}.topic-reasons summary{cursor:pointer}.topic-reasons p{white-space:pre-wrap;margin:6px 0;line-height:1.6}
+.topic-quote{font-size:11px;color:var(--text-2);background:#e9ecf1;padding:7px;border-radius:6px;white-space:pre-wrap;overflow-wrap:anywhere;margin-bottom:5px}
+.topic-detail>button{margin:12px 18px}
+@media(max-width:900px){.topic-layout{grid-template-columns:minmax(0,1fr)}.topic-list{max-height:230px}.topic-chat{padding:12px}.topic-chat .message-preview-column{max-width:calc(100% - 38px)}}

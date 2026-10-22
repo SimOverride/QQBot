@@ -20,7 +20,7 @@ FIELDS = {
         "dsh_package_dir": "DSH 客户端安装目录（留空自动查找）",
         "dsh_model": "DSH 聊天与任务模型",
         "dsh_output_tokens": "主 Agent 每次输出 Token",
-        "wake_interval_seconds": "群消息分流最短间隔（秒）",
+        "wake_interval_seconds": "群话题观察最短间隔（秒）",
         "dsh_view_home": "DSH 客户端数据目录（留空使用 ~/.dsh）",
     },
     "模型": {
@@ -157,27 +157,22 @@ class Settings:
         data = GroupSettings(self.root / "group_chat.json").read()
         return {
             "revision": revision(data),
-            "activity": data.get("default_activity", 50),
             "persona": data.get("default_persona", "默认"),
             "personas": sorted(p.stem for p in (self.root / "personas").glob("*.txt")),
         }
 
-    def save_defaults(self, activity, persona, expected):
+    def save_defaults(self, persona, expected):
         with migration.project_lock(self.root, name=".migration.lock"):
             self.check()
             current = self.defaults()
             if current["revision"] != expected:
                 raise ValueError("默认设置已变化，请刷新后重试")
-            if (
-                type(activity) is not int
-                or not 0 <= activity <= 100
-                or persona not in current["personas"]
-            ):
-                raise ValueError("默认积极性或人设无效")
+            if persona not in current["personas"]:
+                raise ValueError("默认人设无效")
             store = GroupSettings(self.root / "group_chat.json")
             data = store.read()
             atomic_json(self.root / "backups/settings" / (uuid.uuid4().hex + ".json"), data)
-            data.update(default_activity=activity, default_persona=persona)
+            data.update(default_persona=persona)
             store.write(data)
         return {
             "message": "默认设置已保存，未单独配置的群及默认人设后续请求生效",

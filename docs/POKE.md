@@ -13,7 +13,7 @@
 ## 开发
 
 - `plugins/assistant/__init__.py` 通过 `on_notice` 接收 OneBot `PokeNotifyEvent`。`poke.py` 校验机器人账号和 `target_id`，群聊以 `user_id` 为拍人者，私聊优先使用 NapCat 的 `sender_id`，避免把会话对象误当作实际发送者。只接收别人拍当前机器人的通知。
-- `Pokes.dispatch` 对私聊沿用好友、共同群或机器人主人资格检查，通过后记录通知并调用现有群聊或私聊流程。群聊作为直接互动进入短时合并，由参与模型决定是否回应；即使积极性为零，被拍仍可进入直接互动判断。模型拒绝参与或决定安静时不发送额外提示。
+- `Pokes.dispatch` 对私聊沿用好友、共同群或机器人主人资格检查，通过后记录通知并调用现有群聊或私聊流程。群聊作为直接互动进入短时合并，由参与模型决定是否回应；被拍沿用直接互动入口，跳过普通话题参与门槛。模型拒绝参与或决定安静时不发送额外提示。
 - 通知以 `poke` 类型写入 `messages`，元数据保留拍人者和目标。编号由机器人、会话、发送者、目标和事件时间的指纹生成，使用低于常见 QQ 消息编号的负数范围，重复上报和重启后同一通知不会再次触发。没有独立新增数据库表。`longterm.py` 在历史查询和群上下文返回事件资料，但自动认知提取跳过 `poke` 类型，并正常推进游标。
 - `HistoryTools.poke` 为本次请求绑定 `PokeSession`。`llm.py` 只在回复阶段提供 `poke_user`，参与判断不提供发送工具。群目标通过实时 `get_group_member_info` 核实；私聊只接受当前对象的 QQ，不允许模型指定另一个会话。
 - 实际发送调用 NapCat `send_poke`；群聊传 `group_id` 和 `user_id`，私聊只传 `user_id`。接口定义见 [NapCat API](https://napcat.apifox.cn/250286923e0)，通知字段见 [NapCat 通知实现](https://github.com/NapNeko/NapCatQQ/blob/main/packages/napcat-onebot/event/notice/OB11PokeEvent.ts)。

@@ -307,9 +307,7 @@ def setup() -> None:
             await contacts.refresh_group(bot, event.group_id)
         names = contacts.bot_names(int(bot.self_id), event.group_id)
         text = extract_text(bot, event, names)
-        explicit = addressed(bot, event, config, names) or text.strip().split(maxsplit=1)[:1] == [
-            "/积极性"
-        ]
+        explicit = addressed(bot, event, config, names)
         try:
             await conversations.receive(bot, event, text, explicit)
         except Exception as error:

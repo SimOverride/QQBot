@@ -83,10 +83,9 @@ class PersonalityTests(unittest.IsolatedAsyncioTestCase):
             (personas / "新 人设.txt").unlink()
             with self.assertRaises(ValueError):
                 store.effective(10)
-            settings.set_activity(10, 70)
             await commands.run((99, 10, 1), "/人设 默认", None)
             self.assertEqual(store.effective(10), store.effective())
-            self.assertEqual(settings.get(10)["activity"], 70)
+            self.assertNotIn("activity", settings.get(10))
 
     async def test_local_hot_reload_and_request_injection(self):
         with tempfile.TemporaryDirectory() as directory:

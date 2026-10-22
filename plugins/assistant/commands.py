@@ -128,23 +128,6 @@ class Commands:
             return f"本群{label}已切换为{name}，后续请求生效；其他群和私聊不受影响。"
         if group_id < 0 and command == "/清空" and args:
             return "私聊仅支持 /清空 清除自己的私聊记录；群内操作请在对应群执行。"
-        if command == "/积极性":
-            if group_id <= 0 or self.group_settings is None:
-                return "请在要调整的群中使用 /积极性 [0至100]。"
-            if not args:
-                activity = self.group_settings.get(group_id)["activity"]
-                return f"本群积极性：{activity}（0关闭主动回复，@仍有效）。"
-            if await self.level(user_id, lookup) < 1:
-                return "权限不足，仅机器人所有者和群主、群管理员可调整积极性。"
-            if (
-                len(args) != 1
-                or not args[0].isascii()
-                or not args[0].isdigit()
-                or not 0 <= int(args[0]) <= 100
-            ):
-                return "用法：/积极性 0至100，例如 /积极性 50。"
-            self.group_settings.set_activity(group_id, int(args[0]))
-            return f"本群积极性已设为 {int(args[0])}，立即生效；@机器人仍有效。"
         if command == "/ping" and not args:
             return "pong"
         if command == "/记忆" and not args:
@@ -165,7 +148,6 @@ class Commands:
                 return "用法：/帮助"
             result = (
                 "@我直接说话即可聊天、分析或评论，联网查询由模型决定。"
-                "\n/积极性 查看本群参与积极性"
                 "\n/ping 测试连接\n/帮助（/help）查看说明\n/记忆 查看自己在本群的长期认知"
             )
             if level >= 1:
@@ -175,7 +157,6 @@ class Commands:
                     result += "\n/插件 查看插件；/插件 本群 插件ID 开启|关闭"
                     result += "\n/定时 待确认、/定时 确认 确认码（仅已启用定时插件的群）"
                 result += (
-                    "\n/积极性 0至100 调整本群主动参与程度"
                     "\n/人设 列表 查看本群设定及切换方式（仅群聊）"
                     "\n/清空 清除自己的会话\n/清空 @某人 清除其本群会话"
                     "\n/清空 本群 清除本群会话（需确认）\n/确认 确认码 执行待确认操作"

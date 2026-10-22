@@ -1,4 +1,4 @@
-"""Per-group participation policy and coalesced topic-aware message processing."""
+"""按群合并消息，以固定话题策略控制接话并记录实际发送。"""
 
 import asyncio
 import json
@@ -16,6 +16,7 @@ from .personality import LIMITS
 from .prompt_store import group_knowledge
 from .repeat import RepeatState, recently_sent
 from .shares import ShareReader, message_text
+from .topics import Topics
 from .trace import emit, scoped
 from .vision import image_segments
 
@@ -24,7 +25,7 @@ class GroupSettings:
     def __init__(self, path: Path):
         self.path = path
         if not path.exists():
-            self.write({"default_activity": 50, "groups": {}})
+            self.write({"groups": {}})
         self.read()
 
     def read(self):
@@ -33,11 +34,9 @@ class GroupSettings:
             raise ValueError("群聊配置格式错误")
         if not isinstance(data.get("default_persona", "默认"), str):
             raise ValueError("默认人设名称无效")
-        levels = [data.get("default_activity", 50)]
         for group, settings in data.get("groups", {}).items():
             if not group.isdigit() or int(group) <= 0 or not isinstance(settings, dict):
                 raise ValueError("群聊配置群号错误")
-            levels.append(settings.get("activity", data.get("default_activity", 50)))
             if "style" in settings:
                 raise ValueError("群配置仍有独立风格，请先将风格并入人设并移除 style 配置")
             for profile_field in LIMITS:
@@ -55,35 +54,22 @@ class GroupSettings:
                 or any(not isinstance(x, str) or len(x) > 100 for x in interests)
             ):
                 raise ValueError("群兴趣配置错误")
-        if any(type(x) is not int or not 0 <= x <= 100 for x in levels):
-            raise ValueError("积极性必须为0至100的整数")
         return data
 
     def get(self, group):
         data = self.read()
         settings = data.get("groups", {}).get(str(group), {})
         return {
-            "activity": settings.get("activity", data.get("default_activity", 50)),
             "interests": settings.get("interests", []),
         }
 
     def write(self, data):
+        data.pop("default_activity", None)
+        for group in data.get("groups", {}).values():
+            group.pop("activity", None)
         pending = self.path.with_suffix(".tmp")
         pending.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         pending.replace(self.path)
-
-    def set_activity(self, group, activity):
-        if type(activity) is not int or not 0 <= activity <= 100:
-            raise ValueError("积极性必须为0至100的整数")
-        import migration
-
-        # 群配置整体写回也须互斥，避免把已经切换或删除的模板引用写回。
-        with migration.project_lock(self.path.parent, name=".migration.lock"):
-            if (self.path.parent / migration.JOURNAL).exists():
-                raise ValueError("有未恢复的导入，暂不能修改群配置")
-            data = self.read()
-            data.setdefault("groups", {}).setdefault(str(group), {})["activity"] = activity
-            self.write(data)
 
     def set_profile(self, group, field, name):
         if group <= 0 or field not in LIMITS:
@@ -124,13 +110,15 @@ class GroupState:
     versions: dict = field(default_factory=dict)
     revision: int = 0
     repeat: RepeatState = field(default_factory=RepeatState)
-    attention: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 class GroupConversation:
     def __init__(self, service, contacts, settings):
         self.service, self.contacts, self.settings = service, contacts, settings
         self.states = {}
+        self.topics = Topics(service.archive.root, service.config)
+        self.topics.prune()
+        self.next_topic_cleanup = time.monotonic() + 3600
 
     async def close(self):
         tasks = [s.task for s in self.states.values() if s.task and not s.task.done()]
@@ -140,12 +128,18 @@ class GroupConversation:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        if self.topics is not None:
+            self.topics.close()
+            self.topics = None
 
     async def receive(self, bot, event, text, explicit):
         if str(event.user_id) == bot.self_id:
             return
         state = self.states.setdefault((int(bot.self_id), event.group_id), GroupState())
         now = time.monotonic()
+        if now >= self.next_topic_cleanup:
+            self.topics.prune()
+            self.next_topic_cleanup = now + 3600
         state.seen = {mid: stamp for mid, stamp in state.seen.items() if now - stamp < 300}
         if event.message_id in state.seen:
             return
@@ -179,14 +173,9 @@ class GroupConversation:
             async with state.lock:
                 await self.respond(bot, event, text, state, True)
             return
-        if text.lstrip().startswith("/") or not text.strip() or text.strip() == "[非文本内容]":
+        if text.lstrip().startswith("/"):
             return
-        mention_all = mentions_all(event)
-        # 普通后续消息仍进入归档上下文，但不挤掉尚未判断的全体提醒。
-        if mention_all or state.pending is None or not mentions_all(state.pending[0]):
-            state.pending = (event, text, now)
-        if mention_all:
-            state.attention.set()
+        state.pending = (event, text, now)
         if state.task is None or state.task.done():
             state.task = asyncio.create_task(self.worker(bot, state))
 
@@ -213,27 +202,20 @@ class GroupConversation:
             state.direct_tasks.pop(user, None)
 
     async def wait_pending(self, state, delay):
-        """新全体提醒可唤醒普通消息的等待，关闭时等待随工作任务取消。"""
-        try:
-            await asyncio.wait_for(state.attention.wait(), delay)
-            return True
-        except TimeoutError:
-            return False
+        """按固定观察间隔合并消息；关闭时由工作任务取消等待。"""
+        await asyncio.sleep(delay)
 
     async def worker(self, bot, state):
         try:
             while state.pending:
-                state.attention.clear()
-                event = state.pending[0]
-                # 全体提醒更快关注，仍合并短时消息并限制判断及主动发送频率。
+                # 普通消息与全体提醒使用相同的话题策略。
                 interval = self.service.config.wake_interval_seconds
                 delay = max(
                     2,
                     interval - (time.monotonic() - state.last_checked),
                     interval - (time.monotonic() - state.last_sent),
                 )
-                if await self.wait_pending(state, delay):
-                    continue
+                await self.wait_pending(state, delay)
                 async with state.lock:
                     pending, state.pending = state.pending, None
                     if pending is None:
@@ -252,6 +234,66 @@ class GroupConversation:
         ).fetchall()
         return [{**self.service.archive.message_context(r), "id": r["id"]} for r in reversed(rows)]
 
+    async def assess_topic(self, bot, event, text, explicit):
+        account, group = int(bot.self_id), event.group_id
+        archive = self.service.archive
+        archive.collect(
+            (account, group, event.user_id),
+            event.message_id,
+            text,
+            [seg.type for seg in getattr(event, "original_message", ())] or ["text"],
+            getattr(event, "time", time.time()),
+            metadata=event_metadata(event),
+        )
+        current = archive.db.execute(
+            "SELECT * FROM messages WHERE bot=? AND grp=? AND message_id=?",
+            (account, group, event.message_id),
+        ).fetchone()
+        assessment = None
+        while True:
+            cursor = self.topics.cursor(account, group)
+            rows = archive.db.execute(
+                "SELECT * FROM messages WHERE bot=? AND grp=? AND usr<>? AND id>? AND id<=? "
+                "AND (?<>0 OR created>?) ORDER BY id LIMIT 40",
+                (account, group, account, cursor, current["id"], cursor, time.time() - 900),
+            ).fetchall()
+            if not rows:
+                break
+            messages = [
+                archive.message_context(row, max(len(row["content"]), 1))
+                for row in rows
+                if self.topics.db.execute(
+                    "SELECT 1 FROM topic_messages WHERE bot=? AND grp=? AND message_id=?",
+                    (account, group, row["message_id"]),
+                ).fetchone()
+                is None
+            ]
+            if not messages:
+                with self.topics.db:
+                    self.topics.db.execute(
+                        "INSERT OR REPLACE INTO topic_cursors VALUES(?,?,?)",
+                        (account, group, rows[-1]["id"]),
+                    )
+                continue
+            async with self.service.limits.slot():
+                assignments = await self.service.llm.assess_topics(
+                    {
+                        "incoming": [{**m, "text": m["text"][:4000]} for m in messages],
+                        "topics": self.topics.recent(account, group),
+                        "bot_qq": account,
+                        "explicit_message_id": event.message_id if explicit else None,
+                        "interests": self.settings.get(group)["interests"],
+                        "persona": self.service.profiles.effective(group),
+                    }
+                )
+            self.topics.record(account, group, messages, assignments)
+            for item in assignments:
+                if item["message_id"] == event.message_id:
+                    assessment = item
+        if assessment is None:
+            assessment = {"should_reply": False, "reply_reason": "本条消息已归档判断"}
+        return self.topics.gate(account, group, event.message_id, assessment, explicit)
+
     @scoped("group")
     async def respond(self, bot, event, text, state, explicit, events=()):
         emit(
@@ -265,34 +307,47 @@ class GroupConversation:
         )
         generation = state.revision
         sender_version = state.versions.get(event.user_id, 0)
-        config = self.settings.get(event.group_id)
         mention_all = mentions_all(event)
-        observe_only = not explicit and config["activity"] == 0
-        wake = {"wake": True, "continuation": False, "summary": "直接呼叫"}
-        if not explicit:
+        participation = None
+        if not text.lstrip().startswith("/"):
             state.last_checked = time.monotonic()
             try:
-                async with self.service.limits.slot():
-                    wake = await self.service.llm.assess_wake(
-                        {
-                            "messages": self.context(int(bot.self_id), event.group_id),
-                            "current": text,
-                            "topic": state.topic,
-                            "activity": config["activity"],
-                            "mention_all": mention_all,
-                            "bot_qq": int(bot.self_id),
-                            "interests": config["interests"],
-                            "participating": state.active,
-                        }
-                    )
+                participation = await self.assess_topic(bot, event, text, explicit)
             except Exception as error:
-                # 分流失败不把用户请求永久吞掉，交由主 agent 判断。
-                emit(self.service.config, "wake_failed", error_type=type(error).__name__)
-                wake = {"wake": True, "continuation": False, "summary": "分流失败，需自行判断"}
-            if not wake["wake"]:
+                emit(
+                    self.service.config, "topic_assessment_failed", error_type=type(error).__name__
+                )
+                if not explicit:
+                    # 无法确认话题和回应关系时保持沉默，不能让错误绕过固定策略。
+                    return
+                message = self.service.archive.db.execute(
+                    "SELECT * FROM messages WHERE bot=? AND grp=? AND message_id=?",
+                    (int(bot.self_id), event.group_id, event.message_id),
+                ).fetchone()
+                message = self.service.archive.message_context(
+                    message, len(message["content"]) or 1
+                )
+                assignment = {
+                    "message_id": event.message_id,
+                    "topic_start": event.message_id,
+                    "title": "直接呼叫",
+                    "judgement": "话题判断失败，独立记录直接呼叫",
+                    "response_to_bot": None,
+                    "should_reply": True,
+                    "reply_reason": "直接呼叫机器人",
+                }
+                self.topics.record(
+                    int(bot.self_id), event.group_id, [message], [assignment], advance=False
+                )
+                participation = self.topics.gate(
+                    int(bot.self_id), event.group_id, event.message_id, assignment, True
+                )
+            emit(self.service.config, "topic_decision", **participation)
+            if not participation["allowed"]:
                 return
+            state.topic = participation["title"]
         if time.monotonic() - state.touched > 600:
-            state.topic, state.active = "", False
+            state.active = False
         image_context = []
         image_events = [item for item in events if image_segments(item)] or [event]
         if (
@@ -343,12 +398,8 @@ class GroupConversation:
         )
         chat_tools.is_current = lambda: state.versions.get(event.user_id, 0) == sender_version
         chat_tools.emotes = self.service.emotes
-        chat_tools.poke = (
-            None
-            if observe_only
-            else self.service.pokes.session(
-                bot, event.group_id, event.user_id, event.message_id, chat_tools.is_current
-            )
+        chat_tools.poke = self.service.pokes.session(
+            bot, event.group_id, event.user_id, event.message_id, chat_tools.is_current
         )
         chat_tools.allow_silent = True
         chat_tools.forward = ForwardReader(bot, event)
@@ -375,7 +426,6 @@ class GroupConversation:
         from .response import Response
 
         chat_tools.response = Response(allowed_quotes, repeat_text, state.topic, state.active)
-        chat_tools.observe_only = observe_only
         decision = chat_tools.response.state
         sent = False
 
@@ -392,16 +442,11 @@ class GroupConversation:
                 # 普通回复生成不能绕过复读协议及冷却，重新输出同一句。
                 emit(self.service.config, "send_skipped", reason="repeat_requires_selection")
                 raise RuntimeError("repeat_requires_selection")
-            if observe_only:
-                return
             stale = state.versions.get(event.user_id, 0) != sender_version
             if stale:
                 from .service import Superseded
 
                 raise Superseded
-            if not explicit and not sent and (self.settings.get(event.group_id)["activity"] == 0):
-                emit(self.service.config, "send_skipped", reason="superseded_group_reply")
-                raise RuntimeError("superseded_group_reply")
             msg = (
                 MessageSegment.image(image_data)
                 if image_data is not None
@@ -426,6 +471,7 @@ class GroupConversation:
             if quote_id is not None and not sent and decision.get("action") != "repeat":
                 msg = MessageSegment.reply(quote_id) + msg
             result = await bot.send_group_msg(group_id=event.group_id, message=msg)
+            first = not sent
             sent = True
             state.last_sent = time.monotonic()
             if isinstance(result, dict) and isinstance(result.get("message_id"), int):
@@ -447,6 +493,19 @@ class GroupConversation:
                         },
                     },
                 )
+                if participation:
+                    row = self.service.archive.db.execute(
+                        "SELECT * FROM messages WHERE bot=? AND grp=? AND message_id=?",
+                        (int(bot.self_id), event.group_id, result["message_id"]),
+                    ).fetchone()
+                    self.topics.sent(
+                        int(bot.self_id),
+                        event.group_id,
+                        participation["start"],
+                        self.service.archive.message_context(row, len(row["content"]) or 1),
+                        participation["id"],
+                        first,
+                    )
 
         async def send_emote(emote_id):
             await send("", emote_id)
@@ -482,15 +541,13 @@ class GroupConversation:
                     "participating": state.active,
                     "trigger_message_id": event.message_id,
                     "mention_all": mention_all,
-                    "activity": config["activity"],
-                    "wake_assessment": wake,
-                    "observe_only": observe_only,
+                    "topic_assessment": participation,
                     "explicit": explicit,
                     "repeat_candidate": repeat_text,
                     "participation_guidance": (
-                        "积极性仅表示参与意愿：低档倾听，中档自然参与，高档积极；"
-                        "结合语境自主回应或静默，不按分数阈值决定。"
-                        "@全体只代表优先唤醒，不要求回复。"
+                        "新话题至少2位不同群成员参与后才选择接话，第3位加入可提高接话意愿。"
+                        "接话后仅回应群友对机器人具体说法的回应或讨论，不能持续加入群友互聊。"
+                        "直接@跳过门槛；@全体不跳过门槛。结合语境可选择静默。"
                     ),
                 },
                 ensure_ascii=False,
@@ -501,6 +558,8 @@ class GroupConversation:
             send_emote=send_emote,
             send_image=send_image,
         )
+        if participation and not sent:
+            self.topics.finish(participation["id"], "主回合未发送（静默、过期、限流或失败）")
         state.topic = decision["topic"]
         state.active = decision["active"]
         state.touched = time.monotonic()

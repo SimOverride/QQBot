@@ -99,13 +99,11 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(self.settings.env_revision(), data["revision"])
         self.assertEqual(self.client.post("/api/settings", json={}).status_code, 403)
 
-    def test_default_persona_and_activity_inherit_and_protect(self):
+    def test_default_persona_inherit_and_protect(self):
         before = self.settings.defaults()
-        self.settings.save_defaults(72, "温和", before["revision"])
+        self.settings.save_defaults("温和", before["revision"])
         groups = GroupSettings(self.root / "group_chat.json")
-        self.assertEqual(groups.get(10)["activity"], 72)
-        groups.set_activity(11, 9)
-        self.assertEqual(groups.get(11)["activity"], 9)
+        self.assertNotIn("activity", groups.get(10))
         profiles = ProfileStore(self.root / "personas/默认.txt")
         profiles.group_settings = groups
         self.assertEqual(profiles.effective(10)["persona"], "温和正文")

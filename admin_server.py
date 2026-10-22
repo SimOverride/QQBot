@@ -22,6 +22,7 @@ import migration
 from console_endpoint import HOST, PORT
 from console_settings import Settings
 from console_store import ConsoleStore
+from console_topics import TopicReader
 from plugins.assistant.config import Config
 from plugins.assistant.history_tools import HistoryTools
 from plugins.assistant.http import ServiceError
@@ -205,7 +206,7 @@ def create_app(root=ROOT):
     async def save_defaults(request: Request):
         data = await body(request)
         return await run_in_threadpool(
-            settings.save_defaults, data["activity"], data["persona"], data["revision"]
+            settings.save_defaults, data["persona"], data["revision"]
         )
 
     @app.get("/api/plugins")
@@ -228,6 +229,14 @@ def create_app(root=ROOT):
     async def delete_plugins(request: Request):
         data = await body(request)
         return await run_in_threadpool(settings.delete_plugins, data["items"], data["revision"])
+
+    @app.get("/api/topics")
+    def topics(bot: int | None = None, group: int | None = None, query: str = "", offset: int = 0):
+        return TopicReader(store.root).listing(bot, group, query, offset)
+
+    @app.get("/api/topics/messages")
+    def topic_messages(bot: int, group: int, start: int, offset: int = 0):
+        return TopicReader(store.root).detail(bot, group, start, offset)
 
     @app.get("/api/inventory")
     def inventory():
@@ -383,7 +392,7 @@ def create_app(root=ROOT):
                         "关系须注明对象QQ，不把玩笑、转述、引用当本人事实。无依据留空，"
                         "不推断敏感信息。总体认知、私聊印象及每项群内分类分别最多12000字。"
                         "群只整理该群主题、规则和互动氛围，不把个人意见当全群共识；"
-                        "群activity、interests、persona保持current原值，除非维护者明确要求修改。"
+                        "群interests、persona保持current原值，除非维护者明确要求修改。"
                         "explanation列出关键依据的scope和消息id、冲突及抽样限制，不能声称读完未提供记录。"
                     ),
                 },

@@ -231,7 +231,7 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await reopened.inspect(ident))[0]["status"], "inspected")
         review.assert_not_awaited()
 
-    async def test_wake_api_uses_lightweight_json_without_tools(self):
+    async def test_topic_api_uses_lightweight_json_without_tools(self):
         seen = []
 
         def respond(request):
@@ -244,10 +244,7 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
                             "finish_reason": "stop",
                             "message": {
                                 "role": "assistant",
-                                "content": (
-                                    '{"wake":true,"continuation":true,'
-                                    '"summary":"回应刚发的表情"}'
-                                ),
+                                "content": ('{"messages":[]}'),
                             },
                         }
                     ]
@@ -256,13 +253,10 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
 
         cfg = Config(deepseek_api_key="test", deepseek_model="test", model_trace_enabled=False)
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            result = await LLM(client, cfg, None).assess_wake(
-                {"activity": 0, "current": "这图不错"}
-            )
-        self.assertTrue(result["wake"])
-        self.assertTrue(result["continuation"])
+            result = await LLM(client, cfg, None).assess_topics({"incoming": [], "topics": []})
+        self.assertEqual(result, [])
         self.assertNotIn("tools", seen[0])
-        self.assertEqual(seen[0]["max_tokens"], 1024)
+        self.assertEqual(seen[0]["max_tokens"], 8192)
         self.assertEqual(seen[0]["thinking"], {"type": "disabled"})
 
     def test_long_text_and_code_have_no_total_truncation(self):

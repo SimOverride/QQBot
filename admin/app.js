@@ -6,7 +6,7 @@ const settingsChanged=new Set();
 const $ = s => document.querySelector(s);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const text = v => typeof v === 'string' ? v : JSON.stringify(v, null, 2);
-const labels = {summary:'群摘要',knowledge:'群认知 · 共识与背景',activity:'主动参与积极性（0–100）',interests:'群兴趣（每行一项）',persona:'群人设',description:'画面、文字、情绪与适用场景',content:'归档消息正文'};
+const labels = {summary:'群摘要',knowledge:'群认知 · 共识与背景',interests:'群兴趣（每行一项）',persona:'群人设',description:'画面、文字、情绪与适用场景',content:'归档消息正文'};
 // 仅通过文本节点渲染后台返回的名称片段，昵称不能注入 HTML。
 function showNameParts(element,parts,fallback){
   element.replaceChildren();
@@ -106,6 +106,7 @@ async function navigate(next){
 async function renderPage(){
   showSelection();
   const container=$('#content');
+  if(page==='topics'){await renderTopics();return;}
   if(page==='settings'){await renderSettings();return;}
   if(page==='migration'){renderMigration();return;}
   if(page==='changes'){await renderChanges();return;}
@@ -150,6 +151,7 @@ async function selectResource(id,scope='general'){
 }
 function showSelection(){
   const el=$('#selection');
+  el.hidden=page==='topics';
   if(!current){el.textContent=page==='settings'?'当前选择：设置':'尚未选择资源';el.removeAttribute('title');return;}
   const [kind]=current.resource.split(':');
   const names={person:'个人认知',group:'群管理',emote:'表情包管理',persona:'人设',prompt:'提示词'};
@@ -201,9 +203,8 @@ function renderEditor(){
       const label=document.createElement('label');label.className='field';const span=document.createElement('span');span.textContent=key==='__text'?'提示词正文':labels[key]||key;label.append(span);
       let input;
       if(key==='persona'){input=document.createElement('select');for(const item of inventory.personas||[]){const o=document.createElement('option');o.value=item.name;o.textContent=key==='persona'&&item.name==='默认'?'跟随默认人设':item.name;input.append(o);}input.value=value;}
-      else{input=document.createElement(key==='activity'?'input':'textarea');if(key==='activity'){input.type='range';input.setAttribute('aria-label','主动参与积极性');input.min='0';input.max='100';input.step='1';}input.value=Array.isArray(value)?value.join('\n'):value;if(key==='__text')input.className='long';}
-      const amount=key==='activity'?document.createElement('output'):null;if(amount){amount.textContent=input.value;label.append(amount);}
-      input.oninput=()=>{if(amount)amount.textContent=input.value;let v=input.value;if(key==='activity')v=Number(v);if(key==='interests')v=v.split('\n').map(s=>s.trim()).filter(Boolean);if(key==='__text')draft=v;else{let target=draft;for(const part of path)target=target[part];target[key]=v;}status('草稿尚未保存');};if(kind==='group'&&['summary','knowledge'].includes(key))showKnowledge(label,input,current.display_value?.[key]??value,current.display_parts?.[key]);else label.append(input);parent.append(label);
+      else{input=document.createElement('textarea');input.value=Array.isArray(value)?value.join('\n'):value;if(key==='__text')input.className='long';}
+      input.oninput=()=>{let v=input.value;if(key==='interests')v=v.split('\n').map(s=>s.trim()).filter(Boolean);if(key==='__text')draft=v;else{let target=draft;for(const part of path)target=target[part];target[key]=v;}status('草稿尚未保存');};if(kind==='group'&&['summary','knowledge'].includes(key))showKnowledge(label,input,current.display_value?.[key]??value,current.display_parts?.[key]);else label.append(input);parent.append(label);
     }
   }
   if(kind==='person'){
@@ -402,6 +403,72 @@ async function refreshRuntime(){
 refreshRuntime();
 setInterval(refreshRuntime,5000);
 
+async function renderTopics(){
+  const version=selectionVersion;
+  $('#content').innerHTML='<div class="toolbar topic-filters"><select id="topic-group" aria-label="筛选群"><option value="">全部群</option></select><input id="topic-query" placeholder="搜索话题" aria-label="搜索话题"><button id="topic-search">查询</button></div><div class="topic-layout"><section class="panel topic-list"><div id="topic-list" class="listing"></div><button id="topic-more" class="quiet" hidden>加载更多话题</button></section><section class="panel topic-detail" id="topic-detail"><div class="empty">选择话题查看聊天与回复原因</div></section></div>';
+  for(const group of inventory.groups||[]){const option=document.createElement('option');option.value=group.bot+':'+group.grp;option.textContent=group.name;$('#topic-group').append(option);}
+  let offset=0,loading=false,detailVersion=0;
+  function timestamp(value){return new Date(value*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false});}
+  async function load(reset){
+    if(loading)return;loading=true;
+    const controls=[$('#topic-search'),$('#topic-group'),$('#topic-query'),$('#topic-more')];controls.forEach(c=>c.disabled=true);
+    if(reset){offset=0;detailVersion++;$('#topic-list').replaceChildren();$('#topic-detail').innerHTML='<div class="empty">选择话题查看聊天与回复原因</div>';}
+    const params=new URLSearchParams({query:$('#topic-query').value.trim(),offset});
+    const scope=$('#topic-group').value;if(scope){const [bot,group]=scope.split(':');params.set('bot',bot);params.set('group',group);}
+    try{
+      const data=await api('/api/topics?'+params);if(version!==selectionVersion)return;
+      for(const topic of data.items){
+        const button=document.createElement('button');button.className='list-item';
+        const title=document.createElement('strong');title.textContent=topic.title;
+        const meta=document.createElement('small');meta.textContent=topic.group_name+' · '+topic.replies+' 轮回复 · '+timestamp(topic.created);
+        button.append(title,meta);button.onclick=()=>openTopic(topic,button);$('#topic-list').append(button);
+      }
+      offset+=data.items.length;$('#topic-more').hidden=!data.more;
+      if(!offset)$('#topic-list').innerHTML='<div class="empty">暂无已回复的话题</div>';
+    }catch(e){if(version===selectionVersion)status(e.message,true);}finally{loading=false;controls.forEach(c=>c.disabled=false);}
+  }
+  async function openTopic(topic,button){
+    const sequence=++detailVersion;let messageOffset=0;
+    document.querySelectorAll('#topic-list button').forEach(b=>b.classList.toggle('selected',b===button));
+    const detail=$('#topic-detail');detail.replaceChildren();
+    const meta=document.createElement('div');meta.className='topic-meta';meta.textContent=topic.title+' · 起始消息 '+topic.start+' · 机器人 '+topic.bot;
+    const chat=document.createElement('div');chat.className='topic-chat';
+    const more=document.createElement('button');more.className='quiet';more.textContent='加载后续聊天';more.hidden=true;
+    detail.append(meta,chat,more);
+    async function messages(){
+      more.disabled=true;
+      try{
+        const params=new URLSearchParams({bot:topic.bot,group:topic.grp,start:topic.start,offset:messageOffset});
+        const data=await api('/api/topics/messages?'+params);
+        if(version!==selectionVersion||sequence!==detailVersion)return;
+        for(const message of data.messages){
+          if(message.is_start){const marker=document.createElement('div');marker.className='topic-start';marker.textContent='话题开始 · 消息 '+message.message_id;chat.append(marker);}
+          const row=document.createElement('article');row.className='message-preview-row'+(message.is_self?' self':'');
+          const avatar=document.createElement('div');avatar.className='message-preview-avatar';avatar.textContent=Array.from(message.name||'?')[0];
+          const column=document.createElement('div');column.className='message-preview-column';
+          const info=document.createElement('div');info.className='message-preview-meta';
+          const name=document.createElement('span');name.className='name-person';name.textContent=message.name+(message.is_self?'（机器人）':'');
+          const time=document.createElement('span');time.textContent=timestamp(message.time);info.append(name,time);
+          column.append(info);
+          if(message.reply_to){const quote=document.createElement('div');quote.className='topic-quote';quote.textContent='引用 '+(message.reply_to.sender_name||message.reply_to.sender||'消息')+'：'+(message.reply_to.text||'消息 '+message.reply_to.message_id);column.append(quote);}
+          const bubble=document.createElement('div');bubble.className='message-preview-bubble';bubble.textContent=message.text||'（无文字内容）';column.append(bubble);
+          const reasons=document.createElement('details');reasons.className='topic-reasons';
+          const summary=document.createElement('summary');summary.textContent='话题判断'+(message.decisions.length?'与回复原因':'');
+          const judgement=document.createElement('p');judgement.textContent=message.judgement;reasons.append(summary,judgement);
+          if(message.response_to_bot!==null){const target=document.createElement('p');target.textContent='回应机器人消息：'+message.response_to_bot;reasons.append(target);}
+          for(const decision of message.decisions){const reason=document.createElement('p');reason.textContent=decision.outcome+'：'+decision.reason;reasons.append(reason);if(decision.outcome==='已回复')reasons.open=true;}
+          column.append(reasons);row.append(avatar,column);chat.append(row);
+        }
+        messageOffset+=data.messages.length;more.hidden=!data.more;
+      }catch(e){if(version===selectionVersion&&sequence===detailVersion)status(e.message,true);}finally{more.disabled=false;}
+    }
+    more.onclick=messages;await messages();
+  }
+  $('#topic-search').onclick=()=>load(true);$('#topic-group').onchange=()=>load(true);
+  $('#topic-query').onkeydown=e=>{if(e.key==='Enter')load(true);};$('#topic-more').onclick=()=>load(false);
+  await load(true);
+}
+
 async function renderSettings(){
   const version=selectionVersion;
   const [config,defaults]=await Promise.all([api('/api/settings'),api('/api/defaults')]);
@@ -417,11 +484,9 @@ async function renderSettings(){
   }
   const area=$('#default-settings');
   addAgentReset(area.parentElement);
-  const slider=control(area,'默认积极性',defaults.activity,'range');slider.min=0;slider.max=100;slider.step=1;
-  const amount=document.createElement('output');amount.textContent=slider.value;slider.after(amount);
   const persona=control(area,'默认人设',defaults.persona,'select',defaults.personas);
-  slider.oninput=()=>{amount.textContent=slider.value;settingsChanged.add('defaults');};persona.onchange=()=>settingsChanged.add('defaults');
-  $('#save-defaults').onclick=async()=>{if(busy)return;busy=true;slider.disabled=persona.disabled=true;try{const saved=await api('/api/defaults',{activity:Number(slider.value),persona:persona.value,revision:defaults.revision});defaults.revision=saved.revision;settingsChanged.delete('defaults');status(saved.message);}catch(e){status(e.message,true);}finally{busy=false;slider.disabled=persona.disabled=false;}};
+  persona.onchange=()=>settingsChanged.add('defaults');
+  $('#save-defaults').onclick=async()=>{if(busy)return;busy=true;persona.disabled=true;try{const saved=await api('/api/defaults',{persona:persona.value,revision:defaults.revision});defaults.revision=saved.revision;settingsChanged.delete('defaults');status(saved.message);}catch(e){status(e.message,true);}finally{busy=false;persona.disabled=false;}};
   const inputs={},keys={};
   for(const group of config.groups){
     const section=document.createElement('fieldset');const legend=document.createElement('legend');legend.textContent=group.name;section.append(legend);$('#env-settings').append(section);

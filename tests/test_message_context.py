@@ -49,8 +49,11 @@ class AttributionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.archive.close()
         self.archive = LongTermMemory(self.path, Config())
-        controller = GroupConversation(SimpleNamespace(archive=self.archive), None, None)
+        controller = GroupConversation(
+            SimpleNamespace(archive=self.archive, config=self.archive.config), None, None
+        )
         recent = controller.context(99, 10)
+        controller.topics.close()
         quoted = next(r for r in recent if r["message_id"] == 11)
         self.assertEqual(quoted["sender"], 2)
         self.assertEqual(quoted["mentions"], [3, 99])

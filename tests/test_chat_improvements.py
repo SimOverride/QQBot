@@ -134,7 +134,11 @@ class Improvements(unittest.IsolatedAsyncioTestCase):
 
     async def test_batch_same_sender(self):
         settings = GroupSettings(self.root / "group_chat.json")
-        controller = GroupConversation(None, None, settings)
+        archive = LongTermMemory(self.root / "data/memory.sqlite3", Config())
+        self.addCleanup(archive.close)
+        controller = GroupConversation(
+            SimpleNamespace(archive=archive, config=archive.config), None, settings
+        )
         self.addAsyncCleanup(controller.close)
         controller.respond = AsyncMock()
         bot = SimpleNamespace(self_id="99")

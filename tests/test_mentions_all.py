@@ -1,13 +1,12 @@
 """全体提醒的关注优先级、主模型决策和静默边界，不调用真实平台。"""
 
-import asyncio
 import json
 import tempfile
 import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
 
@@ -29,11 +28,29 @@ class AllMembersTests(unittest.IsolatedAsyncioTestCase):
         self.archive = LongTermMemory(self.root / "memory.db", self.cfg)
         self.addCleanup(self.archive.close)
         self.settings = GroupSettings(self.root / "groups.json")
+
+        async def assess(context):
+            start = (
+                context["topics"][0]["start"]
+                if context["topics"]
+                else context["incoming"][0]["message_id"]
+            )
+            return [
+                {
+                    "message_id": m["message_id"],
+                    "topic_start": start,
+                    "title": "开黑",
+                    "judgement": "讨论开黑",
+                    "response_to_bot": None,
+                    "should_reply": True,
+                    "reply_reason": "可以参与",
+                }
+                for m in context["incoming"]
+            ]
+
         self.llm = SimpleNamespace(
             reply=AsyncMock(return_value=Reply("知道啦")),
-            assess_wake=AsyncMock(
-                return_value={"wake": True, "continuation": False, "summary": "有新消息"}
-            ),
+            assess_topics=AsyncMock(side_effect=assess),
         )
         service = Assistant(self.cfg, self.llm, archive=self.archive)
         contacts = SimpleNamespace(refresh_group=AsyncMock(), for_scope=lambda *a: {})
@@ -56,6 +73,7 @@ class AllMembersTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def respond(self, event, state=None, explicit=False):
+        archive_event(self.archive, self.cfg, self.bot, self.event(100, user=3))
         archive_event(self.archive, self.cfg, self.bot, event)
         return await self.controller.respond(
             self.bot, event, extract_text(self.bot, event), state or GroupState(), explicit
@@ -82,42 +100,8 @@ class AllMembersTests(unittest.IsolatedAsyncioTestCase):
         context = json.loads(json.loads(self.llm.reply.call_args.args[4])["group"])
         self.assertFalse(context["explicit"])
         self.assertTrue(context["mention_all"])
-        self.assertEqual(context["activity"], 50)
+        self.assertNotIn("activity", context)
         self.assertEqual(self.settings.path.read_bytes(), original)
-
-    async def test_zero_activity_still_wakes_all_and_can_reply(self):
-        self.settings.set_activity(10, 0)
-        await self.respond(self.event(2, all_members=False))
-        self.llm.reply.assert_awaited_once()
-        self.controller.service.limits.cooldowns.clear()
-        await self.respond(self.event())
-        self.assertEqual(self.llm.reply.await_count, 2)
-        self.bot.send_group_msg.assert_not_awaited()
-        self.assertEqual(self.settings.get(10)["activity"], 0)
-        self.assertEqual(
-            json.loads(json.loads(self.llm.reply.call_args.args[4])["group"])["activity"],
-            0,
-        )
-
-    async def test_all_does_not_force_response(self):
-        self.settings.set_activity(10, 0)
-
-        async def silent(*args, **kwargs):
-            await kwargs["history_tools"].response.execute(
-                {
-                    "action": "silent",
-                    "quote_message_id": None,
-                    "topic": "",
-                    "active": False,
-                }
-            )
-            return Reply("不应发出的文本")
-
-        self.llm.reply.side_effect = silent
-        await self.respond(self.event())
-        self.llm.reply.assert_awaited_once()
-        self.bot.send_group_msg.assert_not_awaited()
-        self.assertEqual(self.archive.count((99, 10, 99)), 0)
 
     async def test_failed_main_agent_has_no_explicit_fallback(self):
         self.llm.reply.side_effect = TimeoutError()
@@ -125,49 +109,16 @@ class AllMembersTests(unittest.IsolatedAsyncioTestCase):
         self.llm.reply.assert_awaited_once()
         self.bot.send_group_msg.assert_not_awaited()
 
-    async def test_pending_all_survives_ordinary_message_and_zero_activity(self):
-        self.settings.set_activity(10, 0)
+    async def test_all_and_ordinary_messages_use_latest_trigger(self):
         self.controller.worker = AsyncMock()
         all_event = self.event()
         await self.controller.receive(self.bot, all_event, "@全体成员 今晚开黑", False)
-        await self.controller.receive(self.bot, self.event(2, all_members=False), "路过", False)
+        latest = self.event(2, all_members=False)
+        await self.controller.receive(self.bot, latest, "路过", False)
         state = self.controller.states[(99, 10)]
-        self.assertIs(state.pending[0], all_event)
-        self.assertTrue(state.attention.is_set())
-        # 同账号其他群独立，自己的全体提醒不进入处理。
+        self.assertIs(state.pending[0], latest)
         await self.controller.receive(self.bot, self.event(3, user=99, group=20), "自己", False)
         self.assertNotIn((99, 20), self.controller.states)
-
-    async def test_priority_wakes_long_wait_and_keeps_all_as_trigger(self):
-        self.controller.respond = AsyncMock()
-        state = self.controller.states.setdefault((99, 10), GroupState())
-        state.last_checked = state.last_sent = time.monotonic()
-        entered = asyncio.Event()
-        delays = []
-        original_wait = self.controller.wait_pending
-
-        async def wait(current, delay):
-            delays.append(delay)
-            if len(delays) == 1:
-                entered.set()
-                return await original_wait(current, delay)
-            return False
-
-        with patch.object(self.controller, "wait_pending", side_effect=wait):
-            ordinary = self.event(2, all_members=False)
-            await self.controller.receive(self.bot, ordinary, "普通消息", False)
-            await asyncio.wait_for(entered.wait(), 1)
-            all_event = self.event()
-            await self.controller.receive(self.bot, all_event, "@全体成员 今晚开黑", False)
-            await self.controller.receive(
-                self.bot, self.event(3, all_members=False), "跟一句", False
-            )
-            await asyncio.wait_for(state.task, 1)
-        self.assertLessEqual(delays[0], 8)
-        self.assertLessEqual(delays[1], 8)
-        self.controller.respond.assert_awaited_once()
-        self.assertIs(self.controller.respond.call_args.args[1], all_event)
-        self.assertFalse(self.controller.respond.call_args.args[4])
 
     async def test_priority_does_not_bypass_stale_send_guard(self):
         state = GroupState()
@@ -181,7 +132,6 @@ class AllMembersTests(unittest.IsolatedAsyncioTestCase):
         self.bot.send_group_msg.assert_not_awaited()
 
     async def test_direct_mentions_keep_explicit_context(self):
-        self.settings.set_activity(10, 95)
         event = self.event()
         event.original_message += MessageSegment.at(99)
         self.assertTrue(addressed(self.bot, event, self.cfg))
@@ -189,5 +139,5 @@ class AllMembersTests(unittest.IsolatedAsyncioTestCase):
         context = json.loads(json.loads(self.llm.reply.call_args.args[4])["group"])
         self.assertTrue(context["explicit"])
         self.assertTrue(context["mention_all"])
-        self.assertEqual(context["activity"], 95)
+        self.assertNotIn("activity", context)
         self.bot.send_group_msg.assert_awaited_once()

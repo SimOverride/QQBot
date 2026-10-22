@@ -225,7 +225,6 @@ class ConsoleStore:
             value = {
                 "summary": data.get("summary", ""),
                 "knowledge": data.get("knowledge", ""),
-                "activity": group.get("activity", settings.get("default_activity", 50)),
                 "interests": group.get("interests", []),
                 "persona": group.get("persona", {}).get("name", "默认"),
             }
@@ -327,8 +326,6 @@ class ConsoleStore:
                 for f in ("summary", "knowledge")
             ):
                 raise ValueError("群摘要及认知各最多 6000 字")
-            if type(value["activity"]) is not int or not 0 <= value["activity"] <= 100:
-                raise ValueError("积极性须为 0 至 100 的整数")
             if (
                 not isinstance(value["interests"], list)
                 or len(value["interests"]) > 20
@@ -409,8 +406,9 @@ class ConsoleStore:
                 settings_path = self.root / "group_chat.json"
                 settings = migration.read_json(settings_path) if settings_path.exists() else {}
                 group = settings.setdefault("groups", {}).setdefault(str(key[1]), {})
-                if "activity" in group or value["activity"] != settings.get("default_activity", 50):
-                    group["activity"] = value["activity"]
+                settings.pop("default_activity", None)
+                for entry in settings["groups"].values():
+                    entry.pop("activity", None)
                 group["interests"] = value["interests"]
                 if value["persona"] == "默认":
                     group.pop("persona", None)

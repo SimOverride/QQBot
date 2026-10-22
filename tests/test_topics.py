@@ -1,0 +1,247 @@
+"""验证固定参与策略、话题完整记录及后台只读分页，不连接真实 QQ 或模型。"""
+
+import json
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+from fastapi.testclient import TestClient
+
+from admin_server import create_app
+from console_topics import TopicReader
+from plugins.assistant.config import Config
+from plugins.assistant.groupchat import GroupConversation, GroupSettings, GroupState
+from plugins.assistant.llm import Reply
+from plugins.assistant.longterm import LongTermMemory
+from plugins.assistant.service import Assistant
+
+
+class TopicTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.config = Config(model_trace_enabled=False, deepseek_api_key="private-test-key")
+        self.archive = LongTermMemory(self.root / "data/memory.sqlite3", self.config)
+        self.spec = {}
+        self.bot_message = 900
+
+        async def assess(context):
+            result = []
+            start = context["topics"][0]["start"] if context["topics"] else None
+            for m in context["incoming"]:
+                chosen = self.spec.get(m["message_id"], {})
+                start = chosen.get("topic", start or m["message_id"])
+                result.append(
+                    {
+                        "message_id": m["message_id"],
+                        "topic_start": start,
+                        "title": f"话题 {start}",
+                        "judgement": "新话题" if start == m["message_id"] else "延续已有话题",
+                        "response_to_bot": chosen.get("response"),
+                        "should_reply": chosen.get("reply", True),
+                        "reply_reason": "有适当补充" if chosen.get("reply", True) else "倾听即可",
+                    }
+                )
+            return result
+
+        self.llm = SimpleNamespace(
+            reply=AsyncMock(return_value=Reply("拍月亮可以降低曝光")),
+            assess_topics=AsyncMock(side_effect=assess),
+        )
+        self.service = Assistant(self.config, self.llm, archive=self.archive)
+        self.contacts = SimpleNamespace(refresh_group=AsyncMock(), for_scope=lambda *a: {})
+        self.settings = GroupSettings(self.root / "group_chat.json")
+        self.controller = GroupConversation(self.service, self.contacts, self.settings)
+        self.state = GroupState()
+
+        async def send(**kwargs):
+            self.bot_message += 1
+            return {"message_id": self.bot_message}
+
+        self.bot = SimpleNamespace(self_id="99", send_group_msg=AsyncMock(side_effect=send))
+
+    async def asyncTearDown(self):
+        await self.controller.close()
+        self.archive.close()
+        self.temp.cleanup()
+
+    async def message(self, mid, user, text="一起拍月亮", explicit=False, group=10):
+        self.service.limits.cooldowns.clear()
+        event = SimpleNamespace(message_id=mid, user_id=user, group_id=group, time=time.time())
+        await self.controller.respond(self.bot, event, text, self.state, explicit)
+
+    async def test_two_people_then_only_replies_to_bot(self):
+        await self.message(1, 2)
+        await self.message(2, 2)
+        self.llm.reply.assert_not_awaited()
+        await self.message(3, 3)
+        self.bot.send_group_msg.assert_awaited_once()
+        await self.message(4, 4, "我觉得你们刚才聊得对")
+        self.bot.send_group_msg.assert_awaited_once()
+        self.spec[5] = {"topic": 1, "response": 901}
+        await self.message(5, 3, "你说降低曝光，是降多少？")
+        self.assertEqual(self.bot.send_group_msg.await_count, 2)
+        details = TopicReader(self.root).detail(99, 10, 1)
+        self.assertEqual(len(details["messages"]), 7)
+        self.assertTrue(details["messages"][0]["is_start"])
+        last = next(m for m in details["messages"] if m["message_id"] == 5)
+        self.assertEqual(last["response_to_bot"], 901)
+        self.assertEqual(last["decisions"][0]["outcome"], "已回复")
+
+    async def test_third_person_reconsiders_silent_topic_once(self):
+        await self.message(1, 2)
+        self.spec[2] = {"topic": 1, "reply": False}
+        await self.message(2, 3)
+        await self.message(3, 2)
+        self.llm.reply.assert_not_awaited()
+        self.assertEqual(TopicReader(self.root).listing()["items"], [])
+        await self.message(4, 4)
+        self.bot.send_group_msg.assert_awaited_once()
+        await self.message(5, 5)
+        self.bot.send_group_msg.assert_awaited_once()
+
+    async def test_interleaved_topics_and_same_user_do_not_share_quorum(self):
+        self.spec.update(
+            {1: {"topic": 1}, 2: {"topic": 2}, 3: {"topic": 1}, 4: {"topic": 2}, 5: {"topic": 1}}
+        )
+        await self.message(1, 2)
+        await self.message(2, 3, "明天开黑吗")
+        await self.message(3, 2)
+        self.llm.reply.assert_not_awaited()
+        await self.message(4, 4, "我也来开黑")
+        self.bot.send_group_msg.assert_awaited_once()
+        await self.message(5, 3)
+        self.assertEqual(self.bot.send_group_msg.await_count, 2)
+        topics = TopicReader(self.root).listing()["items"]
+        self.assertEqual({t["start"] for t in topics}, {1, 2})
+        a = TopicReader(self.root).detail(99, 10, 1)["messages"]
+        self.assertEqual([m["message_id"] for m in a if not m["is_self"]], [1, 3, 5])
+
+    async def test_direct_mention_and_persistent_followup_guard(self):
+        await self.message(1, 2, explicit=True)
+        self.bot.send_group_msg.assert_awaited_once()
+        await self.controller.close()
+        self.controller = GroupConversation(self.service, self.contacts, self.settings)
+        await self.message(2, 3)
+        self.bot.send_group_msg.assert_awaited_once()
+        await self.message(3, 3, explicit=True)
+        self.assertEqual(self.bot.send_group_msg.await_count, 2)
+
+    async def test_bad_response_reference_fails_closed(self):
+        await self.message(1, 2, explicit=True)
+        self.spec[2] = {"topic": 1, "response": 99999}
+        await self.message(2, 3)
+        self.bot.send_group_msg.assert_awaited_once()
+        self.assertEqual(TopicReader(self.root).detail(99, 10, 1)["topic"]["replies"], 1)
+
+    async def test_platform_second_precision_does_not_reject_real_followup(self):
+        await self.message(1, 2, explicit=True)
+        self.spec[2] = {"topic": 1, "response": 901}
+        # 平台消息时间只有秒，机器人本地发送时间包含小数；按归档顺序校验因果。
+        self.archive.collect((99, 10, 3), 2, "你刚才说的是这个吗", ["text"], int(time.time()))
+        await self.message(2, 3)
+        self.assertEqual(self.bot.send_group_msg.await_count, 2)
+
+    async def test_full_text_and_silent_tail_persist(self):
+        original = "完整聊天正文" * 1200
+        await self.message(1, 2, original)
+        await self.message(2, 3)
+        await self.message(3, 4, "这条仅讨论话题，不回应机器人")
+        messages = TopicReader(self.root).detail(99, 10, 1)["messages"]
+        self.assertEqual(messages[0]["text"], original)
+        self.assertFalse(messages[0]["truncated"])
+        self.assertEqual(messages[-1]["message_id"], 3)
+
+    async def test_successful_split_is_one_round_failed_send_is_hidden(self):
+        self.llm.reply.return_value = Reply("第一段\n<分条>\n第二段")
+        await self.message(1, 2, explicit=True)
+        detail = TopicReader(self.root).detail(99, 10, 1)
+        self.assertEqual(detail["topic"]["replies"], 1)
+        self.assertEqual(len(detail["messages"]), 3)
+        self.bot.send_group_msg.side_effect = TimeoutError()
+        self.spec[2] = {"topic": 2}
+        await self.message(2, 3, explicit=True)
+        self.assertEqual(len(TopicReader(self.root).listing()["items"]), 1)
+
+    async def test_api_hides_silent_topics_and_isolates_scope(self):
+        await self.message(1, 2)
+        self.spec[2] = {"topic": 2}
+        await self.message(2, 3, explicit=True)
+        with TestClient(create_app(self.root), base_url="http://127.0.0.1:8090") as client:
+            listing = client.get("/api/topics").json()
+            self.assertEqual([t["start"] for t in listing["items"]], [2])
+            self.assertEqual(client.get("/api/topics?group=20").json()["items"], [])
+            self.assertEqual(
+                client.get("/api/topics/messages?bot=99&group=10&start=1").status_code, 400
+            )
+            self.assertEqual(
+                client.get("/api/topics/messages?bot=88&group=10&start=2").status_code, 400
+            )
+            self.assertEqual(client.get("/api/topics?offset=-1").status_code, 400)
+
+    async def test_log_credentials_are_filtered(self):
+        await self.message(1, 2, "private-test-key", explicit=True)
+        data = json.dumps(TopicReader(self.root).detail(99, 10, 1), ensure_ascii=False)
+        self.assertNotIn("private-test-key", data)
+
+    async def test_detail_pagination_is_complete(self):
+        await self.message(1, 2, explicit=True)
+        log = self.controller.topics
+        with log.db:
+            for index in range(201):
+                log.add_message(
+                    99,
+                    10,
+                    1,
+                    {
+                        "message_id": 1000 + index,
+                        "sender": 3,
+                        "time": time.time() + index,
+                        "text": f"后续聊天{index}",
+                    },
+                    "继续讨论",
+                )
+        reader = TopicReader(self.root)
+        first, second = reader.detail(99, 10, 1), reader.detail(99, 10, 1, 200)
+        self.assertTrue(first["more"])
+        self.assertFalse(second["more"])
+        combined = first["messages"] + second["messages"]
+        self.assertEqual(len(combined), 203)
+        self.assertEqual(len({m["message_id"] for m in combined}), 203)
+
+    async def test_expired_topics_are_removed_as_a_whole(self):
+        await self.message(1, 2, explicit=True)
+        with self.controller.topics.db:
+            self.controller.topics.db.execute("UPDATE topics SET updated=0")
+        self.controller.topics.prune()
+        self.assertEqual(TopicReader(self.root).listing()["items"], [])
+        for table in ("topics", "topic_messages", "topic_decisions"):
+            self.assertEqual(
+                self.controller.topics.db.execute("SELECT COUNT(*) FROM " + table).fetchone()[0], 0
+            )
+
+    async def test_direct_fallback_does_not_lose_unclassified_messages(self):
+        # 此前尚未分类的消息不能因直接呼叫兜底而跳过游标。
+        self.archive.collect((99, 10, 3), 1, "之前的消息", ["text"], time.time())
+        original = self.llm.assess_topics.side_effect
+        self.llm.assess_topics.side_effect = ValueError("暂时失败")
+        await self.message(2, 2, explicit=True)
+        self.llm.assess_topics.side_effect = original
+        self.spec.update({1: {"topic": 1}, 3: {"topic": 1}})
+        await self.message(3, 4)
+        ids = {
+            r[0]
+            for r in self.controller.topics.db.execute(
+                "SELECT message_id FROM topic_messages WHERE usr<>99"
+            )
+        }
+        self.assertEqual(ids, {1, 2, 3})
+
+    async def test_old_parameter_is_removed_from_settings_and_commands(self):
+        self.settings.write({"default_activity": 0, "groups": {"10": {"activity": 99}}})
+        self.assertNotIn("activity", self.settings.path.read_text())
+        result = await self.service.commands.run((99, 10, 2), "/积极性 0", None)
+        self.assertIn("未知指令", result)

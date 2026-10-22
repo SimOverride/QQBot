@@ -66,7 +66,7 @@ QQ 群是社交场景，错误发言的代价远高于少说一句，所以应�
 | D | 检索是关键词/二元组 | `docs/DEVELOPMENT.md`“不依赖向量库”；`history_tools.py` 用 `instr(lower(content), ...)` | 换个说法就查不到，记忆“有但取不出来” |
 | E | 无技能/程序性记忆 | `prompts/catalog.json` 只有静态提示词；插件要写 Python | 同类任务每次重新摸索，经验不沉淀 |
 | F | 工具面固定，子代理关闭 | `dsh.py` 的 `entries` 关闭 `tool-subagent`、`tool-subagent-fork`、`tool-workflow`、`tool-ralph`；桥接 `tools.restrict({allow: []})` | 无法把长调研、并发探索分出去 |
-| G | 主动性只有一个数字 | `groupchat.py` 的 `activity` 只决定是否回复；为 0 时 `observe_only` | 不能表达“现在不说、晚点说”“只回应不插话” |
+| G | 参与策略固定 | `topics.py` 按话题人数和对机器人说法的回应限制参与 | 尚不能从反馈自动学习参与时机 |
 | H | 没有评估与回放 | 测试以 MockTransport 为主，提示词改动无对照 | 越自主越不敢改，改坏了也发现不了 |
 
 补充两个隐性成本问题：
@@ -317,7 +317,7 @@ QQ 群是社交场景，错误发言的代价远高于少说一句，所以应�
 
 ### P2-14 参与策略学习与表达记忆
 
-**问题**：`activity` 是人工设定的单一数字，无法从反馈中调整。
+**问题**：当前固定话题策略不能从反馈中学习时机；后续学习不得绕过人数和续话门槛。
 
 **设计**：
 
