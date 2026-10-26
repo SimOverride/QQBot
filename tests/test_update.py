@@ -18,20 +18,19 @@ class AuthorizationTests(unittest.IsolatedAsyncioTestCase):
         self.check = patch("updater.check", return_value="origin").start()
         self.addCleanup(patch.stopall)
 
-    def session(self, user=1, text="更新机器人并重启"):
-        return Maintenance(SimpleNamespace(bot_owners={1}), (9, 10, user), text)
+    def session(self, user=1):
+        return Maintenance(SimpleNamespace(bot_owners={1}), (9, 10, user))
 
-    async def test_owner_and_current_explicit_request(self):
-        for text in ("更新机器人并重启", "请使用git更新代码并重启", "更新一下你自己"):
-            session = self.session(text=text)
-            self.assertEqual(session.functions()[0]["name"], "update_bot")
-        for text in ("不要更新机器人并重启", "他说：更新机器人并重启", "能更新吗？", "你好"):
-            session = self.session(text=text)
-            self.assertEqual(session.functions(), [])
-            self.assertEqual((await session.execute({}))["status"], "access_denied")
+    async def test_owner_tool_available_without_text_gate(self):
+        session = self.session()
+        self.assertEqual(session.functions()[0]["name"], "update_bot")
+        self.assertFalse(session.requested)
+        with patch.dict(os.environ, {"QQBOT_UPDATE_TOKEN": "a" * 48}):
+            self.assertEqual((await session.execute({}))["status"], "scheduled")
         session = self.session(user=2)
         self.assertEqual(session.functions(), [])
         self.assertEqual((await session.execute({}))["status"], "access_denied")
+        self.check.assert_called_once()
 
     async def test_supervisor_required_and_no_arbitrary_commands(self):
         session = self.session()

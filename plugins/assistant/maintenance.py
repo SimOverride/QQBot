@@ -1,4 +1,4 @@
-"""仅当前所有者明确提出的自更新请求可获得一次更新授权。"""
+"""向所有者提供自更新工具，由模型理解当前话语并决定调用。"""
 
 import asyncio
 import os
@@ -13,19 +13,12 @@ from .prompt_store import tool_definition
 
 
 class Maintenance:
-    def __init__(self, config, key, text):
+    def __init__(self, config, key):
         self.config, self.key = config, key
-        # 完整匹配当前消息；引用、历史或工具参数都不能提供操作授权。
-        self.explicit = bool(re.fullmatch(
-            r"(?:请|帮我)?\s*(?:(?:用|使用)\s*[Gg][Ii][Tt]\s*)?"
-            r"(?:更新|升级)(?:一下)?(?:机器人|你自己|自己|代码)?"
-            r"(?:\s*(?:并|然后|后|再|并且)\s*重启(?:机器人|你自己|自己)?)?[。！!\s]*",
-            text.strip(),
-        ))
         self.requested = False
 
     def allowed(self):
-        return self.explicit and permission_level(self.config, self.key[2]) == 2
+        return permission_level(self.config, self.key[2]) == 2
 
     def functions(self):
         return [tool_definition("update_bot")] if self.allowed() else []

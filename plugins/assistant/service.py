@@ -183,7 +183,7 @@ class Assistant:
                                 from .maintenance import Maintenance
                                 from .response import Response
 
-                                history_tools.maintenance = Maintenance(cfg, key, text)
+                                history_tools.maintenance = Maintenance(cfg, key)
 
                                 if not hasattr(history_tools, "response"):
                                     history_tools.response = Response(set())
