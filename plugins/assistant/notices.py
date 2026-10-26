@@ -22,7 +22,7 @@ class Notices:
             key = (
                 source,
                 json.dumps(personality, ensure_ascii=False, sort_keys=True),
-                json.dumps(read_console().get("prompts", {}), ensure_ascii=False, sort_keys=True),
+                json.dumps(read_console().get("modules", {}), ensure_ascii=False, sort_keys=True),
             )
             cached = self.cache.get(key)
             if cached and time.monotonic() - cached[0] < 300:

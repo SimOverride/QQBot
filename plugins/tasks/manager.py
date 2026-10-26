@@ -7,35 +7,13 @@ import uuid
 
 from nonebot.adapters.onebot.v11 import MessageSegment
 
+from plugins.assistant.prompt_store import tool_definition
 from plugins.assistant.trace import emit, sanitize
 
 from .runner import Runner
 from .store import Store
 
-FUNCTION = {
-    "name": "manage_task",
-    "description": (
-        "管理机器人本机 dsh 任务。仅用户明确要求执行或开发时申请；咨询方案不申请。"
-        "非主人申请须主人私聊审批，不能声称已开始。补充现有任务无需重新审批。"
-        "查询依据真实事件，不猜测完成度。"
-        "创建后只简短确认任务内容和必要的待审批状态，不罗列编号、流程、格式或验收。"
-        "只在确实缺少信息时询问关键细节；完成时直接给结果，技术细节等用户追问。"
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "action": {"type": "string", "enum": ["request", "status", "supplement", "cancel"]},
-            "task_id": {"type": ["string", "null"]},
-            "kind": {"type": ["string", "null"], "enum": ["task", "plugin", None]},
-            "text": {
-                "type": ["string", "null"],
-                "description": "完整需求或补充要求，不包含用户未授权的范围",
-            },
-        },
-        "required": ["action", "task_id", "kind", "text"],
-        "additionalProperties": False,
-    },
-}
+FUNCTION = tool_definition("manage_task")
 
 
 class Session:

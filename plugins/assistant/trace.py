@@ -15,7 +15,7 @@ from pathlib import Path
 from nonebot.log import logger
 from pydantic import SecretStr
 
-from .prompt_store import catalog, read_console
+from .prompt_store import module_value, modules
 
 TRACE_DIR = Path(__file__).resolve().parents[2] / "logs" / "model"
 CURRENT = ContextVar("model_trace", default=None)
@@ -34,14 +34,12 @@ def sanitize(value, config, *, fold_prompts=False):
     prompts = []
     if fold_prompts:
         today = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
-        overrides = read_console().get("prompts", {})
-        for key, entry in catalog().items():
-            if key.startswith("tool."):
-                continue
-            text = overrides.get(key, entry["text"]).replace("{today}", today)
-            if text:
-                digest = hashlib.sha256(text.encode()).hexdigest()[:12]
-                prompts.append((text, f"<提示词:{key};字符:{len(text)};sha256:{digest}>"))
+        for module in modules():
+            for key, prompt in module_value(module)["prompts"].items():
+                text = prompt.replace("{today}", today)
+                if text:
+                    digest = hashlib.sha256(text.encode()).hexdigest()[:12]
+                    prompts.append((text, f"<提示词:{key};字符:{len(text)};sha256:{digest}>"))
         root = Path(__file__).resolve().parents[2]
         for folder in ("personas", "styles"):
             for path in (root / folder).glob("*.txt"):

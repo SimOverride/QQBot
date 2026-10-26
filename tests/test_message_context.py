@@ -33,18 +33,32 @@ class AttributionTests(unittest.IsolatedAsyncioTestCase):
 
         stamp = time.time()
         self.archive.collect(
-            (99, 10, 3), 10, "这是第三个人说的", ["text"], stamp,
+            (99, 10, 3),
+            10,
+            "这是第三个人说的",
+            ["text"],
+            stamp,
             metadata={"sender_name": "同名"},
         )
         event = SimpleNamespace(
-            group_id=10, user_id=2, message_id=11, time=stamp,
+            group_id=10,
+            user_id=2,
+            message_id=11,
+            time=stamp,
             sender=SimpleNamespace(card="同名", role="admin"),
-            original_message=MessageSegment.reply(10) + MessageSegment.at(3)
-            + MessageSegment.at(99) + Message("你说的对"),
+            original_message=MessageSegment.reply(10)
+            + MessageSegment.at(3)
+            + MessageSegment.at(99)
+            + Message("你说的对"),
         )
         archive_event(self.archive, Config(), SimpleNamespace(self_id="99"), event)
         self.archive.collect(
-            (99, 10, 99), 12, "收到", ["text"], stamp, 2,
+            (99, 10, 99),
+            12,
+            "收到",
+            ["text"],
+            stamp,
+            2,
             metadata={"response_to": {"message_id": 11, "sender": 2}},
         )
         self.archive.close()
@@ -60,22 +74,18 @@ class AttributionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(quoted["reply_to"]["sender"], 3)
         self.assertEqual(quoted["reply_to"]["text"], "这是第三个人说的")
         tools = HistoryTools(self.archive, (99, 10, 2))
-        result = tools.run({
-            "action": "search", "scope": 10, "sender": None, "query": "",
-            "start": None, "end": None, "anchor": None, "offset": 0,
-        })
+        result = tools.execute("search_messages", {})
         saved = next(r for r in result["messages"] if r["message_id"] == 11)
         self.assertEqual(saved["reply_to"], quoted["reply_to"])
         self.assertEqual(result["messages"][0]["response_to"]["sender"], 2)
-        self.assertEqual(json.loads(self.archive.context((99, 10, 2), "", set()))[
-            "subject_qq"
-        ], 2)
+        self.assertEqual(json.loads(self.archive.context((99, 10, 2), "", set()))["subject_qq"], 2)
 
     def test_resolved_quote_without_local_source(self):
         event = SimpleNamespace(
             original_message=Message(MessageSegment.at("all")),
             reply=SimpleNamespace(
-                message_id=8, sender=SimpleNamespace(user_id=3, nickname="旧名字"),
+                message_id=8,
+                sender=SimpleNamespace(user_id=3, nickname="旧名字"),
                 message=Message("原话"),
             ),
         )

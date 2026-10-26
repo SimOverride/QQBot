@@ -55,6 +55,9 @@ def configure_logging():
 
 def main():
     """初始化并运行机器人，运行锁由入口持有。"""
+    from plugins.assistant.prompt_store import migrate_console
+
+    migrate_console(ROOT)
     nonebot.init()
     configure_logging()
     nonebot.get_driver().register_adapter(Adapter)

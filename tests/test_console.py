@@ -473,15 +473,47 @@ class ConsoleTests(unittest.TestCase):
         self.assertNotIn("activity", self.store.get(key)["value"])
 
     def test_prompt_hot_reload_and_placeholder_validation(self):
-        key = "prompt:prompts.system_prompt.0"
+        key = "module:chat"
         old = self.store.get(key)
-        self.save(key, "当前日期 {today}，新的总体规则。")
+        value = json.loads(json.dumps(old["value"]))
+        value["prompts"]["prompts.system_prompt.0"] = "当前日期 {today}，新的总体规则。"
+        self.save(key, value)
         self.assertIn("新的总体规则", system_prompt(False))
         with self.assertRaisesRegex(ValueError, "占位符"):
-            self.save(key, "删除日期")
+            value["prompts"]["prompts.system_prompt.0"] = "删除日期"
+            self.save(key, value)
         change = self.store.changes()[0]
         self.store.undo(change["id"])
         self.assertEqual(self.store.get(key)["value"], old["value"])
+
+    def test_module_inventory_and_model_suggestion_keep_contract_readonly(self):
+        inventory = self.client.get("/api/inventory").json()
+        self.assertEqual(len(inventory["modules"]), 8)
+        self.assertNotIn("prompts", inventory)
+        before = self.store.get("module:history")
+        proposed = json.loads(json.dumps(before["value"]))
+        proposed["tools"]["search_messages"]["description"] = "根据上下文查找必要记录"
+        fake = AsyncMock(
+            return_value=(json.dumps({"value": proposed, "explanation": "修改说明"}), [], [])
+        )
+        with patch.object(LLM, "step", fake):
+            response = self.client.post(
+                "/api/suggest",
+                headers=self.headers,
+                json={
+                    "resource": "module:history",
+                    "revision": before["revision"],
+                    "chat": [{"role": "user", "content": "简化历史查询说明"}],
+                },
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        sent = json.loads(fake.call_args.args[0][1]["content"])
+        self.assertEqual(sent["current"], before["value"])
+        self.assertIn("parameters", sent["module_contract"]["tools"]["search_messages"])
+        self.assertEqual(self.store.get("module:history")["value"], before["value"])
+        proposed["tools"]["search_messages"]["schema"] = {"required": []}
+        with self.assertRaises(ValueError):
+            self.save("module:history", proposed)
 
     def test_message_management_removed(self):
         self.assertEqual(self.client.get("/api/messages").status_code, 404)
@@ -547,7 +579,9 @@ class ConsoleTests(unittest.TestCase):
         person["总体认知"] = "游戏"
         person["会话印象"]["10"]["角色"] = "组织者"
         self.save("person:123:20", person)
-        self.save("prompt:search.enabled", "按需检索事实")
+        search = self.store.get("module:search")["value"]
+        search["prompts"]["search.enabled"] = "按需检索事实"
+        self.save("module:search", search)
         group = self.store.get("group:123:10")["value"]
         self.save("group:123:10", dict(group, summary="群摘要"))
         package = self.root / "export.zip"
@@ -557,7 +591,9 @@ class ConsoleTests(unittest.TestCase):
         migration.import_data(target, package, 123)
         restored = ConsoleStore(target)
         self.assertEqual(restored.get("person:123:20")["value"], person)
-        self.assertEqual(restored.get("prompt:search.enabled")["value"], "按需检索事实")
+        self.assertEqual(
+            restored.get("module:search")["value"]["prompts"]["search.enabled"], "按需检索事实"
+        )
         self.assertEqual(restored.get("group:123:10")["value"]["summary"], "群摘要")
 
     def test_mutations_blocked_during_migration(self):

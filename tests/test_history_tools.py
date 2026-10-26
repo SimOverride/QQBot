@@ -14,20 +14,7 @@ from plugins.assistant.search import Search
 
 
 def args(**overrides):
-    return (
-        dict(
-            action="search",
-            scope=None,
-            sender=None,
-            query="",
-            start=None,
-            end=None,
-            anchor=None,
-            offset=0,
-            **{},
-        )
-        | overrides
-    )
+    return {"scope": None, **overrides}
 
 
 class HistoryTests(unittest.IsolatedAsyncioTestCase):
@@ -48,27 +35,40 @@ class HistoryTests(unittest.IsolatedAsyncioTestCase):
         self.tmp.cleanup()
 
     def test_time_paging_and_isolation(self):
-        first = self.tools.run(args(start="2026-09-29", end="2026-09-30", sender=99))
+        first = self.tools.execute(
+            "search_messages", args(start="2026-09-29", end="2026-09-30", sender=99)
+        )
         self.assertEqual(len(first["messages"]), 12)
-        second = self.tools.run(args(offset=first["next_offset"]))
+        second = self.tools.execute("search_messages", args(offset=first["next_offset"]))
         self.assertFalse(
             {r["id"] for r in first["messages"]} & {r["id"] for r in second["messages"]}
         )
         self.assertTrue(all(r["scope"] == 10 for r in second["messages"]))
-        self.assertEqual(self.tools.run(args(scope=-2))["status"], "access_denied")
-        self.assertEqual(self.tools.run(args(start="2026-09-30"))["status"], "no_matches")
+        self.assertEqual(
+            self.tools.execute("search_messages", args(scope=-2))["status"], "access_denied"
+        )
+        self.assertEqual(
+            self.tools.execute("search_messages", args(start="2026-09-30"))["status"], "no_matches"
+        )
         group = HistoryTools(self.archive, (99, 10, 1), [11])
-        self.assertEqual(group.run(args(scope=11))["status"], "access_denied")
+        self.assertEqual(
+            group.execute("search_messages", args(scope=11))["status"], "access_denied"
+        )
 
     def test_around_and_invalid_dates(self):
-        found = self.tools.run(args(query="消息15"))["messages"][0]
-        nearby = self.tools.run(args(action="around", anchor=found["id"]))["messages"]
+        found = self.tools.execute("search_messages", args(query="消息15"))["messages"][0]
+        nearby = self.tools.execute("read_message_context", {"id": found["id"]})["messages"]
         self.assertEqual(len(nearby), 11)
         self.assertEqual(nearby[5]["id"], found["id"])
-        self.assertEqual(self.tools.run(args(start="yesterday"))["status"], "invalid_arguments")
-        self.assertEqual(self.tools.run(args(action="around", anchor=31))["status"], "not_found")
+        self.assertEqual(
+            self.tools.execute("search_messages", args(start="yesterday"))["status"],
+            "invalid_arguments",
+        )
+        self.assertEqual(
+            self.tools.execute("read_message_context", {"id": 31})["status"], "not_found"
+        )
         self.archive.delete(99, 10)
-        self.assertEqual(self.tools.run(args())["status"], "no_matches")
+        self.assertEqual(self.tools.execute("search_messages", args())["status"], "no_matches")
 
     async def test_send_scope_and_once(self):
         callback = AsyncMock(return_value={"status": "sent"})
@@ -93,9 +93,18 @@ class HistoryTests(unittest.IsolatedAsyncioTestCase):
                     functions = payload["tools"]
                     self.assertEqual(
                         {f.get("function", f)["name"] for f in functions},
-                        {"read_history", "read_capabilities", "view_image", "manage_memory"},
+                        {
+                            "list_sessions",
+                            "search_messages",
+                            "read_message_context",
+                            "resolve_entity",
+                            "read_knowledge",
+                            "read_capabilities",
+                            "view_image",
+                            "manage_memory",
+                        },
                     )
-                    call = {"name": "read_history", "arguments": json.dumps(args(sender=99))}
+                    call = {"name": "search_messages", "arguments": json.dumps(args(sender=99))}
                     if provider == "openai":
                         return httpx.Response(
                             200,
@@ -210,7 +219,7 @@ class HistoryTests(unittest.IsolatedAsyncioTestCase):
                         [
                             {
                                 "call_id": "a",
-                                "name": "read_history",
+                                "name": "search_messages",
                                 "arguments": json.dumps(args(query="不存在")),
                             }
                         ],
@@ -221,7 +230,7 @@ class HistoryTests(unittest.IsolatedAsyncioTestCase):
                         [
                             {
                                 "call_id": "b",
-                                "name": "read_history",
+                                "name": "search_messages",
                                 "arguments": json.dumps(args(sender=99)),
                             }
                         ],

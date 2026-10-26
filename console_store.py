@@ -19,7 +19,16 @@ from plugins.assistant.knowledge import (
     read_directory,
     scope_name,
 )
-from plugins.assistant.prompt_store import catalog, group_knowledge, read_console
+from plugins.assistant.prompt_store import (
+    group_knowledge,
+    migrate_console,
+    module_defaults,
+    module_value,
+    modules,
+    read_console,
+    sparse_module,
+    validate_module,
+)
 from plugins.assistant.topics import DEFAULT_MIN_PARTICIPANTS, validate_min_participants
 
 
@@ -41,6 +50,7 @@ class ConsoleStore:
     def __init__(self, root):
         self.root = Path(root).resolve()
         self.local = threading.local()
+        migrate_console(self.root)
 
     def file_target(self, kind, name):
         """新增与删除只能操作资源目录中的普通文件。"""
@@ -178,9 +188,9 @@ class ConsoleStore:
         if not isinstance(resource, str) or len(resource) > 240:
             raise ValueError("资源标识无效")
         kind, _, key = resource.partition(":")
-        if kind == "prompt":
-            if key not in catalog():
-                raise ValueError("未知提示词")
+        if kind == "module":
+            if key not in modules():
+                raise ValueError("未知能力模块")
         elif kind in ("persona", "emote"):
             if "/" in key or "\\" in key or not key:
                 raise ValueError("文件名无效")
@@ -208,14 +218,10 @@ class ConsoleStore:
     def get(self, resource):
         kind, key = self.resolve(resource)
         extra = {}
-        if kind == "prompt":
-            entry = catalog()[key]
-            value = read_console(self.root).get("prompts", {}).get(key, entry["text"])
-            extra = {
-                "title": entry["title"],
-                "default": entry["text"],
-                "placeholders": entry["placeholders"],
-            }
+        if kind == "module":
+            entry = modules()[key]
+            value = module_value(key, self.root)
+            extra = {"title": entry["title"], "default": module_defaults(key), "metadata": entry}
         elif kind == "persona":
             value = key.read_text(encoding="utf-8-sig").strip()
         elif kind == "group":
@@ -294,12 +300,8 @@ class ConsoleStore:
                 raise ValueError("必须保留当前资源的全部字段")
         elif not isinstance(value, str):
             raise ValueError("提示词必须是文本")
-        if kind == "prompt":
-            if not 1 <= len(value.strip()) <= 20000:
-                raise ValueError("提示词须为 1 至 20000 字")
-            for name in catalog()[key]["placeholders"]:
-                if "{" + name + "}" not in value:
-                    raise ValueError("不能删除动态占位符：" + name)
+        if kind == "module":
+            validate_module(key, value)
         elif kind == "persona":
             if not 1 <= len(value.strip()) <= 12000:
                 raise ValueError("人设须为 1 至 12000 字")
@@ -400,10 +402,10 @@ class ConsoleStore:
 
     def _write(self, resource, value):
         kind, key = self.resolve(resource)
-        if kind in ("prompt", "group"):
+        if kind in ("module", "group"):
             config = read_console(self.root)
-            if kind == "prompt":
-                config.setdefault("prompts", {})[key] = value
+            if kind == "module":
+                config.setdefault("modules", {})[key] = sparse_module(key, value)
             else:
                 current = group_knowledge(*key, self.root)
                 if any(value[f] != current.get(f, "") for f in ("summary", "knowledge")):
@@ -515,12 +517,17 @@ class ConsoleStore:
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )[:100]
-        return [migration.read_json(p) for p in files]
+        records = [migration.read_json(p) for p in files]
+        for record in records:
+            record["retired"] = record.get("resource", "").startswith("prompt:")
+        return records
 
     def undo(self, ident):
         if len(ident) != 32 or any(c not in "0123456789abcdef" for c in ident):
             raise ValueError("修改记录无效")
         record = migration.read_json(self.root / "backups/admin-edits" / (ident + ".json"))
+        if record.get("resource", "").startswith("prompt:"):
+            raise ValueError("旧提示词记录仅保留查阅，请在对应能力模块编辑并保存")
         if record["status"] != "saved":
             raise ValueError("该记录未完成保存，请人工核对")
         if record.get("action") == "create":
@@ -597,8 +604,8 @@ class ConsoleStore:
         return {
             "people": people,
             "groups": [{**g, "resource": f"group:{g['bot']}:{g['grp']}"} for g in groups],
-            "prompts": [
-                {"resource": "prompt:" + k, "name": v["title"]} for k, v in catalog().items()
+            "modules": [
+                {"resource": "module:" + k, "name": v["title"]} for k, v in modules().items()
             ],
             "personas": [
                 {"resource": "persona:" + p.stem, "name": p.stem}

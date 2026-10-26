@@ -147,7 +147,15 @@ class LLM:
                 payload["reasoning"] = {"effort": "high" if thinking else "none"}
             if allow_tools:
                 payload.update(
-                    tools=[{"type": "function", **f, "strict": True} for f in functions],
+                    tools=[
+                        {
+                            "type": "function",
+                            **f,
+                            "strict": set(f["parameters"].get("required", []))
+                            == set(f["parameters"]["properties"]),
+                        }
+                        for f in functions
+                    ],
                     tool_choice=(
                         {"type": "function", "name": "remember_emotes"} if must_remember else "auto"
                     ),

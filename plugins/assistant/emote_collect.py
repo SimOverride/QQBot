@@ -4,50 +4,21 @@ import base64
 import hashlib
 import json
 
-from .emotes import tool
 from .http import ServiceError
 from .image_download import download_image
+from .prompt_store import tool_definition
 
 COLLECT_FUNCTIONS = [
-    tool(
-        "emote_candidates",
-        "分页查看当前会话图片候选，offset从0开始；由你判断是否查看或收藏。",
-        {"offset": {"type": "integer"}},
-    ),
-    tool(
-        "search_emote_images",
-        "按当前语境自主联网找合适的表情包。不把群聊隐私放进查询。",
-        {"query": {"type": "string"}},
-    ),
-    tool(
-        "inspect_emote_image",
-        "下载并查看候选原图，不触发审核或收藏；收藏或发送时独立审核。只接受候选id。",
-        {"id": {"type": "string"}},
-    ),
-    tool(
-        "save_emote",
-        "收藏已查看的候选，保存前独立审核并去重。description由你描述实际画面与用途，保存不代表发送。",
-        {"id": {"type": "string"}, "description": {"type": "string"}},
-    ),
+    tool_definition("emote_candidates"),
+    tool_definition("search_emote_images"),
+    tool_definition("inspect_emote_image"),
+    tool_definition("save_emote"),
 ]
 
 IMAGE_FUNCTIONS = [
-    tool(
-        "search_images",
-        "联网搜索辅助解释的图片，不要求是表情包；查询不得包含聊天隐私。",
-        {"query": {"type": "string"}},
-    ),
-    tool(
-        "inspect_image",
-        "查看搜索候选原图，不触发审核；发送时独立审核。",
-        {"id": {"type": "string"}},
-    ),
-    tool(
-        "choose_image",
-        "选择已查看且安全审核通过的搜索图片随本次回复发送，不收藏入库。"
-        "按调用顺序加入本次回复图片队列。",
-        {"id": {"type": "string"}},
-    ),
+    tool_definition("search_images"),
+    tool_definition("inspect_image"),
+    tool_definition("choose_image"),
 ]
 
 

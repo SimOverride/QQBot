@@ -13,7 +13,7 @@
 - `plugins/assistant/shares.py` 负责消息段提取、地址校验、短链接解析、平台信息读取和 `read_share` 工具。JSON 卡片只提取地址、标题和简介；XML 禁止文档类型和实体声明；原生网易云音乐段按歌曲编号生成链接。其他平台卡片保持原有非文本提示。
 - `__init__.py` 的 `extract_text` 将分享卡片转换为有限的资料文字，群聊及私聊归档因此可保留分享地址。`message_context.py` 与 `groupchat.py` 的引用文字沿用同一提取规则。`forward.py` 展开合并转发时保留卡片资料，读取后的链接再注册到候选中。
 - `ShareReader` 在每轮开始注册当前消息、引用、群上下文及连续补充；私聊单独创建。`HistoryTools.shares` 将其传入 `llm.py` 的参与判断和回复工具循环；历史和合并转发工具返回后，注册实际读取到的分享链接。候选最多20个，每轮最多读取3个链接，同一链接的成功或失败结果缓存到本轮结束。参与判断与回复共用缓存和限额，也计入原有统一工具预算。
-- `read_share` 的 `url` 为空时列出候选，非空时只接受已注册的链接。直接读取不依赖 Tavily 搜索密钥。默认规则和工具说明分别保存在 `prompts/catalog.json` 的 `llm.shares.0`、`tool.read_share.description`，沿用后台提示词覆盖。
+- `read_share` 的 `url` 为空时列出候选，非空时只接受已注册的链接。直接读取不依赖 Tavily 搜索密钥。默认规则和工具说明分别保存在 `prompts/modules.json` 的 消息与互动模块的 `llm.shares.0` 与 `read_share` 工具定义，沿用后台提示词覆盖。
 - B 站读取 `api.bilibili.com/x/web-interface/view`，接受 BV 和 av 视频地址。网易云读取 `music.163.com` 的歌曲、专辑及歌单详情接口，支持桌面锚点链接和移动版地址。小黑盒读取 `api.xiaoheihe.cn/bbs/app/link/tree`，只提取 `result.link` 的文字，支持数字及十六进制帖子编号；正文块可能保存在 `content` 数组或 `text` 中的 JSON 数组。
 - `share_sign.py` 为小黑盒生成时间戳、随机值和官网使用的公开网页签名，不需要账号密钥或 Cookie。规则依据[官网公开网页脚本](https://static.max-c.com/static/heybox/webapp/@heybox-spa/website/app/index-Q5il7rGn.js)；平台变更接口后需核对更新，验证码或登录要求不自动绕过。
 - 每次读取最多4跳、1 MiB，网络操作在工作线程中执行，线程内总时限18秒，异步等待最多22秒，并受整轮请求超时限制。下载逐跳核验域名和公网解析，保留 TLS 域名并固定连接地址。本机纯 Fake-IP 解析经独立公网解析核验后保留其虚拟路由，避免直连其他地区的 CDN 触发风控；普通私网、混合私网解析不允许。

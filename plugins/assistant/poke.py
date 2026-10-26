@@ -8,14 +8,9 @@ from types import SimpleNamespace
 
 from nonebot.adapters.onebot.v11 import Message
 
-from .emotes import tool
+from .prompt_store import tool_definition
 
-POKE_FUNCTION = tool(
-    "poke_user",
-    "在当前会话发送拍一拍，user_id为目标QQ。群聊只允许当前群成员，私聊只允许当前聊天对象；"
-    "每轮最多尝试一次，不能拍机器人自己。只有返回sent表示平台确认成功，结果不明不得重试。",
-    {"user_id": {"type": "integer", "description": "目标QQ；昵称不明确时先查询，不猜测"}},
-)
+POKE_FUNCTION = tool_definition("poke_user")
 
 
 def incoming(bot, notice):

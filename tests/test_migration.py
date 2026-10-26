@@ -33,6 +33,36 @@ class MigrationTests(unittest.TestCase):
         db.close()
         return root
 
+    def test_old_prompt_package_merges_into_modules_with_target_priority(self):
+        from plugins.assistant.prompt_store import module_value
+
+        source = self.project("source")
+        target = self.project("target")
+        m.write_json(
+            source / "data/console.json",
+            {"prompts": {"tool.prompts.1": "来源查询说明", "llm.poke.0": "来源互动说明"}},
+        )
+        m.write_json(
+            target / "data/console.json",
+            {
+                "modules": {
+                    "search": {"tools": {"web_search": {"parameters": {"query": "目标查询说明"}}}}
+                }
+            },
+        )
+        output = self.base / "legacy.zip"
+        m.export_data(source, output)
+        m.import_data(target, output, 123)
+        value = m.read_json(target / "data/console.json")
+        self.assertNotIn("prompts", value)
+        self.assertEqual(
+            module_value("search", target)["tools"]["web_search"]["parameters"]["query"],
+            "目标查询说明",
+        )
+        self.assertEqual(
+            module_value("interaction", target)["prompts"]["llm.poke.0"], "来源互动说明"
+        )
+
     def test_live_wal_export_and_new_import(self):
         source = self.project("source")
         db = LongTermMemory(source / m.MEMORY, Config())

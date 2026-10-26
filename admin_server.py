@@ -369,6 +369,7 @@ def create_app(root=ROOT):
                 "content": json.dumps(
                     {
                         "current": model_value,
+                        "module_contract": current.get("metadata") if kind == "module" else None,
                         "context": context,
                         "subject": {"kind": kind, "ids": key if isinstance(key, tuple) else None},
                         "existing_evidence": evidence,

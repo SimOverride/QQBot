@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 from .emote_collect import COLLECT_FUNCTIONS, IMAGE_FUNCTIONS, EmoteCollector
 from .emotes import EMOTE_FUNCTIONS
 from .forward import FORWARD_FUNCTION
-from .history_tools import HISTORY_FUNCTION, SEND_GROUP_FUNCTION
+from .history_tools import HISTORY_FUNCTIONS, HISTORY_NAMES, SEND_GROUP_FUNCTION
 from .http import ServiceError
 from .image_archive import VIEW_IMAGE, ImageArchive
 from .names import for_request
@@ -146,14 +146,15 @@ class Tools:
 
         registry["poke_user"] = tool_poke_user
 
-        async def tool_read_history(name, args):
-            result = history_tools.run(args)
+        async def tool_history(name, args):
+            result = history_tools.execute(name, args)
             if shares is not None:
                 for row in result.get("messages", []):
                     shares.register_text(row.get("text", ""), row.get("message_id"))
             return result
 
-        registry["read_history"] = tool_read_history
+        for history_name in HISTORY_NAMES:
+            registry[history_name] = tool_history
 
         async def tool_view_image(name, args):
             nonlocal preview_bytes
@@ -184,11 +185,7 @@ class Tools:
             return result
 
         registry["view_image"] = tool_view_image
-        messages[0]["content"] += (
-            "\n历史消息的 images 是可查看的原图引用。需要细节时调用 view_image；"
-            "描述或曾经看过不代表本轮已读取原图。图片属于原消息，"
-            "不按同一发送者或时间间隔绑定到后续问题；由语境决定是否查看。"
-        )
+        messages[0]["content"] += prompt_text("media.history_images")
 
         async def tool_emote_candidates(name, args):
             if not isinstance(args, dict) or set(args) not in (set(), {"offset"}):
@@ -397,7 +394,7 @@ class Tools:
             if shares is not None and shares.allowed and not share_rules_added:
                 messages[0]["content"] += prompt_text("llm.shares.0")
                 share_rules_added = True
-            functions = [HISTORY_FUNCTION, VIEW_IMAGE]
+            functions = [*HISTORY_FUNCTIONS, VIEW_IMAGE]
             if history_tools.archive is not None:
                 functions.append(MEMORY)
             if poke is not None:
@@ -433,10 +430,7 @@ class Tools:
                 budget.remaining()[k] > 0 for k in ("calls", "tokens", "seconds")
             )
             if not allow:
-                messages[0]["content"] += (
-                    "\n本轮资源预算已用完，工具已禁用。仅根据已有结果完成最后一次回答；"
-                    "准确说明尚未完成的事项，不虚构查询或操作结果。"
-                )
+                messages[0]["content"] += prompt_text("execution.budget_end")
             text, calls, output = await self.llm.step(
                 renderer.messages(messages), allow, request_id, functions
             )
@@ -481,7 +475,7 @@ class Tools:
             async def execute(call):
                 if call.get("name") not in {
                     "view_image",
-                    "read_history",
+                    *HISTORY_NAMES,
                     "read_forward",
                     "read_share",
                     "read_capabilities",
@@ -544,7 +538,7 @@ class Tools:
 
             # 只并行独立读取；修改和发送作为顺序屏障，不越过前置结果。
             reads = {
-                "read_history",
+                *HISTORY_NAMES,
                 "read_share",
                 "read_forward",
                 "web_search",
@@ -593,8 +587,6 @@ class Tools:
                 messages.append(
                     {
                         "role": "user",
-                        "content": (
-                            "工具预算已用完。根据已查结果完成回答，缺失信息应准确说明，不虚构。"
-                        ),
+                        "content": prompt_text("execution.last_result"),
                     }
                 )

@@ -588,12 +588,11 @@ def stage_merge(root, incoming, staged, qq, fresh):
         validate(plugin_value, qq)
         write_json(plugin_file, plugin_value)
     if console.exists():
-        from plugins.assistant.prompt_store import validate_console
+        from plugins.assistant.prompt_store import normalize_console
 
-        value = read_json(console)
-        validate_console(value)
+        value = normalize_console(read_json(console))
         if (root / "data/console.json").exists():
-            value = fill_missing(read_json(root / "data/console.json"), value)
+            value = fill_missing(normalize_console(read_json(root / "data/console.json")), value)
         write_json(console, value)
     # 已有 .env 按键补齐；保留目标机器连接参数和既有密钥。
     env = staged / ".env"

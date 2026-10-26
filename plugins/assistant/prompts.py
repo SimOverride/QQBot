@@ -2,7 +2,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from .personality import DEFAULTS
-from .prompt_store import prompt_text
+from .prompt_store import prompt_text, tool_definition
 
 
 def system_prompt(search_enabled: bool, personality: dict[str, str] | None = None) -> str:
@@ -16,13 +16,4 @@ def system_prompt(search_enabled: bool, personality: dict[str, str] | None = Non
     )
 
 
-SEARCH_FUNCTION = {
-    "name": "web_search",
-    "description": "查询实时信息或核查事实。结合上下文构造独立查询，只含必要关键词。",
-    "parameters": {
-        "type": "object",
-        "properties": {"query": {"type": "string", "description": "1至500字的独立查询"}},
-        "required": ["query"],
-        "additionalProperties": False,
-    },
-}
+SEARCH_FUNCTION = tool_definition("web_search")

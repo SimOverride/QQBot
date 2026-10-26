@@ -13,25 +13,10 @@ from .consolidation import (
     label,
     organized,
 )
-from .emotes import tool
 from .knowledge import GROUP_FIELDS
-from .prompt_store import group_knowledge, read_console
+from .prompt_store import group_knowledge, read_console, tool_definition
 
-FUNCTION = tool(
-    "manage_memory",
-    "读取或修正当前会话个人认知、群摘要与群认知。先read取得revision；write须提供"
-    "消息内部id作为sources。只记录有依据的信息，矛盾保留不确定性；不能覆盖人工固定值。"
-    "个人field为总体认知、群内角色/互动习惯/互动关系/补充认知或私聊会话印象；"
-    "群field为summary/knowledge，subject为0。",
-    {
-        "action": {"type": "string", "enum": ["read", "write"]},
-        "subject": {"type": "integer"},
-        "field": {"type": "string"},
-        "value": {"type": "string"},
-        "revision": {"type": "string"},
-        "sources": {"type": "array", "items": {"type": "integer"}},
-    },
-)
+FUNCTION = tool_definition("manage_memory")
 
 
 def execute(session, args):

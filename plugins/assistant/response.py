@@ -1,22 +1,8 @@
 """主 agent 的响应选择；发送边界由群聊适配器执行。"""
 
-FUNCTION = {
-    "name": "set_response",
-    "description": (
-        "决定回应、静默或参与已有复读，选择引用并更新话题状态。静默仍保留已完成工具结果。"
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "action": {"type": "string", "enum": ["reply", "silent", "repeat"]},
-            "quote_message_id": {"type": ["integer", "null"]},
-            "topic": {"type": "string"},
-            "active": {"type": "boolean"},
-        },
-        "required": ["action", "quote_message_id", "topic", "active"],
-        "additionalProperties": False,
-    },
-}
+from .prompt_store import tool_definition
+
+FUNCTION = tool_definition("set_response")
 
 
 class Response:

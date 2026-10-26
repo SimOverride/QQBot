@@ -1,39 +1,18 @@
-"""Read-only, request-scoped access to archived conversations."""
+"""在请求权限范围内查询归档消息和认知。"""
 
 from datetime import datetime, timedelta, timezone
 
-from .prompt_store import prompt_text
+from .prompt_store import prompt_text, tool_definition
 
 TZ = timezone(timedelta(hours=8))
-HISTORY_FUNCTION = {
-    "name": "read_history",
-    "description": (
-        "主动查询本地历史和记忆。先list查会话；search按时间/发送者/关键词查消息；"
-        "around读前后文；facts查当前用户认知；resolve_user按完整昵称查QQ，"
-        "resolve_group按完整群名查群号，仅查询获准会话，同名返回多个候选。搜索消息时空关键词可查全部发言。"
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "action": {
-                "type": "string",
-                "enum": ["list", "search", "around", "facts", "resolve_user", "resolve_group"],
-            },
-            "scope": {"type": ["integer", "null"], "description": "会话ID；null搜索全部获准会话"},
-            "sender": {"type": ["integer", "null"], "description": "发送者QQ，查自己用bot_qq"},
-            "query": {"type": "string", "description": "原文包含的关键词；空字符串不过滤"},
-            "start": {
-                "type": ["string", "null"],
-                "description": "含时区ISO时间或YYYY-MM-DD，包含起点",
-            },
-            "end": {"type": ["string", "null"], "description": "时间上界，不包含；日期按UTC+8"},
-            "anchor": {"type": ["integer", "null"], "description": "around使用搜索结果的id"},
-            "offset": {"type": "integer", "description": "分页偏移，从0开始"},
-        },
-        "required": ["action", "scope", "sender", "query", "start", "end", "anchor", "offset"],
-        "additionalProperties": False,
-    },
-}
+HISTORY_NAMES = (
+    "list_sessions",
+    "search_messages",
+    "read_message_context",
+    "resolve_entity",
+    "read_knowledge",
+)
+HISTORY_FUNCTIONS = [tool_definition(name) for name in HISTORY_NAMES]
 
 
 class HistoryTools:
@@ -59,9 +38,13 @@ class HistoryTools:
             self.scopes.update(g for g in groups if type(g) is int and g > 0)
 
     def instructions(self):
-        return prompt_text(
-            "history_tools.instructions.0",
-            {"now": datetime.now(TZ).isoformat(), "bot_qq": self.key[0], "scope": self.key[1]},
+        return (
+            prompt_text("history.overview")
+            + "\n"
+            + prompt_text(
+                "history_tools.instructions.0",
+                {"now": datetime.now(TZ).isoformat(), "bot_qq": self.key[0], "scope": self.key[1]},
+            )
         )
 
     async def send(self, args):
@@ -80,7 +63,7 @@ class HistoryTools:
         self.send_attempted = True
         return await self.send_callback(args["group_id"], args["text"].strip())
 
-    def resolve_name(self, action, query, scopes, offset):
+    def resolve_name(self, kind, query, scopes, offset):
         """按需查询获准会话中的名字；不返回整份目录，不授予新权限。"""
         from .knowledge import read_directory
         from .names import Names
@@ -92,7 +75,7 @@ class HistoryTools:
         names = Names(root, self.key[0])
         directory = read_directory(root).get(str(self.key[0]), {})
         groups = directory.get("groups", {})
-        if action == "resolve_group":
+        if kind == "group":
             matches = [
                 {
                     "group_id": group,
@@ -154,34 +137,78 @@ class HistoryTools:
         dt = datetime.fromisoformat(value)
         return (dt if dt.tzinfo else dt.replace(tzinfo=TZ)).timestamp()
 
-    def run(self, args):
+    def execute(self, name, args):
         try:
-            if not isinstance(args, dict) or set(args) != set(
-                HISTORY_FUNCTION["parameters"]["required"]
-            ):
+            if name not in HISTORY_NAMES or not isinstance(args, dict):
                 raise ValueError
-            action, scope = args["action"], args["scope"]
-            if action not in ("list", "search", "around", "facts", "resolve_user", "resolve_group"):
+            schema = tool_definition(name)["parameters"]
+            if set(args) - set(schema["properties"]) or set(schema["required"]) - set(args):
                 raise ValueError
-            if scope is not None and (type(scope) is not int or scope not in self.scopes):
-                return {"status": "access_denied"}
-            if type(args["offset"]) is not int or not 0 <= args["offset"] <= 1000000:
-                raise ValueError
-            if not isinstance(args["query"], str) or len(args["query"]) > 200:
-                raise ValueError
-            for field in ("sender", "anchor"):
-                if args[field] is not None and type(args[field]) is not int:
+            for key, value in args.items():
+                rule = schema["properties"][key]
+                types = rule["type"] if isinstance(rule["type"], list) else [rule["type"]]
+                if not (
+                    (value is None and "null" in types)
+                    or (type(value) is int and "integer" in types)
+                    or (isinstance(value, str) and "string" in types)
+                ):
                     raise ValueError
-            start, end = self.timestamp(args["start"]), self.timestamp(args["end"])
+                if isinstance(value, str) and not rule.get("minLength", 0) <= len(
+                    value
+                ) <= rule.get("maxLength", 20000):
+                    raise ValueError
+                if type(value) is int and not rule.get("minimum", -(10**20)) <= value <= rule.get(
+                    "maximum", 10**20
+                ):
+                    raise ValueError
+                if "enum" in rule and value not in rule["enum"]:
+                    raise ValueError
+            scope = args.get("scope", self.key[1])
+            if scope is not None and scope not in self.scopes:
+                return {"status": "access_denied"}
+            scopes = sorted(
+                self.scopes
+                if scope is None or name in ("list_sessions", "read_message_context")
+                else {scope}
+            )
+            offset = args.get("offset", 0)
+            start, end = self.timestamp(args.get("start")), self.timestamp(args.get("end"))
             if start is not None and end is not None and start >= end:
                 raise ValueError
-            scopes = sorted(self.scopes if scope is None else {scope})
-            if action in ("resolve_user", "resolve_group"):
-                return self.resolve_name(action, args["query"], scopes, args["offset"])
+            if name == "resolve_entity":
+                return self.resolve_name(args["kind"], args["name"], scopes, offset)
+            if name == "read_knowledge":
+                from .prompt_store import group_knowledge
+
+                kind = args.get("kind", "person")
+                if kind == "group":
+                    if "subject" in args:
+                        raise ValueError
+                    if self.key[1] <= 0:
+                        return {"status": "access_denied"}
+                    return {
+                        "status": "ok",
+                        "scope": self.key[1],
+                        **group_knowledge(self.key[0], self.key[1], self.archive.root),
+                    }
+                subject = args.get("subject", self.key[2])
+                if subject != self.key[2] and not any(
+                    item["qq"] == subject
+                    for item in self.resolve_name("user", str(subject), [self.key[1]], 0)["matches"]
+                ):
+                    return {"status": "access_denied"}
+                key = (self.key[0], self.key[1], subject)
+                return {
+                    "status": "ok",
+                    "scope": self.key[1],
+                    "subject_qq": subject,
+                    "facts": self.archive.facts(key),
+                    "shared": self.archive.shared_knowledge(key)[:20],
+                }
             where = "bot=? AND grp IN (" + ",".join("?" for _ in scopes) + ")"
             params = [self.key[0], *scopes]
             db = self.archive.db
-            if action == "list":
+            if name == "list_sessions":
                 rows = db.execute(
                     "SELECT grp,MIN(created) AS first_record,MAX(created) AS last_record,"
                     f"COUNT(*) AS count FROM messages WHERE {where} GROUP BY grp",
@@ -197,16 +224,9 @@ class HistoryTools:
                     "coverage": [dict(r) for r in rows],
                     "coverage_note": "仅为现存记录范围，不保证期间完整",
                 }
-            if action == "facts":
-                return {
-                    "status": "ok",
-                    "facts": self.archive.facts(self.key),
-                    "subject_qq": self.key[2],
-                    "shared": self.archive.shared_knowledge(self.key)[:20],
-                }
-            if action == "around":
+            if name == "read_message_context":
                 anchor = db.execute(
-                    f"SELECT * FROM messages WHERE {where} AND id=?", [*params, args["anchor"]]
+                    f"SELECT * FROM messages WHERE {where} AND id=?", [*params, args["id"]]
                 ).fetchone()
                 if anchor is None:
                     return {"status": "not_found"}
@@ -231,20 +251,20 @@ class HistoryTools:
                 more = False
             else:
                 for column, op, value in (
-                    ("usr", "=", args["sender"]),
+                    ("usr", "=", args.get("sender")),
                     ("created", ">=", start),
                     ("created", "<", end),
                 ):
                     if value is not None:
                         where += f" AND {column}{op}?"
                         params.append(value)
-                if args["query"]:
+                if args.get("query", ""):
                     where += " AND instr(lower(content),lower(?))>0"
-                    params.append(args["query"])
+                    params.append(args.get("query", ""))
                 rows = db.execute(
                     f"SELECT * FROM messages WHERE {where} "
                     "ORDER BY created DESC,id DESC LIMIT 13 OFFSET ?",
-                    [*params, args["offset"]],
+                    [*params, offset],
                 ).fetchall()
                 more, rows = len(rows) > 12, rows[:12]
             return {
@@ -262,7 +282,7 @@ class HistoryTools:
                     }
                     for r in rows
                 ],
-                "next_offset": args["offset"] + len(rows) if more else None,
+                "next_offset": offset + len(rows) if more else None,
             }
         except (ValueError, TypeError, OverflowError):
             return {
@@ -271,16 +291,4 @@ class HistoryTools:
             }
 
 
-SEND_GROUP_FUNCTION = {
-    "name": "send_group_message",
-    "description": (
-        "仅当当前私聊用户明确要求去群里发言时使用。自主拟一句符合人设的群聊发言，"
-        "不披露私聊内容。目标不明确先list；不确定则询问。每次请求最多发一个群。"
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {"group_id": {"type": "integer"}, "text": {"type": "string"}},
-        "required": ["group_id", "text"],
-        "additionalProperties": False,
-    },
-}
+SEND_GROUP_FUNCTION = tool_definition("send_group_message")

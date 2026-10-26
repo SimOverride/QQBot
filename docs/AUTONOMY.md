@@ -64,7 +64,7 @@ QQ 群是社交场景，错误发言的代价远高于少说一句，所以应�
 | B | 无持久目标/议程 | `Assistant.handle` 以 `message_id` 为入口；回合超时 600 秒 | 复杂任务只能一口气做完，做不完就断 |
 | C | 无结果信号 | 发送成功后只归档文本，不记录后续反应 | 参与策略、语气、时机都无法从经验中调整 |
 | D | 检索是关键词/二元组 | `docs/DEVELOPMENT.md`“不依赖向量库”；`history_tools.py` 用 `instr(lower(content), ...)` | 换个说法就查不到，记忆“有但取不出来” |
-| E | 无技能/程序性记忆 | `prompts/catalog.json` 只有静态提示词；插件要写 Python | 同类任务每次重新摸索，经验不沉淀 |
+| E | 无技能/程序性记忆 | `prompts/modules.json` 只有静态提示词；插件要写 Python | 同类任务每次重新摸索，经验不沉淀 |
 | F | 工具面固定，子代理关闭 | `dsh.py` 的 `entries` 关闭 `tool-subagent`、`tool-subagent-fork`、`tool-workflow`、`tool-ralph`；桥接 `tools.restrict({allow: []})` | 无法把长调研、并发探索分出去 |
 | G | 参与策略固定 | `topics.py` 按话题人数和对机器人说法的回应限制参与 | 尚不能从反馈自动学习参与时机 |
 | H | 没有评估与回放 | 测试以 MockTransport 为主，提示词改动无对照 | 越自主越不敢改，改坏了也发现不了 |
@@ -247,7 +247,7 @@ QQ 群是社交场景，错误发言的代价远高于少说一句，所以应�
 - **排序**：相关性 + 新近度 + 重要性（被点名、提问、纠正、长度、是否机器人相关）+ 最近使用次数/频率，参考 Generative Agents 的检索打分。
 - **可选向量**：配置化 embedding（复用现有服务商或本地模型），向量存 SQLite blob 表；不可用时自动回退 FTS，不阻塞启动。
 - **时序有效性**：`facts` 增加 `valid_from`、`valid_to`、`supersedes`，支持“当时是怎么认为的”，矛盾保留双方并用时间区分。
-- **检索由模型决定**：保留 `read_history` 的动作式查询，增加 `search_memory` 的语义入口；结果标注来源与时间。
+- **检索由模型决定**：使用独立的历史查询工具，增加 `search_memory` 的语义入口；结果标注来源与时间。
 
 **验收**：20 条语义改写查询的命中率明显提升；未配置 embedding 时功能不降级；删除来源后派生记忆仍失效。
 

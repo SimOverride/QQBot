@@ -21,19 +21,10 @@ from plugins.assistant.service import Assistant
 
 
 def history_args(query=""):
-    return dict(
-        action="search",
-        scope=None,
-        sender=None,
-        query=query,
-        start=None,
-        end=None,
-        anchor=None,
-        offset=0,
-    )
+    return {"query": query}
 
 
-def call(identifier, name="read_history", arguments=None):
+def call(identifier, name="search_messages", arguments=None):
     return {
         "call_id": identifier,
         "name": name,
@@ -115,14 +106,15 @@ class ToolCallTests(unittest.IsolatedAsyncioTestCase):
                             self.assertIn(reasoning, messages)
                     return httpx.Response(200, json=next(responses))
 
-                self.tools.run = Mock(wraps=HistoryTools.run.__get__(self.tools))
+                self.tools.execute = Mock(wraps=HistoryTools.execute.__get__(self.tools))
                 cfg = self.cfg.model_copy(update={"llm_provider": provider, "agent_max_calls": 2})
                 async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
                     llm = LLM(client, cfg, Search(client, cfg))
                     reply = await llm.reply([], "查两件事", "test", history_tools=self.tools)
                 self.assertEqual(reply.text, "完成")
                 self.assertEqual(
-                    [c.args[0]["query"] for c in self.tools.run.call_args_list], ["编程", "音乐"]
+                    [c.args[1]["query"] for c in self.tools.execute.call_args_list],
+                    ["编程", "音乐"],
                 )
                 self.assertEqual(len(seen), 2)
                 self.assertNotIn("tools", seen[-1])

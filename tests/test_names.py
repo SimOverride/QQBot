@@ -105,55 +105,49 @@ class NamesTests(unittest.IsolatedAsyncioTestCase):
         payload = json.dumps(messages, ensure_ascii=False)
         self.assertNotIn("current_names", payload)
         self.assertNotIn("外部人", payload)
-        self.assertIn("resolve_user", payload)
-        self.assertIn("resolve_group", payload)
+        self.assertIn("kind=user", payload)
+        self.assertIn("kind=group", payload)
         self.assertEqual(messages[1]["content"], "同名在测试群")
 
     def test_name_queries_enforce_scope_and_return_ambiguity(self):
         self.directory()
         tools = HistoryTools(self.archive, (99, 10, 20))
-        args = {
-            "action": "resolve_user",
-            "scope": None,
-            "sender": None,
-            "query": "同名",
-            "start": None,
-            "end": None,
-            "anchor": None,
-            "offset": 0,
-        }
-        result = tools.run(args)
+        args = {"kind": "user", "scope": None, "name": "同名"}
+        result = tools.execute("resolve_entity", args)
         self.assertEqual(result["status"], "ambiguous")
         self.assertEqual({v["qq"] for v in result["matches"]}, {20, 30})
-        self.assertEqual(tools.run({**args, "query": "外部人"})["matches"], [])
-        self.assertEqual(tools.run({**args, "scope": 11})["status"], "access_denied")
-        self.assertEqual(tools.run({**args, "query": ""})["status"], "invalid_arguments")
-        result = tools.run({**args, "action": "resolve_group", "query": "测试群"})
+        self.assertEqual(tools.execute("resolve_entity", {**args, "name": "外部人"})["matches"], [])
+        self.assertEqual(
+            tools.execute("resolve_entity", {**args, "scope": 11})["status"], "access_denied"
+        )
+        self.assertEqual(
+            tools.execute("resolve_entity", {**args, "name": ""})["status"], "invalid_arguments"
+        )
+        result = tools.execute("resolve_entity", {**args, "kind": "group", "name": "测试群"})
         self.assertEqual(result["matches"], [{"group_id": 10, "name": "测试群"}])
         private = HistoryTools(self.archive, (99, -20, 20), groups=(10, 11))
         self.assertEqual(
-            private.run({**args, "action": "resolve_group", "query": "测试群"})["status"],
+            private.execute("resolve_entity", {**args, "kind": "group", "name": "测试群"})[
+                "status"
+            ],
             "ambiguous",
         )
 
     async def test_model_can_choose_name_lookup_and_receive_numeric_id(self):
         self.directory()
         llm = LLM(None, Config(), SimpleNamespace(enabled=False))
-        args = {
-            "action": "resolve_group",
-            "scope": None,
-            "sender": None,
-            "query": "测试群",
-            "start": None,
-            "end": None,
-            "anchor": None,
-            "offset": 0,
-        }
+        args = {"kind": "group", "scope": None, "name": "测试群"}
         llm.step = AsyncMock(
             side_effect=[
                 (
                     "",
-                    [{"call_id": "resolve", "name": "read_history", "arguments": json.dumps(args)}],
+                    [
+                        {
+                            "call_id": "resolve",
+                            "name": "resolve_entity",
+                            "arguments": json.dumps(args),
+                        }
+                    ],
                     [],
                 ),
                 ("完成", [], []),
@@ -208,19 +202,14 @@ class NamesTests(unittest.IsolatedAsyncioTestCase):
         cfg = Config()
         llm = LLM(None, cfg, SimpleNamespace(enabled=False))
         tools = HistoryTools(self.archive, (99, 10, 20))
-        args = {
-            "action": "search",
-            "scope": 10,
-            "sender": 20,
-            "query": "",
-            "start": None,
-            "end": None,
-            "anchor": None,
-            "offset": 0,
-        }
+        args = {"scope": 10, "sender": 20}
         llm.step = AsyncMock(
             side_effect=[
-                ("", [{"call_id": "a", "name": "read_history", "arguments": json.dumps(args)}], []),
+                (
+                    "",
+                    [{"call_id": "a", "name": "search_messages", "arguments": json.dumps(args)}],
+                    [],
+                ),
                 ("完成", [], []),
             ]
         )

@@ -115,7 +115,7 @@ async function renderPage(){
   let items=[];
   if(page==='people')items=(inventory.people||[]).map(p=>({...p,name:p.name,subtitle:`QQ ${p.usr} · ${p.scopes} 个会话 · ${p.count} 条`}));
   if(page==='groups')items=(inventory.groups||[]).map(g=>({...g,name:g.name,subtitle:g.count+' 条记录'}));
-  if(page==='prompts')items=[...(inventory.personas||[]).map(p=>({...p,name:'人设 · '+p.name})),...(inventory.prompts||[])];
+  if(page==='prompts')items=[...(inventory.personas||[]).map(p=>({...p,name:'人设 · '+p.name})),...(inventory.modules||[])];
   if(page==='emotes')items=await api('/api/emotes');
   if(page==='people'){
     const filter=document.createElement('select');filter.id='people-group';filter.setAttribute('aria-label','按群筛选个人');
@@ -154,7 +154,7 @@ function showSelection(){
   el.hidden=page==='topics';
   if(!current){el.textContent=page==='settings'?'当前选择：设置':'尚未选择资源';el.removeAttribute('title');return;}
   const [kind]=current.resource.split(':');
-  const names={person:'个人认知',group:'群管理',emote:'表情包管理',persona:'人设',prompt:'提示词'};
+  const names={person:'个人认知',group:'群管理',emote:'表情包管理',persona:'人设',module:'能力模块'};
   let name=current.title||current.resource.substring(current.resource.indexOf(':')+1),scope='';
   if(kind==='person'){
     const person=(inventory.people||[]).find(p=>p.resource===current.resource);
@@ -213,6 +213,15 @@ function renderEditor(){
     edit.append(summary,input);label.append(preview,edit);
     input.addEventListener('input',()=>{preview.textContent='原文已修改，保存后按当前昵称显示';});
   }
+  function fieldName(key,path){
+    if(kind!=='module')return labels[key]||key;
+    if(!path.length)return {prompts:'上下文正文',tools:'工具定义'}[key]||key;
+    if(path[0]==='prompts')return current.metadata.prompts[key]?.title||key;
+    return {description:'用途与调用规则',parameters:'参数说明'}[key]||key;
+  }
+  if(kind==='module'){
+    const placement=document.createElement('p');placement.className='note';placement.textContent='注入位置：'+current.metadata.placement;$('#fields').append(placement);
+  }
   function fields(data, parent, path=[]){
     const entries=typeof data==='string'?[['__text',data]]:Object.entries(data);
     for(const [key,value] of entries){
@@ -222,10 +231,22 @@ function renderEditor(){
       }
       if(value&&typeof value==='object'&&!Array.isArray(value)){
         const section=document.createElement('details');section.open=path.length===0;
-        const title=document.createElement('summary');title.textContent=path[0]==='会话'?(Number(key)>0?'群 '+key:'私聊'):key;
+        const title=document.createElement('summary');title.textContent=path[0]==='会话'?(Number(key)>0?'群 '+key:'私聊'):fieldName(key,path);
         section.append(title);parent.append(section);fields(value,section,[...path,key]);continue;
       }
-      const label=document.createElement('label');label.className='field';const span=document.createElement('span');span.textContent=key==='__text'?'提示词正文':labels[key]||key;label.append(span);
+      const label=document.createElement('label');label.className='field';const span=document.createElement('span');span.textContent=key==='__text'?'提示词正文':fieldName(key,path);label.append(span);
+      if(kind==='module'&&path[0]==='prompts'){
+        const note=document.createElement('small');const meta=current.metadata.prompts[key];note.textContent=meta.placement+(meta.placeholders.length?'；保留占位符：'+meta.placeholders.map(v=>'{'+v+'}').join('、'):'');label.append(note);
+      }
+      if(kind==='module'&&path[0]==='tools'&&path[2]==='parameters'){
+        let schema=current.metadata.tools[path[1]].parameters,required=false;
+        for(const segment of key.split('.')){
+          const name=segment.replace(/\[\]$/,'');required=(schema.required||[]).includes(name);schema=schema.properties?.[name];
+          if(segment.endsWith('[]'))schema=schema?.items;
+          if(!schema)break;
+        }
+        if(schema){const note=document.createElement('small');note.textContent=[required?'必填':'可选','类型：'+JSON.stringify(schema.type),schema.enum?'可选值：'+schema.enum.join(' / '):'',schema.minimum!==undefined?'最小值：'+schema.minimum:'',schema.maximum!==undefined?'最大值：'+schema.maximum:''].filter(Boolean).join('；');label.append(note);}
+      }
       let input;
       if(key==='persona'){input=document.createElement('select');for(const item of inventory.personas||[]){const o=document.createElement('option');o.value=item.name;o.textContent=key==='persona'&&item.name==='默认'?'跟随默认人设':item.name;input.append(o);}input.value=value;}
       else{input=document.createElement('textarea');input.value=Array.isArray(value)?value.join('\n'):value;if(key==='__text')input.className='long';}
@@ -243,6 +264,17 @@ function renderEditor(){
       label.append(title);const shown=personScope==='general'?current.display_value?.['总体认知']:typeof contents==='string'?current.display_value?.['会话印象']?.[personScope]:current.display_value?.['会话印象']?.[personScope]?.[field];const parts=personScope==='general'?current.display_parts?.['总体认知']:typeof contents==='string'?current.display_parts?.['会话印象']?.[personScope]:current.display_parts?.['会话印象']?.[personScope]?.[field];showKnowledge(label,input,shown??value,parts);$('#fields').append(label);
     }
   }else fields(draft,$('#fields'));
+  if(kind==='module'){
+    const details=document.createElement('details'),summary=document.createElement('summary'),body=document.createElement('pre');summary.textContent='完整工具契约（结构由程序维护）';
+    const definitions=structuredClone(current.metadata.tools);
+    function apply(schema,descriptions,prefix=''){
+      if(Object.hasOwn(descriptions,prefix))schema.description=descriptions[prefix];
+      for(const [name,child] of Object.entries(schema.properties||{}))apply(child,descriptions,prefix?prefix+'.'+name:name);
+      if(schema.items)apply(schema.items,descriptions,prefix+'[]');
+    }
+    function refreshContract(){for(const [name,tool] of Object.entries(definitions)){tool.description=draft.tools[name].description;apply(tool.parameters,draft.tools[name].parameters);}body.textContent=JSON.stringify(definitions,null,2);}
+    refreshContract();$('#fields').addEventListener('input',refreshContract);details.append(summary,body);$('#fields').append(details);
+  }
   if(kind==='emote'){
     const section=document.createElement('section');
     const heading=document.createElement('h3');heading.textContent='各群使用情况';section.append(heading);
@@ -402,7 +434,7 @@ function renderMigration(){
   $('#export').onclick=async()=>{const b=$('#export');b.disabled=true;status('正在生成备份…');try{const response=await api('/api/export',{}, {blob:true});const blob=await response.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='qqbot-backup.zip';a.click();setTimeout(()=>URL.revokeObjectURL(url),10000);status('备份已生成，浏览器已开始下载；服务器 backups 目录也保留一份');}catch(e){status(e.message,true);}finally{b.disabled=false;}};
   $('#import').onclick=async()=>{const file=$('#import-file').files[0];if(!file){status('请选择 ZIP 文件',true);return;}if(!window.confirm('确认目标机器人已停止，开始同号合并？已有数据会先自动备份。'))return;const b=$('#import');b.disabled=true;status('正在校验并合并…');try{const q=$('#import-qq').value;const result=await api('/api/import'+(q?'?bot_qq='+encodeURIComponent(q):''),undefined,{method:'POST',body:file});inventory=await api('/api/inventory');status(result.message+'；原数据备份：'+result.backup);}catch(e){status(e.message,true);}finally{b.disabled=false;}};
 }
-async function renderChanges(){const rows=await api('/api/changes');$('#content').innerHTML='<div class="panel">'+(rows.length?'<table><thead><tr><th>时间</th><th>资源与差异</th><th>操作</th></tr></thead><tbody>'+rows.map(r=>`<tr><td>${esc(new Date(r.created*1000).toLocaleString())}</td><td>${esc(r.resource)}<details><summary>查看前后内容</summary><pre>${esc(text(r.before))}</pre><pre>${esc(text(r.after))}</pre></details></td><td><button class="quiet" data-undo="${r.id}" ${r.status==='saved'?'':'disabled'}>撤销此修改</button></td></tr>`).join('')+'</tbody></table>':'<div class="empty">尚无后台操作记录</div>')+'</div>';document.querySelectorAll('[data-undo]').forEach(b=>b.onclick=async()=>{if(!window.confirm('恢复这条记录的修改前内容？后续已修改的资源会拒绝撤销。'))return;try{await api('/api/undo',{id:b.dataset.undo});inventory=await api('/api/inventory');await renderChanges();status('已撤销，并记录本次恢复');}catch(e){status(e.message,true);}});}
+async function renderChanges(){const rows=await api('/api/changes');$('#content').innerHTML='<div class="panel">'+(rows.length?'<table><thead><tr><th>时间</th><th>资源与差异</th><th>操作</th></tr></thead><tbody>'+rows.map(r=>`<tr><td>${esc(new Date(r.created*1000).toLocaleString())}</td><td>${esc(r.resource)}<details><summary>查看前后内容</summary><pre>${esc(text(r.before))}</pre><pre>${esc(text(r.after))}</pre></details></td><td><button class="quiet" data-undo="${r.id}" ${r.status==='saved'&&!r.retired?'':'disabled'}>${r.retired?'旧条目仅供查阅':'撤销此修改'}</button></td></tr>`).join('')+'</tbody></table>':'<div class="empty">尚无后台操作记录</div>')+'</div>';document.querySelectorAll('[data-undo]').forEach(b=>b.onclick=async()=>{if(!window.confirm('恢复这条记录的修改前内容？后续已修改的资源会拒绝撤销。'))return;try{await api('/api/undo',{id:b.dataset.undo});inventory=await api('/api/inventory');await renderChanges();status('已撤销，并记录本次恢复');}catch(e){status(e.message,true);}});}
 $('#nav').querySelectorAll('button').forEach(b=>b.onclick=()=>navigate(b.dataset.page));
 $('#refresh').onclick=async()=>{if(busy)return;try{inventory=await api('/api/inventory');await navigate(page);}catch(e){status(e.message,true);}};
 window.addEventListener('beforeunload',e=>{if(dirty()||busy){e.preventDefault();e.returnValue='';}});

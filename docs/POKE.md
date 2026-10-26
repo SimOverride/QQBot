@@ -19,7 +19,7 @@
 - 实际发送调用 NapCat `send_poke`；群聊传 `group_id` 和 `user_id`，私聊只传 `user_id`。接口定义见 [NapCat API](https://napcat.apifox.cn/250286923e0)，通知字段见 [NapCat 通知实现](https://github.com/NapNeko/NapCatQQ/blob/main/packages/napcat-onebot/event/notice/OB11PokeEvent.ts)。
 - 发送前在原消息的元数据写入 `poke_action`，包含目标和 `attempting` 状态；随后更新为 `sent` 或 `send_unknown`。同一原消息重新进入流程也不能再次发送。成员查询后再次检查消息是否过期，过期回复不执行拍一拍。平台请求等待上限八秒，异常和超时均不自动重试。
 - `Reply.poke_target` 仅包含平台已确认的成功目标，`service.py` 可在没有文字回复时保存成功动作说明。只有被拍通知或成功动作允许空文字结果；普通请求空回复仍是错误。通知编号在 `groupchat.py` 的引用校验中排除。
-- `personas/*.txt` 的“拍一拍互动”章节维护具体角色反应，同时传入回复和参与判断。`prompts/catalog.json` 的 `llm.poke.0`、`llm.poke_plan.0` 和 `tool.poke_user.description` 仅维护调用参数、通知字段、处理结果和程序限制，沿用后台提示词覆盖。
+- `personas/*.txt` 的“拍一拍互动”章节维护具体角色反应，同时传入回复和参与判断。`prompts/modules.json` 的 消息与互动模块的 `llm.poke.0` 与 `poke_user` 工具定义 仅维护调用参数、通知字段、处理结果和程序限制，沿用后台提示词覆盖。
 
 ## 使用说明
 

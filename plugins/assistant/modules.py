@@ -1,29 +1,9 @@
 """聊天模块目录：按当前会话发现能力，并复用各模块的权限入口。"""
 
-CAPABILITIES = {
-    "name": "read_capabilities",
-    "description": "查询本会话实际可用工具和群插件开关，不扩大权限。",
-    "parameters": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "additionalProperties": False,
-    },
-}
-PLUGIN = {
-    "name": "manage_plugin",
-    "description": "查询或按明确委托开关插件。本群需管理员，全局需机器人主人，不能扩大插件范围。",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "action": {"type": "string", "enum": ["list", "enable", "disable"]},
-            "plugin": {"type": "string", "description": "插件ID，查询列表时为空"},
-            "scope": {"type": "string", "enum": ["group", "global"]},
-        },
-        "required": ["action", "plugin", "scope"],
-        "additionalProperties": False,
-    },
-}
+from .prompt_store import tool_definition
+
+CAPABILITIES = tool_definition("read_capabilities")
+PLUGIN = tool_definition("manage_plugin")
 
 
 class Modules:

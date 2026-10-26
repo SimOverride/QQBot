@@ -5,21 +5,9 @@ import sqlite3
 import time
 from contextlib import closing
 
-from .emotes import tool
+from .prompt_store import tool_definition
 
-FUNCTION = tool(
-    "manage_emote_memory",
-    "读取或修正本群表情使用经验，或按反馈停用表情。没有删除能力。"
-    "read返回版本，remember/disable须提交该版本及本群反馈消息编号；"
-    "经验说明使用时机、实际反响和不确定性，不能将无回应视为负面反馈。",
-    {
-        "action": {"type": "string", "enum": ["read", "remember", "disable"]},
-        "id": {"type": "string", "description": "表情文件ID"},
-        "revision": {"type": "number"},
-        "reason": {"type": "string"},
-        "message_ids": {"type": "array", "items": {"type": "integer"}},
-    },
-)
+FUNCTION = tool_definition("manage_emote_memory")
 
 SCHEMA = (
     "bot INTEGER NOT NULL, scope INTEGER NOT NULL, digest TEXT NOT NULL, "
