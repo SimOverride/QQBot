@@ -39,10 +39,10 @@ export async function saveView(view, events, projections) {
 export async function syncViews(home, cwd, projections = []) {
   const folder = queuePath(home, cwd);
   let files;
-  try { files = await readdir(folder); } catch (error) { if (error.code === "ENOENT") return {synced: 0, failures: []}; throw error; }
+  try { files = await readdir(folder); } catch (error) { if (error.code === "ENOENT") return {synced: 0, busy: [], failures: []}; throw error; }
   const mapping = await readMapping(home, cwd);
   const blocked = new Set();
-  const report = {synced: 0, failures: []};
+  const report = {synced: 0, busy: [], failures: []};
   for (const file of files.filter(f => /^\d+-[a-f0-9-]+\.json$/.test(f)).sort()) {
     const path = join(folder, file);
     try {
@@ -51,7 +51,10 @@ export async function syncViews(home, cwd, projections = []) {
       try { await appendView({...view, id: mapping[view.id] || view.id}, events, projections); }
       catch (error) {
         blocked.add(view.id);
-        report.failures.push({id: view.id, name: error.name});
+        // 客户端正常持有写锁时等待，不将占用伪装成保存损坏。
+        const target = ["SessionAlreadyOwnedError", "SessionAlreadyExistsError"].includes(error.name)
+          ? report.busy : report.failures;
+        target.push({id: view.id, name: error.name});
         continue;
       }
       await unlink(path);

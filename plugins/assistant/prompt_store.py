@@ -162,7 +162,7 @@ def migrate_console(root=None):
     path = root / "data/console.json"
     if not path.exists():
         return
-    with project_lock(root, ".migration.lock"):
+    with project_lock(root, name=".migration.lock"):
         original = path.read_bytes()
         value = json.loads(original)
         if "prompts" not in value:

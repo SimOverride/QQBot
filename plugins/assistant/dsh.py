@@ -6,8 +6,10 @@ import copy
 import hashlib
 import json
 import os
+import re
 import tempfile
 from contextvars import ContextVar
+from dataclasses import dataclass
 from pathlib import Path
 
 from nonebot.log import logger
@@ -52,13 +54,57 @@ def view_title(scope):
     return f"{name}（{abs(group)}）"
 
 
+@dataclass(frozen=True)
+class ViewReport:
+    synced: int = 0
+    busy: int = 0
+    errors: tuple[str, ...] = ()
+
+
+def view_report(output, returncode):
+    """仅解析补写摘要，原生输出和异常正文不进入业务日志。"""
+    prefix = b"QQBOT_VIEW_SYNC "
+    lines = [line[len(prefix) :] for line in output.splitlines() if line.startswith(prefix)]
+    if not lines or len(lines[-1]) > 1024 * 1024:
+        return ViewReport(errors=("ViewSyncProtocolError",))
+    try:
+        value = json.loads(lines[-1])
+        report = value.get("report", value)
+        if "error" in report:
+            names = [report["error"]]
+            synced, busy = 0, 0
+        else:
+            synced = report["synced"]
+            if not isinstance(report["busy"], list) or not isinstance(report["failures"], list):
+                raise ValueError("无效的补写摘要")
+            busy = len(report["busy"])
+            names = [item["name"] for item in report["failures"]]
+            if type(synced) is not int or synced < 0:
+                raise ValueError("无效的补写计数")
+        errors = tuple(
+            sorted(
+                {
+                    name
+                    if isinstance(name, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", name)
+                    else "UnknownError"
+                    for name in names
+                }
+            )
+        )
+        if returncode and not errors:
+            errors = ("ViewSyncProcessError",)
+        return ViewReport(synced=synced, busy=busy, errors=errors)
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return ViewReport(errors=("ViewSyncProtocolError",))
+
+
 async def sync_views(config):
     """仅在存在待同步记录时启动短进程，由原生写锁决定是否可追加。"""
     root = Path(__file__).resolve().parents[2]
     home = view_home(config)
     namespace = hashlib.sha256(str(root).lower().encode()).hexdigest()[:16]
     if not any((home / "qqbot-pending" / namespace).glob("*.json")):
-        return
+        return ViewReport()
     package = Runner(root, config).package()
     env = environment()
     executable = launch(package, env)[0]
@@ -70,19 +116,55 @@ async def sync_views(config):
         str(home),
         str(root),
         env=env,
-        stdout=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
         **process_options(),
     )
     try:
         async with asyncio.timeout(20):
-            await process.wait()
-            if process.returncode:
-                logger.warning(
-                    "DSH 浏览记录暂未同步，已保留待补写队列（状态 {}）", process.returncode
-                )
+            output, _ = await process.communicate()
+            return view_report(output, process.returncode)
     finally:
         await stop_process(process)
+
+
+class ViewSync:
+    """预期占用只提示一次；重试退避，恢复后重新使用正常检查间隔。"""
+
+    def __init__(self, config):
+        self.config = config
+        self.delay = 15
+        self.state = None
+
+    async def run(self):
+        try:
+            report = await sync_views(self.config)
+        except Exception as error:
+            report = ViewReport(errors=(type(error).__name__,))
+        state = ("error", report.errors) if report.errors else ("busy",) if report.busy else None
+        previous = self.state
+        self.delay = min(self.delay * 2, 300) if state and state == previous else 15
+        self.state = state
+        emit(
+            self.config,
+            "dsh_view_sync",
+            synced=report.synced,
+            busy=report.busy,
+            errors=report.errors,
+            retry_seconds=self.delay,
+        )
+        if state == previous:
+            return
+        if report.errors:
+            logger.warning(
+                "DSH 浏览记录补写失败（类型：{}），队列已保留，{}秒后重试；同类错误不重复提示",
+                "、".join(report.errors),
+                self.delay,
+            )
+        elif report.busy:
+            logger.info("DSH 客户端正占用浏览会话，已保留补写队列；释放写锁后自动同步")
+        elif previous:
+            logger.info("DSH 浏览记录补写队列已清空，恢复正常检查")
 
 
 class Turn:

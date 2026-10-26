@@ -55,15 +55,16 @@ def configure_logging():
 
 def main():
     """初始化并运行机器人，运行锁由入口持有。"""
-    from plugins.assistant.prompt_store import migrate_console
-
-    migrate_console(ROOT)
     nonebot.init()
     configure_logging()
     nonebot.get_driver().register_adapter(Adapter)
     plugin = nonebot.load_plugin("plugins.assistant")
     if plugin is None:
         raise RuntimeError("无法加载机器人插件")
+    # 子模块导入必须在 NoneBot 完成插件加载后，避免提前导入父包。
+    from plugins.assistant.prompt_store import migrate_console
+
+    migrate_console(ROOT)
     plugin.module.setup()
     nonebot.run()
 

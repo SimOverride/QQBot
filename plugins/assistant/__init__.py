@@ -168,14 +168,12 @@ def setup() -> None:
         plugin_worker = asyncio.create_task(plugin_loop())
 
         async def view_loop():
-            from .dsh import sync_views
+            from .dsh import ViewSync
 
+            sync = ViewSync(config)
             while True:
-                try:
-                    await sync_views(config)
-                except Exception as error:
-                    logger.warning("dsh_view_sync_failure={}", type(error).__name__)
-                await asyncio.sleep(15)
+                await sync.run()
+                await asyncio.sleep(sync.delay)
 
         view_worker = asyncio.create_task(view_loop())
 

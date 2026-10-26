@@ -13,6 +13,7 @@
 `plugins/assistant/trace.py` 使用 `ContextVar` 关联异步调用，以 `trace_id`、`span_id`、`parent_span_id` 标识链路与阶段。`scoped` 装饰器记录阶段起止、耗时、取消和异常类型，`emit` 生成独立 JSONL 事件。`Config.model_trace_enabled` 控制记录，`model_trace_retention_days` 控制保留天数。
 
 - `llm.py` 在模型请求前记录实际消息、条数、各条序列化长度、开放工具及输出上限；请求后记录正文与工具调用。两条工具执行路径记录参数、结果、状态及耗时。
+- `dsh.py` 的 `dsh_view_sync` 记录浏览队列每次补写的成功数量、占用会话数量、异常类型和下次检查间隔，不包含会话正文或原生异常正文。普通业务日志仅在占用、恢复或错误类型变化时提示，持续同类状态不会刷屏。
 - `http.py` 记录 HTTP 状态、耗时、Token 用量和服务商结束原因，不记录请求头或原始响应体。
 - `groupchat.py` 记录触发消息标识、话题判断结果、固定参与门槛及跳过或过时取消原因。
 - `service.py` 记录业务请求编号、去重和限流、最终文本或表情发送结果、输出分段和截断情况。

@@ -1,6 +1,7 @@
 """客户端浏览记录的隔离、并发和原生持久化验证。"""
 
 import asyncio
+import hashlib
 import json
 import os
 import subprocess
@@ -11,10 +12,123 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from plugins.assistant.config import Config
-from plugins.assistant.dsh import Chat
+from plugins.assistant.dsh import Chat, ViewReport, ViewSync, sync_views, view_report
 from plugins.assistant.llm import LLM, Reply
 from plugins.assistant.search import Search
 from plugins.tasks.desktop import installation, launch
+
+
+class ViewSyncTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.cfg = Config(model_trace_enabled=False)
+
+    def test_report_distinguishes_ownership_from_real_errors(self):
+        def encode(value):
+            return b"QQBOT_VIEW_SYNC " + json.dumps(value).encode()
+
+        waiting = view_report(encode({"synced": 0, "busy": [{}], "failures": []}), 0)
+        self.assertEqual(waiting, ViewReport(busy=1))
+        failed = view_report(
+            encode(
+                {
+                    "synced": 1,
+                    "busy": [{}],
+                    "failures": [{"name": "SessionPersistenceCorruptionError"}],
+                }
+            ),
+            2,
+        )
+        self.assertEqual(failed.errors, ("SessionPersistenceCorruptionError",))
+        self.assertEqual(failed.synced, 1)
+        self.assertEqual(view_report(encode({"error": "SyntaxError"}), 1).errors, ("SyntaxError",))
+        self.assertEqual(
+            view_report(b"unstructured-private-output", 1).errors, ("ViewSyncProtocolError",)
+        )
+        hidden = view_report(encode({"error": "private key or message body"}), 1)
+        self.assertEqual(hidden.errors, ("UnknownError",))
+        self.assertEqual(
+            view_report(encode({"synced": 0, "busy": "invalid", "failures": []}), 0).errors,
+            ("ViewSyncProtocolError",),
+        )
+
+    async def test_repeated_busy_is_quiet_backs_off_and_recovers(self):
+        sync = ViewSync(self.cfg)
+        delays = []
+        reports = [ViewReport(busy=1)] * 7 + [ViewReport(synced=3), ViewReport()]
+        with (
+            patch("plugins.assistant.dsh.sync_views", AsyncMock(side_effect=reports)),
+            patch("plugins.assistant.dsh.logger") as logger,
+        ):
+            for _ in range(7):
+                await sync.run()
+                delays.append(sync.delay)
+            self.assertEqual(delays, [15, 30, 60, 120, 240, 300, 300])
+            logger.warning.assert_not_called()
+            self.assertEqual(logger.info.call_count, 1)
+            await sync.run()
+            await sync.run()
+            self.assertEqual(sync.delay, 15)
+            self.assertEqual(logger.info.call_count, 2)
+
+    async def test_real_errors_are_visible_without_repeating_private_output(self):
+        sync = ViewSync(self.cfg)
+        reports = [ViewReport(errors=("SessionPersistenceCorruptionError",))] * 2
+        with (
+            patch("plugins.assistant.dsh.sync_views", AsyncMock(side_effect=reports)),
+            patch("plugins.assistant.dsh.logger") as logger,
+        ):
+            await sync.run()
+            await sync.run()
+            logger.warning.assert_called_once()
+            self.assertIn("SessionPersistenceCorruptionError", str(logger.warning.call_args))
+        with (
+            patch("plugins.assistant.dsh.sync_views", AsyncMock(side_effect=OSError("private"))),
+            patch("plugins.assistant.dsh.logger") as logger,
+        ):
+            await sync.run()
+            await sync.run()
+            logger.warning.assert_called_once()
+            self.assertNotIn("private", str(logger.warning.call_args))
+
+    async def test_empty_queue_does_not_launch_helper(self):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch("plugins.assistant.dsh.view_home", return_value=Path(directory)),
+            patch("plugins.assistant.dsh.asyncio.create_subprocess_exec") as launch_helper,
+        ):
+            self.assertEqual(await sync_views(self.cfg), ViewReport())
+            launch_helper.assert_not_called()
+
+    async def test_helper_output_is_parsed_and_process_is_always_closed(self):
+        from plugins.assistant import dsh
+
+        namespace = hashlib.sha256(str(Path(dsh.__file__).resolve().parents[2]).lower().encode())
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory) / "qqbot-pending" / namespace.hexdigest()[:16]
+            folder.mkdir(parents=True)
+            (folder / "pending.json").write_text("{}")
+            process = SimpleNamespace(
+                returncode=0,
+                communicate=AsyncMock(
+                    return_value=(b'QQBOT_VIEW_SYNC {"synced":0,"busy":[{}],"failures":[]}', b"")
+                ),
+            )
+            with (
+                patch("plugins.assistant.dsh.view_home", return_value=Path(directory)),
+                patch("plugins.assistant.dsh.Runner"),
+                patch("plugins.assistant.dsh.launch", return_value=["test-runtime"]),
+                patch(
+                    "plugins.assistant.dsh.asyncio.create_subprocess_exec",
+                    AsyncMock(return_value=process),
+                ),
+                patch("plugins.assistant.dsh.stop_process", AsyncMock()) as stop,
+            ):
+                self.assertEqual(await sync_views(self.cfg), ViewReport(busy=1))
+                stop.assert_awaited_once_with(process)
+                process.communicate.side_effect = asyncio.CancelledError()
+                with self.assertRaises(asyncio.CancelledError):
+                    await sync_views(self.cfg)
+                self.assertEqual(stop.await_count, 2)
 
 
 class ViewTests(unittest.IsolatedAsyncioTestCase):
@@ -77,3 +191,6 @@ class ViewTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(locked["users"], 5)
             recovered = json.loads(await run("recover", home, "qqbot-test"))
             self.assertEqual(recovered["users"], 7)
+            await run("save", home, "qqbot-invalid")
+            invalid = json.loads(await run("invalid", home, "qqbot-invalid"))
+            self.assertEqual(invalid["users"], 1)

@@ -175,7 +175,7 @@ def account(root, expected=None):
 
 
 @contextmanager
-def project_lock(root, runtime=False, name=".runtime.lock"):
+def project_lock(root, *, runtime=False, name=".runtime.lock"):
     """运行进程与导入共用排他锁，防止导入时机器人启动并写入旧数据库。"""
     (root / "data").mkdir(parents=True, exist_ok=True)
     with (root / "data" / name).open("a+b") as stream:

@@ -1,6 +1,7 @@
 // 在临时目录验证客户端原生会话追加和跨进程读取，不调用模型。
 import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { spawnSync } from "node:child_process";
 import { saveView, syncViews, recoverViews } from "../plugins/assistant/dsh_view.mjs";
 const require = createRequire(process.env.QQBOT_DSH_PACKAGE + "/package.json");
 const load = name => import(pathToFileURL(require.resolve(name)).href);
@@ -27,7 +28,14 @@ if (mode === "save") {
       if ((await handle.read()).events.filter(e => e.type === "user/message").length !== before + 2) throw new Error("重建映射错误");
     }
     if (mode === "locked") {
-      await saveView({home, cwd: process.cwd(), id, title: "QQBot 测试", user: "占用期间的虚构消息"}, [], []);
+      const report = await saveView({home, cwd: process.cwd(), id, title: "QQBot 测试", user: "占用期间的虚构消息"}, [], []);
+      if (report.busy.length !== 1 || report.failures.length || report.synced) throw new Error("占用未归类为等待");
+      // 真实子进程持锁时，补写 CLI 也应返回正常等待状态，队列仍可稍后恢复。
+      const cli = spawnSync(process.execPath, ["--expose-internals",
+        fileURLToPath(new URL("../plugins/assistant/dsh_view_sync.mjs", import.meta.url)),
+        home, process.cwd()], {env: process.env, encoding: "utf8", timeout: 10000});
+      const line = cli.stdout?.split(/\r?\n/).find(value => value.startsWith("QQBOT_VIEW_SYNC "));
+      if (cli.status !== 0 || !line || JSON.parse(line.slice(16)).busy.length !== 1) throw new Error("占用 CLI 错报失败");
       const before = (await handle.read()).events.filter(e => e.type === "user/message").length;
       await handle.close();
       await syncViews(home, process.cwd());
@@ -35,6 +43,15 @@ if (mode === "save") {
       handle = await ctx.sessionPersistence.open(id, "read");
       const after = (await handle.read()).events.filter(e => e.type === "user/message").length;
       if (after !== before + 1) throw new Error("队列补写丢失或重复");
+    }
+    if (mode === "invalid") {
+      const report = await saveView({home, cwd: process.cwd(), id, title: "QQBot 测试", user: "无效事件测试"},
+        [{type: "turn/end", data: {turn: 999}}], []);
+      if (report.busy.length || report.failures.length !== 1) throw new Error("无效事件被误判为正常占用");
+      const cli = spawnSync(process.execPath, ["--expose-internals",
+        fileURLToPath(new URL("../plugins/assistant/dsh_view_sync.mjs", import.meta.url)),
+        home, process.cwd()], {env: process.env, encoding: "utf8", timeout: 10000});
+      if (cli.status !== 2) throw new Error("真实失败未报告异常状态");
     }
     const listed = await ctx.sessionPersistence.list();
     if (!listed.some(item => item.header.id === handle.header.id)) throw new Error("原生会话列表未包含记录");

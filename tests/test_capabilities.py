@@ -26,6 +26,34 @@ class CapabilityTests(unittest.TestCase):
             json.dumps(value, ensure_ascii=False), encoding="utf-8"
         )
 
+    def test_startup_migration_while_runtime_lock_is_held(self):
+        from migration import project_lock
+
+        for value in ({"prompts": {"llm.poke.0": "自定义互动"}}, {"modules": {}}):
+            with self.subTest(value=value):
+                self.save(value)
+                with project_lock(self.root, runtime=True):
+                    store.migrate_console(self.root)
+                    self.assertNotIn(
+                        "prompts",
+                        json.loads((self.root / "data/console.json").read_text(encoding="utf-8")),
+                    )
+                    # 配置迁移结束后，机器人仍独占运行锁。
+                    with self.assertRaises(ValueError):
+                        with project_lock(self.root, runtime=True):
+                            self.fail("运行锁不能被迁移流程释放")
+
+    def test_config_migration_obeys_migration_lock(self):
+        from migration import project_lock
+
+        self.save({"prompts": {"llm.poke.0": "自定义互动"}})
+        original = (self.root / "data/console.json").read_bytes()
+        with project_lock(self.root, name=".migration.lock"):
+            with self.assertRaises(ValueError):
+                store.migrate_console(self.root)
+        self.assertEqual((self.root / "data/console.json").read_bytes(), original)
+        self.assertFalse((self.root / "backups").exists())
+
     def test_legacy_migration_backup_idempotence_and_new_value_priority(self):
         legacy = {
             "prompts": {
