@@ -162,7 +162,18 @@ class MigrationTests(unittest.TestCase):
         (source / "personas/custom.txt").write_text("来源", encoding="utf-8")
         (target / "personas/custom.txt").write_text("本地", encoding="utf-8")
         m.write_json(
-            source / "group_chat.json", {"groups": {"10": {"persona": {"name": "custom"}}}}
+            source / "group_chat.json",
+            {
+                "default_min_participants": 6,
+                "groups": {
+                    "10": {"persona": {"name": "custom"}, "min_participants": 4},
+                    "11": {"min_participants": 5},
+                },
+            },
+        )
+        m.write_json(
+            target / "group_chat.json",
+            {"default_min_participants": 3, "groups": {"10": {"min_participants": 2}}},
         )
         for root, updated, description in ((source, 2, "新"), (target, 1, "旧")):
             with closing(sqlite3.connect(root / "emotes/.memory.sqlite3")) as conn, conn:
@@ -180,6 +191,9 @@ class MigrationTests(unittest.TestCase):
         self.assertIn("EXTRA=value", (target / ".env").read_text(encoding="utf-8"))
         settings = json.loads((target / "group_chat.json").read_text(encoding="utf-8"))
         self.assertTrue(settings["groups"]["10"]["persona"]["name"].startswith("custom_导入_"))
+        self.assertEqual(settings["default_min_participants"], 3)
+        self.assertEqual(settings["groups"]["10"]["min_participants"], 2)
+        self.assertEqual(settings["groups"]["11"]["min_participants"], 5)
         with closing(sqlite3.connect(target / "emotes/.memory.sqlite3")) as conn, conn:
             self.assertEqual(
                 conn.execute("SELECT description FROM emote_memory").fetchone()[0], "新"

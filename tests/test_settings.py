@@ -101,7 +101,7 @@ class SettingsTests(unittest.TestCase):
 
     def test_default_persona_inherit_and_protect(self):
         before = self.settings.defaults()
-        self.settings.save_defaults("温和", before["revision"])
+        self.settings.save_defaults("温和", 2, before["revision"])
         groups = GroupSettings(self.root / "group_chat.json")
         self.assertNotIn("activity", groups.get(10))
         profiles = ProfileStore(self.root / "personas/默认.txt")
@@ -112,6 +112,83 @@ class SettingsTests(unittest.TestCase):
         item = store.get("persona:温和")
         with self.assertRaisesRegex(ValueError, "全局默认"):
             store.delete_file(item["resource"], item["revision"])
+
+    def save_defaults(self, count):
+        defaults = self.client.get("/api/defaults").json()
+        return self.client.post(
+            "/api/defaults",
+            headers=self.headers,
+            json={
+                "persona": defaults["persona"],
+                "min_participants": count,
+                "revision": defaults["revision"],
+            },
+        )
+
+    def test_participant_defaults_group_override_and_restore_inheritance(self):
+        groups = GroupSettings(self.root / "group_chat.json")
+        store = ConsoleStore(self.root)
+        self.assertEqual(groups.get(10)["min_participants"], 2)
+        self.assertEqual(self.save_defaults(5).status_code, 200)
+        item = store.get("group:123:10")
+        self.assertIsNone(item["value"]["min_participants"])
+        self.assertEqual(item["default_min_participants"], 5)
+        # 只改群认知不会将继承中的人数固定为群覆盖。
+        item["value"]["summary"] = "本群说明"
+        store.put(item["resource"], item["value"], item["revision"])
+        self.assertNotIn("min_participants", groups.read()["groups"]["10"])
+        self.assertEqual(self.save_defaults(7).status_code, 200)
+        self.assertEqual(groups.get(10)["min_participants"], 7)
+        item = store.get("group:123:10")
+        item["value"]["min_participants"] = 3
+        saved = store.put(item["resource"], item["value"], item["revision"])
+        self.assertEqual(self.save_defaults(9).status_code, 200)
+        self.assertEqual(groups.get(10)["min_participants"], 3)
+        self.assertEqual(groups.get(11)["min_participants"], 9)
+        # 默认值变化时旧阅读版本失效，刷新后再恢复继承。
+        with self.assertRaisesRegex(ValueError, "已被其他操作修改"):
+            store.put(saved["resource"], saved["value"], saved["revision"])
+        saved = store.get("group:123:10")
+        saved["value"]["min_participants"] = None
+        store.put(saved["resource"], saved["value"], saved["revision"])
+        self.assertEqual(GroupSettings(groups.path).get(10)["min_participants"], 9)
+        self.assertTrue(list((self.root / "backups/settings").glob("*.json")))
+
+    def test_participant_validation_and_default_version_conflict(self):
+        before = self.client.get("/api/defaults").json()
+        for count in (0, -1, 11, 100, True, 2.5, "3", None):
+            with self.subTest(count=count):
+                self.assertEqual(self.save_defaults(count).status_code, 400)
+        self.assertEqual(self.client.get("/api/defaults").json()["revision"], before["revision"])
+        self.assertEqual(self.save_defaults(4).status_code, 200)
+        stale = self.client.post(
+            "/api/defaults",
+            headers=self.headers,
+            json={"persona": "默认", "min_participants": 8, "revision": before["revision"]},
+        )
+        self.assertEqual(stale.status_code, 400)
+        store = ConsoleStore(self.root)
+        item = store.get("group:123:10")
+        for count in (0, 11, 100, True, 1.5, "3"):
+            with self.subTest(group_count=count), self.assertRaises(ValueError):
+                store.put(
+                    item["resource"], {**item["value"], "min_participants": count}, item["revision"]
+                )
+        self.assertEqual(self.client.post("/api/defaults", json={}).status_code, 403)
+
+    def test_ten_plus_can_be_saved_and_inherited(self):
+        self.assertEqual(self.save_defaults(10).status_code, 200)
+        groups = GroupSettings(self.root / "group_chat.json")
+        self.assertEqual(groups.get(10)["min_participants"], 10)
+        store = ConsoleStore(self.root)
+        item = store.get("group:123:10")
+        self.assertEqual(item["default_min_participants"], 10)
+        item["value"]["min_participants"] = 9
+        saved = store.put(item["resource"], item["value"], item["revision"])
+        self.assertEqual(groups.get(10)["min_participants"], 9)
+        saved["value"]["min_participants"] = 10
+        store.put(saved["resource"], saved["value"], saved["revision"])
+        self.assertEqual(GroupSettings(groups.path).get(10)["min_participants"], 10)
 
     def test_group_toggle_does_not_invalidate_other_group(self):
         store = self.seed_plugins()

@@ -16,7 +16,12 @@ from .personality import LIMITS
 from .prompt_store import group_knowledge
 from .repeat import RepeatState, recently_sent
 from .shares import ShareReader, message_text
-from .topics import Topics
+from .topics import (
+    DEFAULT_MIN_PARTICIPANTS,
+    MAX_MIN_PARTICIPANTS,
+    Topics,
+    validate_min_participants,
+)
 from .trace import emit, scoped
 from .vision import image_segments
 
@@ -34,9 +39,12 @@ class GroupSettings:
             raise ValueError("群聊配置格式错误")
         if not isinstance(data.get("default_persona", "默认"), str):
             raise ValueError("默认人设名称无效")
+        validate_min_participants(data.get("default_min_participants", DEFAULT_MIN_PARTICIPANTS))
         for group, settings in data.get("groups", {}).items():
             if not group.isdigit() or int(group) <= 0 or not isinstance(settings, dict):
                 raise ValueError("群聊配置群号错误")
+            if "min_participants" in settings:
+                validate_min_participants(settings["min_participants"])
             if "style" in settings:
                 raise ValueError("群配置仍有独立风格，请先将风格并入人设并移除 style 配置")
             for profile_field in LIMITS:
@@ -61,6 +69,9 @@ class GroupSettings:
         settings = data.get("groups", {}).get(str(group), {})
         return {
             "interests": settings.get("interests", []),
+            "min_participants": settings.get(
+                "min_participants", data.get("default_min_participants", DEFAULT_MIN_PARTICIPANTS)
+            ),
         }
 
     def write(self, data):
@@ -283,6 +294,7 @@ class GroupConversation:
                         "bot_qq": account,
                         "explicit_message_id": event.message_id if explicit else None,
                         "interests": self.settings.get(group)["interests"],
+                        "min_participants": self.settings.get(group)["min_participants"],
                         "persona": self.service.profiles.effective(group),
                     }
                 )
@@ -292,7 +304,14 @@ class GroupConversation:
                     assessment = item
         if assessment is None:
             assessment = {"should_reply": False, "reply_reason": "本条消息已归档判断"}
-        return self.topics.gate(account, group, event.message_id, assessment, explicit)
+        return self.topics.gate(
+            account,
+            group,
+            event.message_id,
+            assessment,
+            explicit,
+            min_participants=self.settings.get(group)["min_participants"],
+        )
 
     @scoped("group")
     async def respond(self, bot, event, text, state, explicit, events=()):
@@ -340,7 +359,12 @@ class GroupConversation:
                     int(bot.self_id), event.group_id, [message], [assignment], advance=False
                 )
                 participation = self.topics.gate(
-                    int(bot.self_id), event.group_id, event.message_id, assignment, True
+                    int(bot.self_id),
+                    event.group_id,
+                    event.message_id,
+                    assignment,
+                    True,
+                    min_participants=self.settings.get(event.group_id)["min_participants"],
                 )
             emit(self.service.config, "topic_decision", **participation)
             if not participation["allowed"]:
@@ -396,7 +420,13 @@ class GroupConversation:
         chat_tools = HistoryTools(
             self.service.archive, (int(bot.self_id), event.group_id, event.user_id)
         )
-        chat_tools.is_current = lambda: state.versions.get(event.user_id, 0) == sender_version
+        chat_tools.is_current = lambda: (
+            state.versions.get(event.user_id, 0) == sender_version
+            and (
+                explicit
+                or self.settings.get(event.group_id)["min_participants"] < MAX_MIN_PARTICIPANTS
+            )
+        )
         chat_tools.emotes = self.service.emotes
         chat_tools.poke = self.service.pokes.session(
             bot, event.group_id, event.user_id, event.message_id, chat_tools.is_current
@@ -442,7 +472,7 @@ class GroupConversation:
                 # 普通回复生成不能绕过复读协议及冷却，重新输出同一句。
                 emit(self.service.config, "send_skipped", reason="repeat_requires_selection")
                 raise RuntimeError("repeat_requires_selection")
-            stale = state.versions.get(event.user_id, 0) != sender_version
+            stale = not chat_tools.is_current()
             if stale:
                 from .service import Superseded
 
@@ -545,7 +575,10 @@ class GroupConversation:
                     "explicit": explicit,
                     "repeat_candidate": repeat_text,
                     "participation_guidance": (
-                        "新话题至少2位不同群成员参与后才选择接话，第3位加入可提高接话意愿。"
+                        "新话题达到topic_assessment.min_participants人数门槛后才选择接话。"
+                        "人数配置为10表示10+，禁止主动回复，但直接呼叫仍可回应。"
+                        "达到门槛后每批新消息都评估，不要求新增成员，参与人数越多越倾向于接话，"
+                        "但没有补充价值时仍可旁听。"
                         "接话后仅回应群友对机器人具体说法的回应或讨论，不能持续加入群友互聊。"
                         "直接@跳过门槛；@全体不跳过门槛。结合语境可选择静默。"
                     ),

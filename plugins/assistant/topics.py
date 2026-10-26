@@ -7,6 +7,15 @@ from pathlib import Path
 
 from .trace import sanitize
 
+DEFAULT_MIN_PARTICIPANTS = 2
+MAX_MIN_PARTICIPANTS = 10
+
+
+def validate_min_participants(value):
+    """1至9为人数门槛，10表示10+且关闭主动回复。"""
+    if type(value) is not int or not 1 <= value <= MAX_MIN_PARTICIPANTS:
+        raise ValueError("接话参与人数须为1至10的整数，10表示10+（不主动回复）")
+
 
 class Topics:
     def __init__(self, root, config):
@@ -19,7 +28,7 @@ class Topics:
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS topics (
                 bot INTEGER, grp INTEGER, start INTEGER, title TEXT, created REAL,
-                updated REAL, attempted INTEGER DEFAULT 0, replies INTEGER DEFAULT 0,
+                updated REAL, replies INTEGER DEFAULT 0,
                 PRIMARY KEY(bot,grp,start)
             );
             CREATE TABLE IF NOT EXISTS topic_messages (
@@ -37,6 +46,11 @@ class Topics:
                 bot INTEGER, grp INTEGER, source_id INTEGER, PRIMARY KEY(bot,grp)
             );
         """)
+        columns = {row["name"] for row in self.db.execute("PRAGMA table_info(topics)")}
+        if "attempted" in columns:
+            # 评估次数不再限制接话，升级时移除旧阶段字段，保留话题及完整聊天。
+            with self.db:
+                self.db.execute("ALTER TABLE topics DROP COLUMN attempted")
 
     def close(self):
         self.db.close()
@@ -49,6 +63,14 @@ class Topics:
             (bot, group, time.time() - 900),
         ):
             item = dict(row)
+            item["participants"] = [
+                r[0]
+                for r in self.db.execute(
+                    "SELECT DISTINCT usr FROM topic_messages WHERE bot=? AND grp=? AND topic=? "
+                    "AND usr<>?",
+                    (bot, group, row["start"], bot),
+                )
+            ]
             item["messages"] = [
                 {**json.loads(r[0]), "text": json.loads(r[0]).get("text", "")[:400]}
                 for r in reversed(
@@ -159,7 +181,17 @@ class Topics:
             ),
         )
 
-    def gate(self, bot, group, message_id, assessment, explicit=False):
+    def gate(
+        self,
+        bot,
+        group,
+        message_id,
+        assessment,
+        explicit=False,
+        *,
+        min_participants=DEFAULT_MIN_PARTICIPANTS,
+    ):
+        validate_min_participants(min_participants)
         row = self.db.execute(
             "SELECT * FROM topic_messages WHERE bot=? AND grp=? AND message_id=?",
             (bot, group, message_id),
@@ -172,7 +204,7 @@ class Topics:
             "AND usr<>?",
             (bot, group, topic["start"], bot),
         ).fetchone()[0]
-        allowed, stage = False, min(people, 3)
+        allowed = False
         handled = self.db.execute(
             "SELECT 1 FROM topic_decisions WHERE bot=? AND grp=? AND message_id=?",
             (bot, group, message_id),
@@ -181,6 +213,8 @@ class Topics:
             reason = "本条消息已经处理，禁止重复触发"
         elif explicit:
             allowed, reason = True, "直接呼叫机器人，跳过人数及续话门槛"
+        elif min_participants == MAX_MIN_PARTICIPANTS:
+            reason = "本群参与人数设为10+，不主动回复"
         elif topic["replies"]:
             allowed = row["response_to"] is not None and assessment["should_reply"]
             reason = (
@@ -188,22 +222,14 @@ class Topics:
                 if allowed
                 else "机器人已接话，当前消息没有需要回应的机器人发言讨论"
             )
-        elif people < 2:
-            reason = f"新话题仅有{people}位群成员，等待至少2人参与"
-        elif stage <= topic["attempted"]:
-            reason = (
-                "2人阶段已评估，等待第3位不同群成员加入"
-                if stage < 3
-                else "2至3人阶段均已评估，继续旁听"
-            )
+        elif people < min_participants:
+            reason = f"新话题仅有{people}位群成员，等待至少{min_participants}人参与"
         else:
             allowed = assessment["should_reply"]
-            reason = f"新话题已有{people}位群成员参与：" + assessment["reply_reason"]
-            with self.db:
-                self.db.execute(
-                    "UPDATE topics SET attempted=? WHERE bot=? AND grp=? AND start=?",
-                    (stage, bot, group, topic["start"]),
-                )
+            reason = (
+                f"新话题已有{people}位群成员参与（门槛{min_participants}人）："
+                + assessment["reply_reason"]
+            )
         with self.db:
             result = self.db.execute(
                 "INSERT INTO topic_decisions"
@@ -225,6 +251,7 @@ class Topics:
             "start": topic["start"],
             "title": topic["title"],
             "participants": people,
+            "min_participants": min_participants,
             "allowed": allowed,
             "reason": reason,
             "judgement": row["judgement"],

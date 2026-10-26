@@ -12,6 +12,7 @@ import migration
 from console_store import atomic_json, revision
 from plugins.assistant.config import Config
 from plugins.assistant.groupchat import GroupSettings
+from plugins.assistant.topics import DEFAULT_MIN_PARTICIPANTS, validate_min_participants
 from plugins.extensions.store import Store
 
 # 仅开放运行参数；身份、监听地址、启动路径不由此页面修改。
@@ -157,11 +158,12 @@ class Settings:
         data = GroupSettings(self.root / "group_chat.json").read()
         return {
             "revision": revision(data),
+            "min_participants": data.get("default_min_participants", DEFAULT_MIN_PARTICIPANTS),
             "persona": data.get("default_persona", "默认"),
             "personas": sorted(p.stem for p in (self.root / "personas").glob("*.txt")),
         }
 
-    def save_defaults(self, persona, expected):
+    def save_defaults(self, persona, min_participants, expected):
         with migration.project_lock(self.root, name=".migration.lock"):
             self.check()
             current = self.defaults()
@@ -169,10 +171,11 @@ class Settings:
                 raise ValueError("默认设置已变化，请刷新后重试")
             if persona not in current["personas"]:
                 raise ValueError("默认人设无效")
+            validate_min_participants(min_participants)
             store = GroupSettings(self.root / "group_chat.json")
             data = store.read()
             atomic_json(self.root / "backups/settings" / (uuid.uuid4().hex + ".json"), data)
-            data.update(default_persona=persona)
+            data.update(default_persona=persona, default_min_participants=min_participants)
             store.write(data)
         return {
             "message": "默认设置已保存，未单独配置的群及默认人设后续请求生效",

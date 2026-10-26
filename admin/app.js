@@ -168,8 +168,8 @@ async function saveManual(){
   if(busy||!current)return;
   if(!dirty()){status('内容没有变化');return;}
   busy=true;
-  const controls=[...$('#editor').querySelectorAll('input,textarea,select,button')];
-  controls.forEach(el=>el.disabled=true);
+  const controls=[...$('#editor').querySelectorAll('input,textarea,select,button')].map(el=>({el,disabled:el.disabled}));
+  controls.forEach(({el})=>el.disabled=true);
   status('正在保存…');
   try{
     const saved=await api('/api/resource',{resource:current.resource,value:structuredClone(draft),revision:current.revision});
@@ -177,7 +177,28 @@ async function saveManual(){
     await refreshResources(saved.resource);
     status('已保存；原值可在操作记录中恢复');
   }catch(e){status(e.message,true);}
-  finally{busy=false;controls.forEach(el=>el.disabled=false);}
+  finally{busy=false;controls.forEach(({el,disabled})=>el.disabled=disabled);}
+}
+// 人数滑块在全局设置和群覆盖中共用；空值表示继续跟随默认值。
+function participantControl(parent,title,value,onchange,defaultValue){
+  const field=document.createElement('div');field.className='field participants-field';
+  const label=document.createElement('label'),heading=document.createElement('span'),amount=document.createElement('output');
+  heading.textContent=title;
+  const describe=value=>Number(value)===10?'10+（不主动回复）':value+' 人';
+  const slider=document.createElement('input');slider.type='range';slider.min='1';slider.max='10';slider.step='1';slider.value=value??defaultValue;slider.setAttribute('aria-label',title);
+  label.append(heading,amount,slider);field.append(label);
+  let inherit=null,disabled=false;
+  function refresh(){amount.textContent=describe(slider.value);slider.setAttribute('aria-valuetext',describe(slider.value));slider.disabled=disabled||Boolean(inherit?.checked);if(inherit)inherit.disabled=disabled;}
+  function selected(){return inherit?.checked?null:Number(slider.value);}
+  if(defaultValue!==undefined){
+    const follow=document.createElement('label');follow.className='participants-inherit';
+    inherit=document.createElement('input');inherit.type='checkbox';inherit.checked=value===null;inherit.setAttribute('aria-label','参与人数跟随默认');
+    follow.append(inherit,document.createTextNode('跟随默认：'+describe(defaultValue)));field.append(follow);
+    inherit.onchange=()=>{if(inherit.checked)slider.value=defaultValue;refresh();onchange(selected());};
+  }
+  const note=document.createElement('small');note.className='note';note.textContent='1～9 按不同群成员计数，达标后每批新消息均评估；10+ 不主动回复，直接 @仍可回应。';field.append(note);
+  slider.oninput=()=>{refresh();onchange(selected());};parent.append(field);refresh();
+  return {value:selected,setDisabled:value=>{disabled=value;refresh();}};
 }
 function renderEditor(){
   closeMessagePreview();
@@ -195,6 +216,10 @@ function renderEditor(){
   function fields(data, parent, path=[]){
     const entries=typeof data==='string'?[['__text',data]]:Object.entries(data);
     for(const [key,value] of entries){
+      if(key==='min_participants'){
+        participantControl(parent,'接话所需参与人数',value,v=>{draft.min_participants=v;status('草稿尚未保存');},current.default_min_participants);
+        continue;
+      }
       if(value&&typeof value==='object'&&!Array.isArray(value)){
         const section=document.createElement('details');section.open=path.length===0;
         const title=document.createElement('summary');title.textContent=path[0]==='会话'?(Number(key)>0?'群 '+key:'私聊'):key;
@@ -484,9 +509,10 @@ async function renderSettings(){
   }
   const area=$('#default-settings');
   addAgentReset(area.parentElement);
+  const participants=participantControl(area,'默认接话参与人数',defaults.min_participants,()=>settingsChanged.add('defaults'));
   const persona=control(area,'默认人设',defaults.persona,'select',defaults.personas);
   persona.onchange=()=>settingsChanged.add('defaults');
-  $('#save-defaults').onclick=async()=>{if(busy)return;busy=true;persona.disabled=true;try{const saved=await api('/api/defaults',{persona:persona.value,revision:defaults.revision});defaults.revision=saved.revision;settingsChanged.delete('defaults');status(saved.message);}catch(e){status(e.message,true);}finally{busy=false;persona.disabled=false;}};
+  $('#save-defaults').onclick=async()=>{if(busy)return;busy=true;persona.disabled=true;participants.setDisabled(true);try{const saved=await api('/api/defaults',{persona:persona.value,min_participants:participants.value(),revision:defaults.revision});defaults.revision=saved.revision;settingsChanged.delete('defaults');status(saved.message);}catch(e){status(e.message,true);}finally{busy=false;persona.disabled=false;participants.setDisabled(false);}};
   const inputs={},keys={};
   for(const group of config.groups){
     const section=document.createElement('fieldset');const legend=document.createElement('legend');legend.textContent=group.name;section.append(legend);$('#env-settings').append(section);

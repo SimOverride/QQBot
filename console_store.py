@@ -20,6 +20,7 @@ from plugins.assistant.knowledge import (
     scope_name,
 )
 from plugins.assistant.prompt_store import catalog, group_knowledge, read_console
+from plugins.assistant.topics import DEFAULT_MIN_PARTICIPANTS, validate_min_participants
 
 
 def revision(value):
@@ -225,9 +226,13 @@ class ConsoleStore:
             value = {
                 "summary": data.get("summary", ""),
                 "knowledge": data.get("knowledge", ""),
+                "min_participants": group.get("min_participants"),
                 "interests": group.get("interests", []),
                 "persona": group.get("persona", {}).get("name", "默认"),
             }
+            extra["default_min_participants"] = settings.get(
+                "default_min_participants", DEFAULT_MIN_PARTICIPANTS
+            )
         elif kind == "person":
             with self.db() as db:
                 value, extra["evidence"] = person_value(db, *key, root=self.root)
@@ -321,6 +326,8 @@ class ConsoleStore:
                     ):
                         raise ValueError("每项认知须为文本，最多12000字")
         elif kind == "group":
+            if value["min_participants"] is not None:
+                validate_min_participants(value["min_participants"])
             if any(
                 not isinstance(value[f], str) or len(value[f]) > 6000
                 for f in ("summary", "knowledge")
@@ -409,6 +416,10 @@ class ConsoleStore:
                 settings.pop("default_activity", None)
                 for entry in settings["groups"].values():
                     entry.pop("activity", None)
+                if value["min_participants"] is None:
+                    group.pop("min_participants", None)
+                else:
+                    group["min_participants"] = value["min_participants"]
                 group["interests"] = value["interests"]
                 if value["persona"] == "默认":
                     group.pop("persona", None)

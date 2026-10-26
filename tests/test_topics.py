@@ -1,6 +1,7 @@
 """验证固定参与策略、话题完整记录及后台只读分页，不连接真实 QQ 或模型。"""
 
 import json
+import sqlite3
 import tempfile
 import time
 import unittest
@@ -91,17 +92,111 @@ class TopicTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(last["response_to_bot"], 901)
         self.assertEqual(last["decisions"][0]["outcome"], "已回复")
 
-    async def test_third_person_reconsiders_silent_topic_once(self):
+    async def test_same_people_can_be_reconsidered_after_quorum(self):
         await self.message(1, 2)
         self.spec[2] = {"topic": 1, "reply": False}
         await self.message(2, 3)
-        await self.message(3, 2)
         self.llm.reply.assert_not_awaited()
         self.assertEqual(TopicReader(self.root).listing()["items"], [])
+        await self.message(3, 2)
+        self.bot.send_group_msg.assert_awaited_once()
         await self.message(4, 4)
         self.bot.send_group_msg.assert_awaited_once()
-        await self.message(5, 5)
+
+    async def test_live_group_threshold_reaches_model_and_program_gate(self):
+        self.settings.write(
+            {"default_min_participants": 5, "groups": {"10": {"min_participants": 3}}}
+        )
+        await self.message(1, 2)
+        await self.message(2, 3)
+        self.llm.reply.assert_not_awaited()
+        self.assertEqual(self.llm.assess_topics.call_args.args[0]["min_participants"], 3)
+        await self.message(3, 4)
         self.bot.send_group_msg.assert_awaited_once()
+        context = json.loads(json.loads(self.llm.reply.call_args.args[4])["group"])
+        self.assertEqual(context["topic_assessment"]["min_participants"], 3)
+        self.assertEqual(context["topic_assessment"]["participants"], 3)
+        # 修改配置后下一次普通消息直接读取新值，无须重建控制器。
+        self.settings.write({"default_min_participants": 1, "groups": {}})
+        self.spec[4] = {"topic": 4}
+        await self.message(4, 2)
+        self.assertEqual(self.bot.send_group_msg.await_count, 2)
+
+    async def test_evaluation_continues_beyond_third(self):
+        self.spec.update({mid: {"reply": False} for mid in (2, 3, 4, 5)})
+        await self.message(1, 2)
+        await self.message(2, 3)
+        await self.message(3, 4)
+        await self.message(4, 4)
+        # 同一批成员也持续评估，模型暂时选择旁听。
+        self.llm.reply.assert_not_awaited()
+        await self.message(5, 4)
+        self.llm.reply.assert_not_awaited()
+        # 第四位成员加入仍可重新评估，不止于旧的三人阶段。
+        await self.message(6, 5)
+        self.bot.send_group_msg.assert_awaited_once()
+        recent = self.controller.topics.recent(99, 10)[0]
+        self.assertEqual(set(recent["participants"]), {2, 3, 4, 5})
+        detail = TopicReader(self.root).detail(99, 10, 1)
+        last = next(m for m in detail["messages"] if m["message_id"] == 6)
+        self.assertIn("4位群成员", last["decisions"][0]["reason"])
+
+    async def test_ten_plus_blocks_proactive_reply_even_with_more_than_ten_people(self):
+        self.settings.write({"default_min_participants": 10, "groups": {}})
+        for mid in range(1, 13):
+            await self.message(mid, mid + 100)
+        self.llm.reply.assert_not_awaited()
+        self.bot.send_group_msg.assert_not_awaited()
+        decision = self.controller.topics.db.execute(
+            "SELECT reason FROM topic_decisions ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        self.assertIn("10+", decision[0])
+        self.assertEqual(TopicReader(self.root).listing()["items"], [])
+
+    async def test_ten_plus_keeps_direct_reply_but_blocks_ordinary_followup(self):
+        self.settings.write({"default_min_participants": 10, "groups": {}})
+        await self.message(1, 2, explicit=True)
+        self.bot.send_group_msg.assert_awaited_once()
+        self.spec[2] = {"topic": 1, "response": 901}
+        await self.message(2, 3)
+        self.bot.send_group_msg.assert_awaited_once()
+        self.assertEqual(self.llm.reply.await_count, 1)
+
+    async def test_group_can_override_ten_plus_default(self):
+        self.settings.write(
+            {"default_min_participants": 10, "groups": {"10": {"min_participants": 1}}}
+        )
+        await self.message(1, 2)
+        await self.message(2, 3, group=20)
+        self.bot.send_group_msg.assert_awaited_once()
+
+    async def test_switching_to_ten_plus_during_generation_stops_unsent_reply(self):
+        self.settings.write({"default_min_participants": 1, "groups": {}})
+
+        async def disable(*args, **kwargs):
+            self.settings.write({"default_min_participants": 10, "groups": {}})
+            return Reply("已生成但不应发出的主动回复")
+
+        self.llm.reply.side_effect = disable
+        await self.message(1, 2)
+        self.llm.reply.assert_awaited_once()
+        self.bot.send_group_msg.assert_not_awaited()
+        await self.message(2, 2, explicit=True)
+        self.bot.send_group_msg.assert_awaited_once()
+
+    async def test_old_evaluation_stage_is_removed_without_losing_chat(self):
+        await self.message(1, 2, explicit=True)
+        path = self.controller.topics.path
+        await self.controller.close()
+        with sqlite3.connect(path) as db:
+            db.execute("ALTER TABLE topics ADD COLUMN attempted INTEGER DEFAULT 99")
+        db.close()
+        self.controller = GroupConversation(self.service, self.contacts, self.settings)
+        columns = {
+            r["name"] for r in self.controller.topics.db.execute("PRAGMA table_info(topics)")
+        }
+        self.assertNotIn("attempted", columns)
+        self.assertEqual(len(TopicReader(self.root).detail(99, 10, 1)["messages"]), 2)
 
     async def test_interleaved_topics_and_same_user_do_not_share_quorum(self):
         self.spec.update(
