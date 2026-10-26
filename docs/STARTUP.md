@@ -6,7 +6,7 @@ Windows 上一次启动操作即可拉起本机后台、消息接入服务与机
 
 ## 开发
 
-`start.bat` 调用 `start.ps1`，后者先通过 `scripts/admin.ps1` 重启本项目后台并打开浏览器，保证代码更新生效，后台不可用则报告失败；再通过 `scripts/napcat.ps1` 调用 `scripts/startup_config.py` 通过 python-dotenv 读取 `.env` 中的启动字段、探测本机 TCP 端口并启动 NapCat，再沿用原有机器人重启流程。NapCat 启动器的工作目录为启动文件所在目录，支持 `.bat`、`.cmd` 和 `.exe`，批处理通过系统 cmd 执行。后台就绪通过 `/api/session` 返回的 ASCII 服务标识 `qqbot-console` 判断，避免 Windows PowerShell 5.1 对中文响应解码错误而误报启动失败。脚本使用 UTF-8 BOM，兼容 Windows PowerShell 5.1 的中文解析，代码行尾为 CRLF。
+`start.bat` 调用 `start.ps1`，后者先通过 `scripts/admin.ps1` 重启本项目后台并打开浏览器，保证代码更新生效，后台不可用则报告失败；再通过 `scripts/napcat.ps1` 调用 `scripts/startup_config.py` 通过 python-dotenv 读取 `.env` 中的启动字段、探测本机 TCP 端口并启动 NapCat，再停止旧机器人及监护进程，通过独立更新监护启动机器人。NapCat 启动器的工作目录为启动文件所在目录，支持 `.bat`、`.cmd` 和 `.exe`，批处理通过系统 cmd 执行。后台就绪通过 `/api/session` 返回的 ASCII 服务标识 `qqbot-console` 判断，避免 Windows PowerShell 5.1 对中文响应解码错误而误报启动失败。脚本使用 UTF-8 BOM，兼容 Windows PowerShell 5.1 的中文解析，代码行尾为 CRLF。
 
 首次启动交互获取路径，验证后保存至根目录 `.env` 的 `NAPCAT_LAUNCHER`；已有配置直接读取。相对路径以项目根目录为基准，支持环境变量。路径不能含百分号（环境变量展开后）、双引号、换行或感叹号。配置不接受任意命令字符串或附加参数；如需参数，可指向用户自己的启动批处理。
 
@@ -36,3 +36,31 @@ NAPCAT_PORT=6099
 自动检查：`.\.venv\Scripts\python.exe -m unittest discover -s tests -p test_startup.py -v`。测试使用临时文件、回环监听和模拟启动，不启动真实 QQ 或 NapCat。
 
 机器人入口启动时自动关闭当前 Windows 控制台的快速编辑模式，避免鼠标选中文字暂停消息与心跳；不修改系统全局控制台设置。重定向输入或非 Windows 环境不调整控制台模式。
+
+
+## 聊天自更新
+
+### 设计
+
+只有本地配置的机器人所有者，在当前消息中明确要求更新时，才能调用更新工具。群主、管理员、历史记录、引用和模型自行推断均不能授予更新权限。模型只能发起固定流程，不能指定命令、远端或分支。当前请求被新消息替代、回复失败或停机通知发送失败时不执行更新。
+
+更新使用当前分支已配置的远端上游，仅允许快进。未提交修改、未跟踪文件、游离提交、缺少上游、本地领先或分叉均拒绝；不自动提交、暂存、重置或解决冲突。机器人停止后才更新代码并安装项目依赖，后台也会重启；NapCat 和 QQ 保持运行。
+
+### 开发
+
+`plugins/assistant/maintenance.py` 使用真实会话 QQ 与 `BOT_OWNERS` 校验所有者，并完整匹配当前更新请求。`service.py` 为当前回合绑定授权，`modules.py` 按授权暴露 `update_bot`，工具定义维护在 `prompts/modules.json`。工具先预检查本地仓库，失败时保持机器人运行；通过后只预约操作，成功完成本轮回复后发送固定停机通知，写入监护进程的随机一次性请求文件，再向当前机器人进程发送 SIGINT，交由 Uvicorn 关闭。
+
+`start.ps1` 启动 `updater.py`；监护通过 `.supervisor.lock` 防止重复实例，为每个机器人进程生成不同令牌。等待机器人退出后消费对应请求，无请求、崩溃或用户 Ctrl+C 均不执行更新。更新同时获取运行锁与迁移锁，执行仓库检查、fetch、祖先关系检查、后台停止、固定目标提交的快进合并、`pip install -r requirements.txt` 和 `pip check`。后台停止后确认进程已退出；后台重新启动通过 `scripts/update_admin.ps1` 复用既有本机就绪检查，不打开新浏览器。
+
+成功后监护返回专用退出码，由启动脚本重新加载监护程序并启动机器人，避免旧解释器继续使用更新前模块。状态写入 Git 忽略的 `data/update-status.json`，只记录阶段和状态，不保存命令原始输出、远端凭据或聊天内容。`updated` 表示代码与依赖同步及后台启动完成，机器人是否正常接入仍以 `/ping` 为准。
+
+### 使用与排查
+
+1. 首次部署本功能后，重新双击 `start.bat`。直接执行 `bot.py` 没有监护进程，工具会明确拒绝。
+2. 所有者私聊发送“更新机器人并重启”，或在群内 @机器人发送同样内容。也支持“请使用git更新代码并重启”“更新一下你自己”等明确表达。不明确或夹带其他内容的表达不会获得更新工具，请重新发送标准用语。
+3. 收到停机通知后等待更新。完成后发送 `/ping`，并刷新本机后台验证。更新不自动向 QQ 发送完成通知。
+4. 更新失败会停止本次启动链，查看启动窗口和 `data/update-status.json` 的失败阶段；不会自动重试或声称成功。检查仓库阶段失败时，可本机运行 `git status`、`git branch -vv` 排查本地修改和上游配置。
+5. 网络或 Git 身份验证须预先在本机配置，更新命令禁止交互输入凭据。依赖同步失败时，代码可能已经快进、依赖可能部分更新，后台保持停止；手动修复依赖后再运行 `start.bat`，不自动回滚或丢弃本地内容。
+6. 更新会终止当前机器人进程中的其他会话和任务，选择合适的维护时机操作。自动更新只支持 Windows 本机联合启动流程。
+
+验证：`.venv/Scripts/python.exe -m unittest tests.test_update tests.test_startup tests.test_capabilities tests.test_bot_bootstrap -q`。使用临时 Git 仓库、模拟依赖安装与后台启停，以及真实子进程信号捕获验证，不修改真实远端、不重启当前服务。

@@ -180,7 +180,10 @@ class Assistant:
                                 except Exception:
                                     pass
                             if history_tools is not None:
+                                from .maintenance import Maintenance
                                 from .response import Response
+
+                                history_tools.maintenance = Maintenance(cfg, key, text)
 
                                 if not hasattr(history_tools, "response"):
                                     history_tools.response = Response(set())
@@ -328,6 +331,13 @@ class Assistant:
                                     request_id,
                                 )
                         self.memory.save(key, text, saved_reply)
+                    maintenance = getattr(history_tools, "maintenance", None)
+                    if maintenance:
+                        if not getattr(history_tools, "is_current", lambda: True)():
+                            raise Superseded
+                        await maintenance.finish(
+                            raw_send, getattr(history_tools, "is_current", lambda: True)
+                        )
             finally:
                 self.limits.pending -= 1
         except Superseded:

@@ -1,5 +1,5 @@
 ﻿# 统一启动时重启本项目后台，确保加载当前代码。
-function Start-Admin {
+function Stop-Admin {
     param([string]$ProjectDirectory)
     $pythonPath = Join-Path $ProjectDirectory '.venv\Scripts\python.exe'
     $adminPath = Join-Path $ProjectDirectory 'admin_server.py'
@@ -15,10 +15,23 @@ function Start-Admin {
         foreach ($child in $children) {
             Stop-Process -Id $child.ProcessId -ErrorAction SilentlyContinue
             Wait-Process -Id $child.ProcessId -Timeout 10 -ErrorAction SilentlyContinue
+            if (Get-Process -Id $child.ProcessId -ErrorAction SilentlyContinue) {
+                throw '后台子进程未退出，停止后再重试。'
+            }
         }
         Stop-Process -Id $root.ProcessId -ErrorAction SilentlyContinue
         Wait-Process -Id $root.ProcessId -Timeout 10 -ErrorAction SilentlyContinue
+        if (Get-Process -Id $root.ProcessId -ErrorAction SilentlyContinue) {
+            throw '后台进程未退出，停止后再重试。'
+        }
     }
+}
+
+function Start-Admin {
+    param([string]$ProjectDirectory, [bool]$OpenBrowser = $true)
+    Stop-Admin -ProjectDirectory $ProjectDirectory
+    $pythonPath = Join-Path $ProjectDirectory '.venv\Scripts\python.exe'
+    $adminPath = Join-Path $ProjectDirectory 'admin_server.py'
     $ready = $false
     Start-Process -FilePath $pythonPath -ArgumentList @('"' + $adminPath + '"') -WorkingDirectory $projectDirectory -WindowStyle Hidden
     for ($attempt = 0; $attempt -lt 20; $attempt++) {
@@ -30,5 +43,5 @@ function Start-Admin {
         } catch { }
     }
     if (-not $ready) { throw '后台未启动，请检查 8090 端口或运行 admin_server.py 查看错误。' }
-    Start-Process 'http://127.0.0.1:8090'
+    if ($OpenBrowser) { Start-Process 'http://127.0.0.1:8090' }
 }

@@ -45,3 +45,7 @@
 5. 迁移失败时检查配置结构与占位符，修复前不要删除原配置。旧自定义内容涉及调用步骤时，核对迁移后的整模块说明与当前工具契约是否一致。
 
 验证命令：`.venv/Scripts/python.exe -m unittest tests.test_capabilities tests.test_history_tools tests.test_names tests.test_tool_calls tests.test_console tests.test_migration -q`。覆盖默认及显式范围、跨机器人隔离、参数错误、分页、上下文、认知权限、按路径覆盖、配置备份、旧包合并、版本冲突、撤销及两种 API 辅助调用协议。不通过真实 QQ 发送测试消息。
+
+### 所有者自更新工具
+
+`update_bot` 仅在真实所有者当前明确要求更新时暴露，无命令或分支参数；执行再次校验权限，只预约本轮回复完成后的停机更新。后台工具说明覆盖不能改变授权与执行规则。部署、更新流程和故障处理见 [本机联合启动](STARTUP.md#聊天自更新)。

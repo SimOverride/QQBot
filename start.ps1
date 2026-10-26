@@ -2,6 +2,7 @@
 $projectDirectory = $PSScriptRoot
 $pythonPath = Join-Path $projectDirectory '.venv\Scripts\python.exe'
 $botPath = Join-Path $projectDirectory 'bot.py'
+$supervisorPath = Join-Path $projectDirectory 'updater.py'
 
 try {
     Set-Location -LiteralPath $projectDirectory
@@ -25,7 +26,8 @@ try {
         Where-Object {
             $_.ExecutablePath -ieq $pythonPath -and
             ($_.CommandLine -match ('(?i)(?:^|\s)"?' + [regex]::Escape($botPath) + '"?\s*$') -or
-             $_.CommandLine -match '(?i)(?:^|\s)"?bot\.py"?\s*$')
+             $_.CommandLine -match '(?i)(?:^|\s)"?(?:bot|updater)\.py"?\s*$' -or
+             $_.CommandLine -match ('(?i)(?:^|\s)"?' + [regex]::Escape($supervisorPath) + '"?\s*$'))
         })
     if ($existing.Count -gt 0) {
         Write-Host "Restarting this project's QQBot. Temporary cache will be cleared. Saved history and facts are preserved."
@@ -45,8 +47,11 @@ try {
     Write-Host 'Starting QQBot...'
     Write-Host 'NapCat 已启动或复用；登录后会通过 OneBot 自动连接。'
     Write-Host 'Keep this window open while using the bot. Press Ctrl+C to stop.'
-    & $pythonPath $botPath
-    $botExitCode = $LASTEXITCODE
+    do {
+        & $pythonPath $supervisorPath
+        $botExitCode = $LASTEXITCODE
+        # 更新后重新加载监护代码和依赖，不在旧解释器中继续运行。
+    } while ($botExitCode -eq 75)
     Write-Host "QQBot stopped. Exit code: $botExitCode"
     if ($botExitCode -eq 3) {
         Write-Host 'If the log reports error 10048, another service occupies the configured port.'

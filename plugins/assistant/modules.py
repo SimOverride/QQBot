@@ -8,12 +8,15 @@ PLUGIN = tool_definition("manage_plugin")
 
 class Modules:
     def __init__(self, session):
+        self.maintenance = getattr(session, "maintenance", None)
         self.response = getattr(session, "response", None)
         self.tasks = getattr(session, "tasks", None)
         self.extensions = getattr(session, "extensions", None)
 
     def functions(self):
         result = [CAPABILITIES]
+        if self.maintenance:
+            result.extend(self.maintenance.functions())
         if self.response:
             from .response import FUNCTION
 
@@ -26,6 +29,8 @@ class Modules:
         return result
 
     async def execute(self, name, args, available):
+        if name == "update_bot" and self.maintenance:
+            return await self.maintenance.execute(args)
         if name == "set_response" and self.response:
             return await self.response.execute(args)
         if name == "read_capabilities":
