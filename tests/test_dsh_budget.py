@@ -21,7 +21,7 @@ class BudgetTests(unittest.IsolatedAsyncioTestCase):
             package = installation()
         except ValueError:
             self.skipTest("未安装适配的 DSH 客户端")
-        cfg = Config(model_trace_enabled=False)
+        cfg = Config(model_trace_enabled=False, agent_max_tokens=120000)
         turn = Turn(cfg, "budget-test")
         turn.budget = Budget(cfg)
         env = environment()

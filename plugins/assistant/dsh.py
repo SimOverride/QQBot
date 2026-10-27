@@ -226,8 +226,8 @@ class Turn:
                 },
             ]
         )
-        if self.view:
-            entries.append({"id": "attachment-local", "config": {"dshHome": self.view["home"]}})
+        # 执行附件跟随自身会话，避免原生保存过程修改客户端数据目录权限。
+        entries.append({"id": "attachment-local", "config": {"dshHome": str(home)}})
         patch = root / "bridge.json"
         patch.write_text(json.dumps(entries), encoding="utf-8")
         env = environment()

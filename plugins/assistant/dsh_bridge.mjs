@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
 import { saveView } from "./dsh_view.mjs";
+import { installImageFallback } from "./dsh_attachments.mjs";
 import { contextDelta } from "./dsh_context.mjs";
 
 const require = createRequire(process.env.QQBOT_DSH_PACKAGE + "/package.json");
@@ -123,6 +124,7 @@ export function apply(ctx) {
   async function start(item) {
     await ready;
     snapshot = item;
+    if (item.view) installImageFallback(ctx.attachments, item.view.home);
     const eventOffset = handle.agent.session.snapshotEvents().length;
     configure(handle.agent.ctx);
     const saved = handle.agent.session.snapshotEvents();
@@ -133,7 +135,7 @@ export function apply(ctx) {
     await ctx.sessions.flush(handle.agent.session);
     if (item.view) {
       try {
-        const report = await saveView(item.view, handle.agent.session.snapshotEvents().slice(eventOffset), ctx.sessions.messageProjections);
+        const report = await saveView({...item.view, attachmentRoot: ctx.attachments.root}, handle.agent.session.snapshotEvents().slice(eventOffset), ctx.sessions.messageProjections);
         if (report.failures.length) output("view_error");
       }
       catch { output("view_error"); }

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { mkdir, writeFile, rename, readdir, readFile, unlink } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
+import { imageBlocks, mirrorImages } from "./dsh_attachments.mjs";
 
 const require = createRequire(process.env.QQBOT_DSH_PACKAGE + "/package.json");
 const load = name => import(pathToFileURL(require.resolve(name)).href);
@@ -48,7 +49,10 @@ export async function syncViews(home, cwd, projections = []) {
     try {
       const {view, events} = JSON.parse(await readFile(path, "utf8"));
       if (view.home !== home || view.cwd !== cwd || blocked.has(view.id)) continue;
-      try { await appendView({...view, id: mapping[view.id] || view.id}, events, projections); }
+      try {
+        await mirrorImages(view.attachmentRoot, home, [...view.images, ...imageBlocks(events)]);
+        await appendView({...view, id: mapping[view.id] || view.id}, events, projections);
+      }
       catch (error) {
         blocked.add(view.id);
         // 客户端正常持有写锁时等待，不将占用伪装成保存损坏。
