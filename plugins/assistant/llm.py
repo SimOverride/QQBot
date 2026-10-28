@@ -45,6 +45,8 @@ class LLM:
                         '"response_to_bot":机器人消息编号或null,"should_reply":布尔,'
                         '"reply_reason":"接话或沉默的简短可见原因"}]}。'
                         "严格按incoming顺序为每条消息分配话题，不遗漏。"
+                        "所有消息引用只使用平台message_id，输入不提供内部归档编号。"
+                        "topic_start只可取topics.start或本批当前及此前已出现的message_id。"
                         "同话题可穿插其他话题，不因换人、同话题追问或机器人保持沉默就拆新话题。"
                         "延续话题使用topics中的start，或本批已出现的起始消息编号；"
                         "真正的新话题以本条message_id作为topic_start，并说明判断依据。"
@@ -52,6 +54,13 @@ class LLM:
                         "response_to_bot只有当前消息确实回应、质疑、追问或讨论该话题中机器人"
                         "已发送的具体说法时才能填写对应消息编号。群友继续彼此讨论同一主题、"
                         "泛泛表情、机器人自己发过言都不算回应机器人。"
+                        "回应依据必须来自同一话题、sender等于bot_qq且早于该incoming消息的发言；"
+                        "不能把用户消息作为机器人发言，也不能让旧消息回应后来才发送的消息。"
+                        "validation_error非空表示本条上次校验失败，请根据当前提供的资料重新判断："
+                        "unknown_topic或topic_after_message表示话题起点未知或晚于当前消息；"
+                        "unknown_response、response_not_bot、response_other_topic、"
+                        "response_after_message表示回应依据未知、并非机器人、属于别的话题或晚于当前消息。"
+                        "不能确认回应关系时填null，不得编造编号；仍须为当前消息给出合法话题归属。"
                         "新话题的最低参与人数由输入字段min_participants确定，达到后才考虑接话；"
                         "数值10表示10+（不主动回复），人数再多也不能主动发言；直接呼叫除外。"
                         "topics.participants提供各话题已有参与者，按与incoming发送者的并集计数。"

@@ -15,7 +15,7 @@
 - `llm.py` 在模型请求前记录实际消息、条数、各条序列化长度、开放工具及输出上限；请求后记录正文与工具调用。两条工具执行路径记录参数、结果、状态及耗时。
 - `dsh.py` 的 `dsh_view_sync` 记录浏览队列每次补写的成功数量、占用会话数量、异常类型和下次检查间隔，不包含会话正文或原生异常正文。普通业务日志仅在占用、恢复或错误类型变化时提示，持续同类状态不会刷屏。
 - `http.py` 记录 HTTP 状态、耗时、Token 用量和服务商结束原因，不记录请求头或原始响应体。
-- `groupchat.py` 记录触发消息标识、话题判断结果、固定参与门槛及跳过或过时取消原因。
+- `groupchat.py` 记录触发消息标识、话题判断结果、固定参与门槛及跳过或过时取消原因。`topic_assignment_invalid`、`topic_assignment_repaired`、`topic_assignment_fallback` 分别记录单条校验失败、重判通过和保守留存，包含平台消息编号及固定 `error_code`；失败事件还包含尝试次数。`topic_assessment_failed.error_code` 区分整批请求失败与单条重判请求失败，不记录原始异常正文。
 - `service.py` 记录业务请求编号、去重和限流、最终文本或表情发送结果、输出分段和截断情况。
 - `memory.py`、`longterm.py` 记录会话裁剪、持久历史保留条数、认知与相关历史选取数量和摘录长度上限。日志反映实际取用范围，不读取全部历史来统计未选中总数。
 
@@ -39,7 +39,7 @@ MODEL_TRACE_RETENTION_DAYS=7
 排查步骤：
 
 1. 找到 `request_received` 或 `group_trigger` 中对应的机器人、会话和消息编号，再按 `trace_id` 筛选整条链路。
-2. 查看 `topic_decision`、`topic_assessment_failed`，确定是否参与及跳过原因。
+2. 查看 `topic_decision`、`topic_assessment_failed`，确定是否参与及跳过原因；单条编号或归属校验失败时，按消息编号关联 `topic_assignment_invalid` 与随后的 `topic_assignment_repaired` 或 `topic_assignment_fallback`，错误类别说明见[话题模块](TOPICS.md)。
 3. 查看 `model_context` 了解实际输入，固定提示词可按标识到默认目录或后台配置核对；摘要用于判断版本是否一致，不保存旧版本全文。
 4. 按 `span_id` 查看 `model_output`、`http_usage` 和 `http_end`；工具执行通过 `call_id` 对应 `tool_start`、`tool_end`。模型请求工具不代表执行成功。
 5. 查看 `send_result`、`send_skipped` 和错误事件。`stage_end` 的完成只代表该阶段函数返回，业务结果以发送、跳过及错误事件为准。

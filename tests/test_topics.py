@@ -7,7 +7,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -18,6 +18,7 @@ from plugins.assistant.groupchat import GroupConversation, GroupSettings, GroupS
 from plugins.assistant.llm import Reply
 from plugins.assistant.longterm import LongTermMemory
 from plugins.assistant.service import Assistant
+from plugins.assistant.topics import TopicError
 
 
 class TopicTests(unittest.IsolatedAsyncioTestCase):
@@ -231,6 +232,242 @@ class TopicTests(unittest.IsolatedAsyncioTestCase):
         await self.message(2, 3)
         self.bot.send_group_msg.assert_awaited_once()
         self.assertEqual(TopicReader(self.root).detail(99, 10, 1)["topic"]["replies"], 1)
+
+    async def test_topic_model_only_receives_platform_message_ids(self):
+        await self.message(1001, 2, explicit=True)
+        self.spec[1002] = {"topic": 1001, "response": 901}
+        await self.message(1002, 3)
+        context = self.llm.assess_topics.call_args.args[0]
+        for message in context["incoming"] + context["topics"][0]["messages"]:
+            self.assertNotIn("id", message)
+            self.assertNotIn("source_id", message)
+            self.assertIsInstance(message["message_id"], int)
+        self.assertEqual(self.bot.send_group_msg.await_count, 2)
+
+    async def test_bad_old_message_does_not_block_valid_followup_or_cursor(self):
+        await self.message(1001, 2, explicit=True)
+        self.archive.collect((99, 10, 3), 1002, "旧消息完整保留", ["text"], time.time())
+        self.spec.update(
+            {
+                1002: {"topic": 1001, "response": 99999},
+                1003: {"topic": 1001, "response": 901},
+            }
+        )
+        with patch("plugins.assistant.groupchat.emit") as emit:
+            await self.message(1003, 3)
+        self.assertEqual(self.bot.send_group_msg.await_count, 2)
+        invalid = [c.kwargs for c in emit.call_args_list if c.args[1] == "topic_assignment_invalid"]
+        self.assertEqual([i["error_code"] for i in invalid], ["unknown_response"] * 2)
+        self.assertEqual([i["attempt"] for i in invalid], [1, 2])
+        saved = self.controller.topics.db.execute(
+            "SELECT payload,judgement FROM topic_messages WHERE message_id=1002"
+        ).fetchone()
+        self.assertEqual(json.loads(saved["payload"])["text"], "旧消息完整保留")
+        self.assertIn("unknown_response", saved["judgement"])
+        current = self.archive.db.execute(
+            "SELECT id FROM messages WHERE message_id=1003"
+        ).fetchone()
+        self.assertEqual(self.controller.topics.cursor(99, 10), current[0])
+        self.spec[1004] = {"topic": 1001, "response": 901}
+        await self.message(1004, 3)
+        self.assertEqual(self.bot.send_group_msg.await_count, 3)
+        self.assertEqual(
+            [m["message_id"] for m in self.llm.assess_topics.call_args.args[0]["incoming"]], [1004]
+        )
+
+    async def test_invalid_reference_is_repaired_once_for_current_message(self):
+        await self.message(1001, 2, explicit=True)
+        original = self.llm.assess_topics.side_effect
+        archive_id = self.archive.db.execute(
+            "SELECT id FROM messages WHERE message_id=901"
+        ).fetchone()[0]
+
+        async def assess(context):
+            self.spec[1002] = {
+                "topic": 1001,
+                "response": 901 if context["validation_error"] else archive_id,
+            }
+            return await original(context)
+
+        self.llm.assess_topics.side_effect = assess
+        self.llm.assess_topics.reset_mock()
+        await self.message(1002, 3)
+        self.assertEqual(self.llm.assess_topics.await_count, 2)
+        self.assertEqual(self.bot.send_group_msg.await_count, 2)
+        repair = self.llm.assess_topics.call_args.args[0]
+        self.assertEqual(repair["validation_error"], "unknown_response")
+        self.assertEqual([m["message_id"] for m in repair["incoming"]], [1002])
+        saved = self.controller.topics.db.execute(
+            "SELECT response_to FROM topic_messages WHERE message_id=1002"
+        ).fetchone()
+        self.assertEqual(saved[0], 901)
+
+    async def test_old_message_repair_cannot_see_future_topic_or_bot_reply(self):
+        await self.message(1001, 2, explicit=True)
+        self.archive.collect((99, 10, 3), 1002, "较早的未分类消息", ["text"], time.time())
+        original = self.llm.assess_topics.side_effect
+        self.llm.assess_topics.side_effect = ValueError("模拟暂时不可用")
+        await self.message(1003, 2, explicit=True)
+
+        async def assess(context):
+            if context["validation_error"]:
+                self.assertEqual(context["validation_error"], "topic_after_message")
+                self.assertEqual([t["start"] for t in context["topics"]], [1001])
+                self.assertEqual(
+                    {m["message_id"] for t in context["topics"] for m in t["messages"]},
+                    {1001, 901},
+                )
+                self.spec[1002] = {"topic": 1001, "reply": False}
+            else:
+                self.spec[1002] = {"topic": 1003, "response": 902}
+            self.spec[1004] = {"topic": 1003, "response": 902}
+            return await original(context)
+
+        self.llm.assess_topics.side_effect = assess
+        await self.message(1004, 3)
+        self.assertEqual(self.bot.send_group_msg.await_count, 3)
+        self.assertEqual(
+            self.llm.assess_topics.call_args.args[0]["validation_error"], "topic_after_message"
+        )
+
+    async def test_missing_or_duplicate_assignment_only_affects_that_message(self):
+        await self.message(1001, 2, explicit=True)
+        self.archive.collect((99, 10, 3), 1002, "缺失判断", ["text"], time.time())
+        self.archive.collect((99, 10, 3), 1003, "重复判断", ["text"], time.time())
+        self.spec.update({mid: {"topic": 1001, "response": 901} for mid in (1002, 1003, 1004)})
+        original = self.llm.assess_topics.side_effect
+
+        async def assess(context):
+            assignments = await original(context)
+            return [a for a in assignments if a["message_id"] != 1002] + [
+                a for a in assignments if a["message_id"] == 1003
+            ]
+
+        self.llm.assess_topics.side_effect = assess
+        await self.message(1004, 3)
+        self.assertEqual(self.bot.send_group_msg.await_count, 2)
+        self.assertEqual(self.llm.assess_topics.await_count, 4)
+        self.assertEqual(
+            self.controller.topics.db.execute(
+                "SELECT COUNT(*) FROM topic_messages WHERE message_id IN (1002,1003,1004)"
+            ).fetchone()[0],
+            3,
+        )
+
+    async def test_old_backlog_repair_uses_its_historical_context(self):
+        past = time.time() - 3600
+        with patch("plugins.assistant.groupchat.time.time", return_value=past):
+            await self.message(1001, 2, explicit=True)
+        log = self.controller.topics
+        self.archive.collect((99, 10, 3), 1002, "半小时前尚未分类的消息", ["text"], past + 300)
+        original = self.llm.assess_topics.side_effect
+
+        async def assess(context):
+            if context["validation_error"]:
+                self.assertEqual([t["start"] for t in context["topics"]], [1001])
+                self.assertTrue(
+                    all(
+                        m["time"] < context["incoming"][0]["time"]
+                        for t in context["topics"]
+                        for m in t["messages"]
+                    )
+                )
+                self.spec[1002] = {"topic": 1001, "response": 901}
+            else:
+                self.assertEqual(context["topics"], [])
+                self.spec[1002] = {"topic": 99999}
+            self.spec[1003] = {"topic": 1003, "reply": False}
+            return await original(context)
+
+        self.llm.assess_topics.side_effect = assess
+        await self.message(1003, 3)
+        saved = log.db.execute(
+            "SELECT topic,response_to FROM topic_messages WHERE message_id=1002"
+        ).fetchone()
+        self.assertEqual(tuple(saved), (1001, 901))
+        # 只记录旧消息，不补发其回答。
+        self.bot.send_group_msg.assert_awaited_once()
+
+    async def test_repair_request_failure_is_safe_and_does_not_block_next_item(self):
+        await self.message(1001, 2, explicit=True)
+        self.archive.collect((99, 10, 3), 1002, "重判失败的消息", ["text"], time.time())
+        original = self.llm.assess_topics.side_effect
+        self.spec.update({1002: {"response": 99999}, 1003: {"topic": 1001, "response": 901}})
+
+        async def assess(context):
+            if context["validation_error"]:
+                raise TimeoutError("不能进入诊断事件的正文")
+            return await original(context)
+
+        self.llm.assess_topics.side_effect = assess
+        with patch("plugins.assistant.groupchat.emit") as emit:
+            await self.message(1003, 3)
+        self.assertEqual(self.bot.send_group_msg.await_count, 2)
+        errors = [c.kwargs for c in emit.call_args_list if c.args[1] == "topic_assessment_failed"]
+        self.assertEqual(
+            errors,
+            [
+                {
+                    "message_id": 1002,
+                    "error_type": "TimeoutError",
+                    "error_code": "repair_request_failed",
+                }
+            ],
+        )
+
+    async def test_invalid_current_message_stays_silent_even_with_one_person_threshold(self):
+        self.settings.write({"default_min_participants": 1, "groups": {}})
+        self.spec[1001] = {"topic": 99999}
+        await self.message(1001, 2)
+        self.llm.reply.assert_not_awaited()
+        self.assertEqual(self.llm.assess_topics.await_count, 2)
+        await self.message(1002, 2, explicit=True)
+        self.bot.send_group_msg.assert_awaited_once()
+
+    async def test_reference_validation_keeps_scope_topic_and_causality(self):
+        await self.message(1001, 2, explicit=True)
+        # 先归档旧消息，随后才产生另一个话题与机器人回复。
+        self.archive.collect((99, 10, 3), 1002, "早于回复", ["text"], time.time())
+        self.llm.assess_topics.side_effect = ValueError("暂时失败")
+        await self.message(1003, 2, explicit=True)
+        await self.message(2001, 2, explicit=True, group=20)
+        old = self.archive.message_context(
+            self.archive.db.execute("SELECT * FROM messages WHERE message_id=1002").fetchone()
+        )
+        self.archive.collect((99, 10, 3), 1004, "较晚的消息", ["text"], time.time())
+        later = self.archive.message_context(
+            self.archive.db.execute("SELECT * FROM messages WHERE message_id=1004").fetchone()
+        )
+        base = {
+            "topic_start": 1001,
+            "title": "测试话题",
+            "judgement": "测试归属",
+            "response_to_bot": None,
+            "should_reply": True,
+            "reply_reason": "测试依据",
+        }
+        cases = [
+            (later, {"response_to_bot": 99999}, "unknown_response"),
+            (later, {"response_to_bot": 903}, "unknown_response"),
+            (later, {"response_to_bot": 1001}, "response_not_bot"),
+            (later, {"response_to_bot": 902}, "response_other_topic"),
+            (old, {"topic_start": 1003}, "topic_after_message"),
+            (old, {"topic_start": 99999}, "unknown_topic"),
+        ]
+        # 同话题中也不能引用尚未发送的机器人消息。
+        self.archive.collect((99, 10, 99), 904, "较晚的机器人发言", ["text"], time.time())
+        future = self.archive.message_context(
+            self.archive.db.execute("SELECT * FROM messages WHERE message_id=904").fetchone()
+        )
+        with self.controller.topics.db:
+            self.controller.topics.add_message(99, 10, 1001, future, "测试机器人发言")
+        cases.append((old, {"response_to_bot": 904}, "response_after_message"))
+        for message, overrides, code in cases:
+            with self.subTest(code=code), self.assertRaises(TopicError) as error:
+                self.controller.topics.record(
+                    99, 10, message, {**base, "message_id": message["message_id"], **overrides}
+                )
+            self.assertEqual(error.exception.code, code)
 
     async def test_platform_second_precision_does_not_reject_real_followup(self):
         await self.message(1, 2, explicit=True)

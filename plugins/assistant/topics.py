@@ -11,6 +11,14 @@ DEFAULT_MIN_PARTICIPANTS = 2
 MAX_MIN_PARTICIPANTS = 10
 
 
+class TopicError(ValueError):
+    """只携带固定校验类别，不将模型输出或聊天正文放入异常。"""
+
+    def __init__(self, code):
+        self.code = code
+        super().__init__(code)
+
+
 def validate_min_participants(value):
     """1至9为人数门槛，10表示10+且关闭主动回复。"""
     if type(value) is not int or not 1 <= value <= MAX_MIN_PARTICIPANTS:
@@ -55,29 +63,46 @@ class Topics:
     def close(self):
         self.db.close()
 
-    def recent(self, bot, group):
+    def recent(self, bot, group, *, before=None, at=None):
+        """模型只看到平台编号；单条重判按归档顺序隐藏其后的消息。"""
         result = []
         for row in self.db.execute(
-            "SELECT * FROM topics WHERE bot=? AND grp=? AND updated>? "
-            "ORDER BY updated DESC LIMIT 12",
-            (bot, group, time.time() - 900),
+            "SELECT t.*,MAX(m.created) AS observed_at FROM topics t "
+            "JOIN topic_messages m ON m.bot=t.bot AND m.grp=t.grp AND m.topic=t.start "
+            "WHERE t.bot=? AND t.grp=? AND (? IS NULL OR m.source_id<?) "
+            "GROUP BY t.bot,t.grp,t.start HAVING MAX(m.created)>? "
+            "ORDER BY observed_at DESC,t.start LIMIT 12",
+            (bot, group, before, before, (time.time() if at is None else at) - 900),
         ):
-            item = dict(row)
+            item = {"start": row["start"], "title": row["title"]}
             item["participants"] = [
                 r[0]
                 for r in self.db.execute(
                     "SELECT DISTINCT usr FROM topic_messages WHERE bot=? AND grp=? AND topic=? "
-                    "AND usr<>?",
-                    (bot, group, row["start"], bot),
+                    "AND usr<>? AND (? IS NULL OR source_id<?)",
+                    (bot, group, row["start"], bot, before, before),
                 )
             ]
+            item["replies"] = (
+                row["replies"]
+                if before is None
+                else int(
+                    self.db.execute(
+                        "SELECT 1 FROM topic_messages WHERE bot=? AND grp=? AND topic=? "
+                        "AND usr=? AND source_id<? LIMIT 1",
+                        (bot, group, row["start"], bot, before),
+                    ).fetchone()
+                    is not None
+                )
+            )
             item["messages"] = [
-                {**json.loads(r[0]), "text": json.loads(r[0]).get("text", "")[:400]}
+                {k: v[:400] if k == "text" else v for k, v in json.loads(r[0]).items() if k != "id"}
                 for r in reversed(
                     self.db.execute(
                         "SELECT payload FROM topic_messages WHERE bot=? AND grp=? AND topic=? "
-                        "ORDER BY created DESC,rowid DESC LIMIT 10",
-                        (bot, group, row["start"]),
+                        "AND (? IS NULL OR source_id<?) "
+                        "ORDER BY source_id DESC,rowid DESC LIMIT 10",
+                        (bot, group, row["start"], before, before),
                     ).fetchall()
                 )
             ]
@@ -90,78 +115,73 @@ class Topics:
         ).fetchone()
         return row[0] if row else 0
 
-    def record(self, bot, group, messages, assignments, *, advance=True):
-        """整批校验通过后原子提交，模型不能将消息归到别群或尚未出现的话题。"""
-        known = {
-            row[0]
-            for row in self.db.execute(
-                "SELECT start FROM topics WHERE bot=? AND grp=? AND updated>?",
-                (bot, group, time.time() - 900),
-            )
-        }
-        if not isinstance(assignments, list) or len(assignments) != len(messages):
-            raise ValueError("话题判断未覆盖整批消息")
-        by_id = {m["message_id"]: m for m in messages}
-        if len(by_id) != len(messages):
-            raise ValueError("消息编号重复")
-        checked = []
-        for message, item in zip(messages, assignments, strict=True):
-            if (
-                not isinstance(item, dict)
-                or type(item.get("message_id")) is not int
-                or item["message_id"] != message["message_id"]
-                or type(item.get("topic_start")) is not int
-                or not isinstance(item.get("title"), str)
-                or not 1 <= len(item["title"]) <= 200
-                or not isinstance(item.get("judgement"), str)
-                or not 1 <= len(item["judgement"]) <= 1000
-                or type(item.get("should_reply")) is not bool
-                or not isinstance(item.get("reply_reason"), str)
-                or not 1 <= len(item["reply_reason"]) <= 1000
-            ):
-                raise ValueError("话题判断格式无效")
-            start = item["topic_start"]
-            if start not in known and start != message["message_id"]:
-                raise ValueError("话题起始消息无效")
-            known.add(start)
-            target = item.get("response_to_bot")
-            if target is not None:
-                if type(target) is not int:
-                    raise ValueError("机器人回应依据无效")
-                source = self.db.execute(
-                    "SELECT 1 FROM topic_messages WHERE bot=? AND grp=? AND topic=? "
-                    "AND message_id=? AND usr=? AND source_id<?",
-                    (bot, group, start, target, bot, message["id"]),
-                ).fetchone()
-                if source is None:
-                    raise ValueError("回应依据不是本话题已发送的机器人消息")
-            checked.append((message, item))
+    def record(self, bot, group, message, item, *, advance=True):
+        """校验并原子保存单条消息，归档顺序只用于内部因果验证。"""
+        if (
+            not isinstance(item, dict)
+            or type(item.get("message_id")) is not int
+            or item["message_id"] != message["message_id"]
+            or type(item.get("topic_start")) is not int
+            or not isinstance(item.get("title"), str)
+            or not 1 <= len(item["title"]) <= 200
+            or not isinstance(item.get("judgement"), str)
+            or not 1 <= len(item["judgement"]) <= 1000
+            or type(item.get("should_reply")) is not bool
+            or not isinstance(item.get("reply_reason"), str)
+            or not 1 <= len(item["reply_reason"]) <= 1000
+        ):
+            raise TopicError("assignment_format")
+        start = item["topic_start"]
+        if start != message["message_id"]:
+            origin = self.db.execute(
+                "SELECT m.source_id FROM topics t JOIN topic_messages m "
+                "ON m.bot=t.bot AND m.grp=t.grp AND m.topic=t.start AND m.message_id=t.start "
+                "WHERE t.bot=? AND t.grp=? AND t.start=?",
+                (bot, group, start),
+            ).fetchone()
+            if origin is None:
+                raise TopicError("unknown_topic")
+            if origin[0] > message["id"]:
+                raise TopicError("topic_after_message")
+        target = item.get("response_to_bot")
+        if target is not None:
+            if type(target) is not int:
+                raise TopicError("response_format")
+            source = self.db.execute(
+                "SELECT topic,usr,source_id FROM topic_messages "
+                "WHERE bot=? AND grp=? AND message_id=?",
+                (bot, group, target),
+            ).fetchone()
+            if source is None:
+                raise TopicError("unknown_response")
+            if source["usr"] != bot:
+                raise TopicError("response_not_bot")
+            if source["topic"] != start:
+                raise TopicError("response_other_topic")
+            if source["source_id"] >= message["id"]:
+                raise TopicError("response_after_message")
         with self.db:
-            for message, item in checked:
-                start = item["topic_start"]
-                self.db.execute(
-                    "INSERT OR IGNORE INTO topics(bot,grp,start,title,created,updated) "
-                    "VALUES(?,?,?,?,?,?)",
-                    (
-                        bot,
-                        group,
-                        start,
-                        sanitize(item["title"], self.config),
-                        message["time"],
-                        message["time"],
-                    ),
-                )
-                self.db.execute(
-                    "UPDATE topics SET updated=MAX(updated,?) WHERE bot=? AND grp=? AND start=?",
-                    (message["time"], bot, group, start),
-                )
-                self.add_message(
-                    bot, group, start, message, item["judgement"], item.get("response_to_bot")
-                )
-            if messages and advance:
+            self.db.execute(
+                "INSERT OR IGNORE INTO topics(bot,grp,start,title,created,updated) "
+                "VALUES(?,?,?,?,?,?)",
+                (
+                    bot,
+                    group,
+                    start,
+                    sanitize(item["title"], self.config),
+                    message["time"],
+                    message["time"],
+                ),
+            )
+            self.db.execute(
+                "UPDATE topics SET updated=MAX(updated,?) WHERE bot=? AND grp=? AND start=?",
+                (message["time"], bot, group, start),
+            )
+            self.add_message(bot, group, start, message, item["judgement"], target)
+            if advance:
                 self.db.execute(
                     "INSERT OR REPLACE INTO topic_cursors VALUES(?,?,?)",
-                    (bot, group, max(m["id"] for m in messages)),
+                    (bot, group, message["id"]),
                 )
 
     def add_message(self, bot, group, topic, message, judgement, response_to=None):

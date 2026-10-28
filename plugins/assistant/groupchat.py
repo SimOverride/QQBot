@@ -19,6 +19,7 @@ from .shares import ShareReader, message_text
 from .topics import (
     DEFAULT_MIN_PARTICIPANTS,
     MAX_MIN_PARTICIPANTS,
+    TopicError,
     Topics,
     validate_min_participants,
 )
@@ -245,6 +246,105 @@ class GroupConversation:
         ).fetchall()
         return [{**self.service.archive.message_context(r), "id": r["id"]} for r in reversed(rows)]
 
+    async def classify(self, account, group, messages, explicit_id, *, error_code=None):
+        first = messages[0]
+        settings = self.settings.get(group)
+        async with self.service.limits.slot():
+            return await self.service.llm.assess_topics(
+                {
+                    "incoming": [
+                        {k: v[:4000] if k == "text" else v for k, v in message.items() if k != "id"}
+                        for message in messages
+                    ],
+                    "topics": self.topics.recent(
+                        account,
+                        group,
+                        before=first["id"] if error_code else None,
+                        at=first["time"] if error_code else None,
+                    ),
+                    "bot_qq": account,
+                    "explicit_message_id": explicit_id
+                    if any(m["message_id"] == explicit_id for m in messages)
+                    else None,
+                    "interests": settings["interests"],
+                    "min_participants": settings["min_participants"],
+                    "persona": self.service.profiles.effective(group),
+                    "validation_error": error_code,
+                }
+            )
+
+    @staticmethod
+    def assignment_for(assignments, message_id):
+        matches = (
+            [
+                item
+                for item in assignments
+                if isinstance(item, dict)
+                and type(item.get("message_id")) is int
+                and item["message_id"] == message_id
+            ]
+            if isinstance(assignments, list)
+            else []
+        )
+        return matches[0] if len(matches) == 1 else None
+
+    async def record_assignment(self, account, group, message, assignment, explicit_id):
+        """逐条提交；无效项单独重判一次，仍失败则完整留存并保持旁听。"""
+        code = "assignment_format"
+        for attempt in (1, 2):
+            try:
+                self.topics.record(account, group, message, assignment)
+                if attempt == 2:
+                    emit(
+                        self.service.config,
+                        "topic_assignment_repaired",
+                        message_id=message["message_id"],
+                        error_code=code,
+                    )
+                return assignment
+            except TopicError as error:
+                code = error.code
+                emit(
+                    self.service.config,
+                    "topic_assignment_invalid",
+                    message_id=message["message_id"],
+                    error_code=code,
+                    attempt=attempt,
+                )
+            if attempt == 2:
+                break
+            try:
+                repaired = await self.classify(
+                    account, group, [message], explicit_id, error_code=code
+                )
+            except Exception as error:
+                emit(
+                    self.service.config,
+                    "topic_assessment_failed",
+                    message_id=message["message_id"],
+                    error_type=type(error).__name__,
+                    error_code="repair_request_failed",
+                )
+                break
+            assignment = self.assignment_for(repaired, message["message_id"])
+        assignment = {
+            "message_id": message["message_id"],
+            "topic_start": message["message_id"],
+            "title": "待确认话题",
+            "judgement": f"话题判断未通过校验，独立留存（{code}）",
+            "response_to_bot": None,
+            "should_reply": False,
+            "reply_reason": f"话题判断未确认，保持旁听（{code}）",
+        }
+        self.topics.record(account, group, message, assignment)
+        emit(
+            self.service.config,
+            "topic_assignment_fallback",
+            message_id=message["message_id"],
+            error_code=code,
+        )
+        return assignment
+
     async def assess_topic(self, bot, event, text, explicit):
         account, group = int(bot.self_id), event.group_id
         archive = self.service.archive
@@ -286,20 +386,16 @@ class GroupConversation:
                         (account, group, rows[-1]["id"]),
                     )
                 continue
-            async with self.service.limits.slot():
-                assignments = await self.service.llm.assess_topics(
-                    {
-                        "incoming": [{**m, "text": m["text"][:4000]} for m in messages],
-                        "topics": self.topics.recent(account, group),
-                        "bot_qq": account,
-                        "explicit_message_id": event.message_id if explicit else None,
-                        "interests": self.settings.get(group)["interests"],
-                        "min_participants": self.settings.get(group)["min_participants"],
-                        "persona": self.service.profiles.effective(group),
-                    }
+            explicit_id = event.message_id if explicit else None
+            assignments = await self.classify(account, group, messages, explicit_id)
+            for message in messages:
+                item = await self.record_assignment(
+                    account,
+                    group,
+                    message,
+                    self.assignment_for(assignments, message["message_id"]),
+                    explicit_id,
                 )
-            self.topics.record(account, group, messages, assignments)
-            for item in assignments:
                 if item["message_id"] == event.message_id:
                     assessment = item
         if assessment is None:
@@ -334,7 +430,10 @@ class GroupConversation:
                 participation = await self.assess_topic(bot, event, text, explicit)
             except Exception as error:
                 emit(
-                    self.service.config, "topic_assessment_failed", error_type=type(error).__name__
+                    self.service.config,
+                    "topic_assessment_failed",
+                    error_type=type(error).__name__,
+                    error_code="assessment_request_failed",
                 )
                 if not explicit:
                     # 无法确认话题和回应关系时保持沉默，不能让错误绕过固定策略。
@@ -356,7 +455,7 @@ class GroupConversation:
                     "reply_reason": "直接呼叫机器人",
                 }
                 self.topics.record(
-                    int(bot.self_id), event.group_id, [message], [assignment], advance=False
+                    int(bot.self_id), event.group_id, message, assignment, advance=False
                 )
                 participation = self.topics.gate(
                     int(bot.self_id),
