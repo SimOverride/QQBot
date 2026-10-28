@@ -30,7 +30,7 @@
 
 私人 QQ 小群 AI 助手：Python 3.12、NoneBot2、OneBot v11、HTTPX。
 
-聊天由 DSH 客户端 `0.2.1-rc.2` 主导生成与工具调用，轻量唤醒判断、审核使用 DeepSeek / OpenAI 官方 API。支持自然语言意图理解、模型自主搜索、短期会话、显式 @、限流、去重和错误处理。已通过本地测试并连接 NapCat；搜索仍取决于本地搜索服务配置。
+聊天由 DSH 客户端主导生成与工具调用，按必要运行能力接入，不绑定具体客户端版本；轻量唤醒判断、审核使用 DeepSeek / OpenAI 官方 API。支持自然语言意图理解、模型自主搜索、短期会话、显式 @、限流、去重和错误处理。已通过本地测试并连接 NapCat；搜索仍取决于本地搜索服务配置。
 
 DSH 客户端可按群、私聊查看正常完成的机器人聊天与工具记录，入口及数据目录见 [客户端会话查看](docs/DSH.md#在客户端查看)。
 
@@ -83,7 +83,7 @@ Copy-Item .env.example .env
 
 1. 将机器人加入需要聊天的 QQ 群，无需配置群名单。
 2. `ONEBOT_ACCESS_TOKEN`：自行生成的随机长 Token，与 NapCat 保持一致。
-3. 安装 DeepSeek Harness 客户端 `0.2.1-rc.2`，填写 `DEEPSEEK_API_KEY` 与 `DSH_MODEL`。安装未自动识别时设置 `DSH_PACKAGE_DIR` 为客户端安装目录，见 [DSH 配置](docs/DSH.md)。
+3. 安装 DeepSeek Harness 客户端，填写 `DEEPSEEK_API_KEY` 与 `DSH_MODEL`。启动时检查必要运行能力，无固定版本要求；安装未自动识别时设置 `DSH_PACKAGE_DIR` 为客户端安装目录，见 [DSH 配置](docs/DSH.md)。
 4. `LLM_PROVIDER=deepseek` 或 `openai` 选择辅助模型，用于轻量唤醒判断、审核和后台修改建议。
 5. 对应的 `DEEPSEEK_API_KEY` / `DEEPSEEK_MODEL` 或 `OPENAI_API_KEY` / `OPENAI_MODEL`。模型 ID 填你账户实际可用且支持工具调用的模型，不默认替换模型。
 6. 可选 `SEARCH_API_KEY`：Tavily Key。缺失时搜索关闭，普通聊天仍可用，模型会被告知不能联网。

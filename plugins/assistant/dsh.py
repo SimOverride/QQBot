@@ -14,7 +14,7 @@ from pathlib import Path
 
 from nonebot.log import logger
 
-from plugins.tasks.desktop import launch
+from plugins.tasks.desktop import InstallationError, launch
 from plugins.tasks.process import ProcessJob
 from plugins.tasks.runner import Runner, environment, process_options, stop_process
 
@@ -180,7 +180,10 @@ class Turn:
         self.runtime = None
 
     async def start(self):
-        package = Runner(Path.cwd(), self.config).package()
+        try:
+            package = Runner(Path.cwd(), self.config).package()
+        except InstallationError as error:
+            raise ServiceError(str(error)) from None
         self.temp = tempfile.TemporaryDirectory(prefix="qqbot-chat-")
         root = Path(self.temp.name)
         home = self.runtime or root / "home"

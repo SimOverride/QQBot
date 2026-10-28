@@ -1,4 +1,4 @@
-// 对接本机 DSH 客户端 0.2.1-rc.2，不加载个人配置或转发内部推理。
+// 对接具备所需运行能力的本机 DSH 客户端，不加载个人配置或转发内部推理。
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline";
