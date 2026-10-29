@@ -91,34 +91,29 @@ class ConsoleTests(unittest.TestCase):
         self.addCleanup(self.client.close)
         self.headers = {"X-Console-Token": self.app.state.token}
 
-    def test_emote_group_state_and_restore_endpoint(self):
-        from plugins.assistant.emote_state import update
+    def test_emote_experience_is_shared_and_old_restore_endpoint_removed(self):
         from plugins.assistant.emotes import Emotes
         from tests.test_emote_collect import PNG
 
         library = Emotes(self.root / "emotes")
         (library.root / "test.png").write_bytes(PNG)
-        state = update(
-            library,
-            123,
-            10,
-            library.digest("test.png"),
-            0,
-            disabled=1,
-            reason="本群反馈不适用",
-            evidence=[{"message_id": 1}],
+        note = Vault(self.root, 123).put(
+            {
+                "kind": "emote",
+                "subject": 20,
+                "field": "表情反馈",
+                "image_digest": library.digest("test.png"),
+                "value": "该用户认为严肃讨论不适用",
+                "fixed": True,
+            },
+            manual=True,
         )
         response = self.client.get("/api/resource", params={"id": "emote:test.png"})
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["group_states"][0]["reason"], "本群反馈不适用")
-        payload = dict(resource="emote:test.png", bot=123, group=10, revision=state["updated"])
-        self.assertEqual(self.client.post("/api/emotes/restore", json=payload).status_code, 403)
-        response = self.client.post("/api/emotes/restore", json=payload, headers=self.headers)
-        self.assertEqual(response.status_code, 200)
-        self.assertFalse(response.json()["group_states"][0]["disabled"])
+        self.assertEqual(response.json()["experiences"][0]["id"], note["id"])
+        self.assertNotIn("group_states", response.json())
         self.assertEqual(
-            self.client.post("/api/emotes/restore", json=payload, headers=self.headers).status_code,
-            400,
+            self.client.post("/api/emotes/restore", json={}, headers=self.headers).status_code, 404
         )
 
     def test_message_reference_preview_is_ordered_and_scoped(self):
@@ -453,8 +448,9 @@ class ConsoleTests(unittest.TestCase):
     def test_group_knowledge_is_scoped_and_runtime_visible(self):
         key = "group:123:10"
         value = self.store.get(key)["value"]
-        value.update(summary="游戏开发群", knowledge="每周五联机")
-        self.save(key, value)
+        self.assertEqual(set(value), {"min_participants"})
+        self.store.create_memory(123, "context", 0, "10:summary", "游戏开发群")
+        self.store.create_memory(123, "context", 0, "10:knowledge", "每周五联机")
         current = json.loads(self.archive.context((123, 10, 20), "游戏", set()))
         other = json.loads(self.archive.context((123, 11, 20), "游戏", set()))
         self.assertEqual(current["group_knowledge"]["summary"], "游戏开发群")
@@ -512,9 +508,10 @@ class ConsoleTests(unittest.TestCase):
         self.assertTrue(self.store.messages())
 
     def test_model_suggestion_never_saves_without_confirmation(self):
-        resource = "group:123:10"
+        created = self.store.create_memory(123, "context", 0, "10:summary", "游戏交流群")
+        resource = created["resource"]
         before = self.store.get(resource)
-        proposed = dict(before["value"], summary="大家喜欢游戏")
+        proposed = dict(before["value"], content="大家喜欢游戏")
         fake = AsyncMock(
             return_value=(json.dumps({"value": proposed, "explanation": "根据群记录整理"}), [], [])
         )
@@ -572,8 +569,7 @@ class ConsoleTests(unittest.TestCase):
         search = self.store.get("module:search")["value"]
         search["prompts"]["search.enabled"] = "按需检索事实"
         self.save("module:search", search)
-        group = self.store.get("group:123:10")["value"]
-        self.save("group:123:10", dict(group, summary="群摘要"))
+        background = self.store.create_memory(123, "context", 0, "10:summary", "群背景")
         package = self.root / "export.zip"
         migration.export_data(self.root, package)
         target = self.root / "new"
@@ -584,7 +580,7 @@ class ConsoleTests(unittest.TestCase):
         self.assertEqual(
             restored.get("module:search")["value"]["prompts"]["search.enabled"], "按需检索事实"
         )
-        self.assertEqual(restored.get("group:123:10")["value"]["summary"], "群摘要")
+        self.assertEqual(restored.get(background["resource"])["value"]["content"], "群背景")
 
     def test_mutations_blocked_during_migration(self):
         old = self.store.get("persona:默认")

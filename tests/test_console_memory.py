@@ -124,9 +124,9 @@ class UnifiedConsoleTests(unittest.TestCase):
         self.assertEqual([m["resource"] for m in matches], [created["resource"]])
         group = self.store.get("group:99:10")
         self.assertNotIn("persona", group["value"])
-        value = {**group["value"], "summary": "共同背景"}
-        self.store.put(group["resource"], value, group["revision"])
-        self.assertEqual(self.vault.field(0, "10:summary", "context")["value"], "共同背景")
+        self.assertEqual(set(group["value"]), {"min_participants"})
+        background = self.store.create_memory(99, "context", 0, "10:summary", "共同背景")
+        self.assertEqual(self.store.get(background["resource"])["value"]["content"], "共同背景")
 
     def test_memory_writes_require_token_and_account_match(self):
         self.assertEqual(self.client.post("/api/memories", json={}).status_code, 403)

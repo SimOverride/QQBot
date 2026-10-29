@@ -243,7 +243,7 @@ def merge_artifacts(root, staged, plan, qq):
     from plugins.assistant.vault import KINDS, digest
 
     for name, path in list(plan.items()):
-        if not name.startswith(("data/memory-vault/", "data/memory-jobs/")):
+        if "/工作台/" in name or not name.startswith(("data/memory-vault/", "data/memory-jobs/")):
             continue
         if name.split("/")[2] != str(qq):
             raise ValueError("记忆账号与迁移账号不一致")

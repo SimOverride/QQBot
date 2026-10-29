@@ -176,6 +176,96 @@ def create_app(root=ROOT):
     def memory_status():
         return store.memory_status()
 
+    @app.get("/api/memory-library")
+    def memory_library(
+        query: str = "",
+        category: str = "",
+        maintenance: bool = False,
+        offset: int = 0,
+        limit: int = 30,
+    ):
+        result = store.memory_library(query, category, maintenance)
+        entries = result["groups"]
+        offset, limit = max(0, offset), max(1, min(100, limit))
+        return {
+            "groups": [
+                {k: v for k, v in entry.items() if k not in ("notes", "content")}
+                | {"note_count": len(entry["notes"]), "preview": entry["content"][:160]}
+                for entry in entries[offset : offset + limit]
+            ],
+            "bots": result["bots"],
+            "total": len(entries),
+            "has_more": offset + limit < len(entries),
+        }
+
+    @app.get("/api/memory-library/detail")
+    def memory_library_detail(bot: int, key: str, maintenance: bool = False):
+        for entry in store.memory_library(maintenance=maintenance)["groups"]:
+            if entry["bot"] == bot and entry["key"] == key:
+                return entry
+        raise HTTPException(404, "记忆档案不存在")
+
+    @app.get("/api/memory-activities")
+    def memory_activities(cursor: str = "", limit: int = 20):
+        from admin.console_activity import activity_page
+
+        return activity_page(store.root, cursor=cursor, limit=limit)
+
+    @app.get("/api/memory-activities/{ident}")
+    def memory_activity_detail(ident: str, bot: int):
+        from admin.console_activity import activity_detail
+
+        return activity_detail(store.root, bot, ident)
+
+    @app.post("/api/memory-recall")
+    async def memory_recall(request: Request):
+        from plugins.assistant.memory_activity import recall
+        from plugins.assistant.vault import Vault
+
+        data = await body(request)
+        bot, query, subject = data.get("bot"), data.get("query"), data.get("subject")
+        if (
+            type(bot) is not int
+            or not isinstance(query, str)
+            or not 1 <= len(query) <= 2000
+            or (subject is not None and (type(subject) is not int or subject <= 0))
+        ):
+            raise ValueError("请填写机器人账号、问题和可选的人物QQ")
+        migration.account(root, bot)
+        return recall(Vault(root, bot), query, subject)
+
+    @app.get("/api/obsidian")
+    def obsidian_status(bot: int):
+        from plugins.assistant.obsidian import Workbench
+
+        migration.account(root, bot)
+        return Workbench(root, bot).status()
+
+    @app.post("/api/obsidian")
+    async def obsidian_action(request: Request):
+        from plugins.assistant.obsidian import Workbench
+
+        data = await body(request)
+        bot = data.get("bot")
+        if type(bot) is not int:
+            raise ValueError("机器人账号无效")
+        migration.account(root, bot)
+        workbench = Workbench(root, bot)
+        action = data.get("action")
+        if action == "launch":
+            return await run_in_threadpool(workbench.launch, data.get("id"))
+        if action in ("prepare", "open"):
+            return await run_in_threadpool(workbench.prepare)
+        if action == "draft":
+            return await run_in_threadpool(workbench.draft, data.get("id"))
+        if action == "review":
+            return await run_in_threadpool(workbench.review, data.get("id"))
+        if action == "apply" and data.get("confirm") == "apply_draft":
+            return await run_in_threadpool(
+                workbench.apply, store, data.get("id"), data.get("revision")
+            )
+        raise ValueError("请选择有效的 Obsidian 操作并确认保存")
+
     @app.get("/api/memories")
     def search_memories(query: str = ""):
         from plugins.assistant.vault import Vault
@@ -259,7 +349,11 @@ def create_app(root=ROOT):
     async def save_defaults(request: Request):
         data = await body(request)
         return await run_in_threadpool(
-            settings.save_defaults, data["persona"], data["min_participants"], data["revision"]
+            settings.save_defaults,
+            data["persona"],
+            data["min_participants"],
+            data["revision"],
+            data.get("interests"),
         )
 
     @app.get("/api/plugins")
@@ -290,6 +384,10 @@ def create_app(root=ROOT):
     @app.get("/api/topics/messages")
     def topic_messages(bot: int, group: int, start: int, offset: int = 0):
         return TopicReader(store.root).detail(bot, group, start, offset)
+
+    @app.get("/api/navigation")
+    def navigation(section: str = "base"):
+        return store.navigation(section)
 
     @app.get("/api/inventory")
     def inventory():
@@ -350,16 +448,17 @@ def create_app(root=ROOT):
             raise ValueError("图片内容与文件扩展名不一致")
         return await run_in_threadpool(store.create_file, "emote", name, content)
 
-    @app.post("/api/emotes/restore")
-    async def restore_emote(request: Request):
-        data = await body(request)
-        return await run_in_threadpool(
-            store.restore_emote, data["resource"], data["bot"], data["group"], data["revision"]
-        )
-
     @app.get("/api/emotes")
-    def emotes():
-        return store.emotes()
+    def emotes(query: str = "", offset: int = 0, limit: int = 40):
+        items = [
+            item for item in store.emotes() if query[:200].casefold() in item["name"].casefold()
+        ]
+        offset, limit = max(0, offset), max(1, min(100, limit))
+        return {
+            "items": items[offset : offset + limit],
+            "total": len(items),
+            "has_more": offset + limit < len(items),
+        }
 
     @app.get("/api/image")
     def image(name: str):
@@ -369,8 +468,24 @@ def create_app(root=ROOT):
         return FileResponse(path)
 
     @app.get("/api/changes")
-    def changes():
-        return store.changes()
+    def changes(offset: int = 0, limit: int = 20):
+        result = store.change_page(offset, limit)
+        result["items"] = [
+            {k: v for k, v in item.items() if k not in ("before", "after")}
+            for item in result["items"]
+        ]
+        return result
+
+    @app.get("/api/changes/{ident}")
+    def change_detail(ident: str):
+        if len(ident) != 32 or any(c not in "0123456789abcdef" for c in ident):
+            raise ValueError("修改记录无效")
+        path = store.root / "backups/admin-edits" / (ident + ".json")
+        if not path.is_file():
+            raise HTTPException(404, "修改记录不存在")
+        record = migration.read_json(path)
+        record["retired"] = record.get("resource", "").startswith("prompt:")
+        return record
 
     @app.post("/api/undo")
     async def undo(request: Request):
@@ -435,7 +550,7 @@ def create_app(root=ROOT):
                         "关系须注明对象QQ，不把玩笑、转述、引用当本人事实。无依据留空，"
                         "不推断敏感信息。每项认知最多12000字。"
                         "群只整理该群主题、规则和互动氛围，不把个人意见当全群共识；"
-                        "群min_participants、interests保持current原值，"
+                        "群min_participants保持current原值，"
                         "除非维护者明确要求修改。"
                         "explanation列出关键依据的scope和消息id、冲突及抽样限制，不能声称读完未提供记录。"
                     ),

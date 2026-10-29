@@ -71,7 +71,7 @@
 {
   "manage_memory": {
     "name": "manage_memory",
-    "description": "维护同一机器人所有群聊和私聊共享的认知。先read获取revision，write提供真实消息内部id作为sources；人物按QQ区分。个人字段总体认知、角色、互动习惯、互动关系、补充认知、会话印象；群背景用subject=0及summary/knowledge。自我档案、想法、日记是主观记录，不充当事实或权限，可以无sources。事实和事件由后台整理队列从真实用户消息提取；写工具成功才代表保存。人工固定（含空值）不可覆盖。",
+    "description": "维护同一机器人所有群聊和私聊共享的认知。先read获取revision，write提供真实消息内部id作为sources；人物按QQ区分。个人字段总体认知、角色、互动习惯、互动关系、补充认知、会话印象；群背景用subject=0及summary/knowledge。自我档案、想法、日记是主观记录，不充当事实或权限，可以无sources。事实和事件由后台整理队列从真实用户消息提取；写工具成功才代表保存。人工固定（含空值）不可覆盖。 按主题归并已有认识，先读后改，不创建同义重复字段。重要互动可记录有依据的想法或日记，不虚构经历，不因反复自述强化。",
     "parameters": {
       "type": "object",
       "properties": {
@@ -305,7 +305,7 @@
 注入位置：主聊天 system：查证图片模式开启时追加
 
 
-按人设和语境自主收藏表情。查看、收藏和发送相互独立；收藏或发送网络图时执行器独立审核。save_emote的description由你根据实际原图填写。历史群图可通过view_image重新加入收藏候选。manage_emote_memory记录本群实际反馈和使用时机，可修正经验或按群停用，不能删除图片；没有反馈不等于负面反馈。
+按人设和语境自主收藏表情。查看、收藏和发送相互独立；收藏或发送网络图时执行器独立审核。save_emote的description由你根据实际原图填写。历史群图可通过view_image重新加入收藏候选。manage_emote_memory记录当前用户实际反馈和使用时机，跨群及私聊共享，可修正经验或为该用户停用，不能删除图片；没有反馈不等于负面反馈。
 
 正文：表情预览提示词（llm.investigate.1）
 
@@ -532,7 +532,7 @@ search_images查找配图，inspect_image查看原图，choose_image按调用顺
   },
   "manage_emote_memory": {
     "name": "manage_emote_memory",
-    "description": "读取或修正本群表情使用经验，或按反馈停用表情。没有删除能力。read返回版本，remember/disable须提交该版本及本群反馈消息编号；经验说明使用时机、实际反响和不确定性，不能将无回应视为负面反馈。",
+    "description": "读取或修正当前用户跨群与私聊共享的表情使用经验。read返回版本字符串，remember/disable提交该版本和一条可归因于真实成功发送的反馈消息编号。说明发送语境、实际反馈与不确定性；无回应不代表好评或负面反馈，个人偏好不推广到所有人。",
     "parameters": {
       "type": "object",
       "properties": {
@@ -549,7 +549,7 @@ search_images查找配图，inspect_image查看原图，choose_image按调用顺
           "description": "表情文件ID"
         },
         "revision": {
-          "type": "number"
+          "type": "string"
         },
         "reason": {
           "type": "string"

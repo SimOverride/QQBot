@@ -365,3 +365,19 @@ dialog h2{font-size:18px}
 #nav{overflow-y:auto;min-height:0}
 #nav button{flex-shrink:0}
 .rail-footer{flex-shrink:0}
+
+/* 记忆聚合阅读与活动核对 */
+.memory-document{white-space:pre-wrap;line-height:1.8;overflow-wrap:anywhere;margin:16px 0}
+.memory-note-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+.memory-activity{padding:16px 0;border-bottom:1px solid var(--border,#e2e6ec)}
+.obsidian-dialog{width:min(1000px,90vw);max-height:85vh;overflow:auto}
+.obsidian-dialog code{display:block;white-space:pre-wrap;overflow-wrap:anywhere}
+.memory-workspace #editor:empty{display:none}
+
+.workspace.group-workspace{grid-template-columns:260px minmax(0,1fr)}
+
+/* 活动以内容为主，时间与运行信息作为次要信息。 */
+.activity-meta{display:block;margin-top:6px}
+.activity-diff p{white-space:pre-wrap;overflow-wrap:anywhere;margin:6px 0}
+.loading{color:var(--muted,#667085);min-height:100px}
+#activity-more,#library-more,#change-more{margin:12px}

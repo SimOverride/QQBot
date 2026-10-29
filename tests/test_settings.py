@@ -133,10 +133,10 @@ class SettingsTests(unittest.TestCase):
         item = store.get("group:123:10")
         self.assertIsNone(item["value"]["min_participants"])
         self.assertEqual(item["default_min_participants"], 5)
-        # 只改群认知不会将继承中的人数固定为群覆盖。
-        item["value"]["summary"] = "本群说明"
-        store.put(item["resource"], item["value"], item["revision"])
-        self.assertNotIn("min_participants", groups.read()["groups"]["10"])
+        # 群背景归入记忆库，修改背景不会将人数继承固定为群覆盖。
+        self.assertEqual(set(item["value"]), {"min_participants"})
+        store.create_memory(123, "context", 0, "10:summary", "本群说明")
+        self.assertNotIn("min_participants", groups.read()["groups"].get("10", {}))
         self.assertEqual(self.save_defaults(7).status_code, 200)
         self.assertEqual(groups.get(10)["min_participants"], 7)
         item = store.get("group:123:10")

@@ -1,4 +1,4 @@
-"""Local reaction images; only validated files inside the configured directory are sent."""
+"""本地表情图片及统一记忆：视觉描述、使用反馈与成功发送账本。"""
 
 import base64
 import hashlib
@@ -23,8 +23,9 @@ EMOTE_FUNCTIONS = [
 
 
 class Emotes:
-    def __init__(self, root: Path, max_bytes=5 * 1024 * 1024, daily_limit=20):
+    def __init__(self, root: Path, max_bytes=5 * 1024 * 1024, daily_limit=20, project_root=None):
         self.root = root.resolve()
+        self.project_root = Path(project_root).resolve() if project_root else self.root.parent
         self.root.mkdir(parents=True, exist_ok=True)
         self.max_bytes = max_bytes
         self.daily_limit = daily_limit
@@ -46,14 +47,26 @@ class Emotes:
             "original TEXT NOT NULL, description TEXT NOT NULL, updated REAL NOT NULL)"
         )
 
-    def record_sent(self, name, bot, scope):
+    def record_sent(self, name, bot, scope, message_id=None, user=0, context=""):
         """仅成功发送后记录；事件编号使迁移重复导入保持幂等。"""
+        from .vault import digest
+
+        image_digest = self.digest(name)
+        event_id = (
+            digest([bot, scope, message_id, image_digest])
+            if type(message_id) is int
+            else uuid.uuid4().hex
+        )
         with closing(sqlite3.connect(self.memory_path)) as db, db:
             self.setup_metadata(db)
             db.execute(
-                "INSERT INTO emote_usage VALUES(?,?,?,?,?)",
-                (uuid.uuid4().hex, bot, scope, self.digest(name), time.time()),
+                "INSERT OR IGNORE INTO emote_usage VALUES(?,?,?,?,?)",
+                (event_id, bot, scope, image_digest, time.time()),
             )
+
+        from .emote_feedback import sent
+
+        sent(self, bot, scope, self.digest(name), message_id, user, context)
 
     def usage(self, bot, scope):
         with closing(sqlite3.connect(self.memory_path)) as db:
@@ -89,7 +102,7 @@ class Emotes:
             )
         return score
 
-    def import_image(self, data, suffix, description, source):
+    def import_image(self, data, suffix, description, source, bot=0):
         from .emote_collect import image_data
 
         actual_suffix, _ = image_data(data)
@@ -111,10 +124,12 @@ class Emotes:
                 except ServiceError:
                     continue
             if existing:
-                db.execute(
-                    "INSERT OR IGNORE INTO emote_memory VALUES(?,?,?)",
-                    (digest, description, time.time()),
-                )
+                if not bot:
+                    db.execute(
+                        "INSERT OR IGNORE INTO emote_memory VALUES(?,?,?)",
+                        (digest, description, time.time()),
+                    )
+                self.import_description(bot, digest, description)
                 return {"status": "already_saved", "id": existing, "digest": digest}
             count = db.execute(
                 "SELECT COUNT(*) FROM emote_imports WHERE created>?", (time.time() - 86400,)
@@ -132,24 +147,43 @@ class Emotes:
             db.execute(
                 "INSERT INTO emote_imports VALUES(?,?,?)", (digest, source[:1000], time.time())
             )
-            db.execute(
-                "INSERT OR IGNORE INTO emote_memory VALUES(?,?,?)",
-                (digest, description, time.time()),
-            )
+            if not bot:
+                db.execute(
+                    "INSERT OR IGNORE INTO emote_memory VALUES(?,?,?)",
+                    (digest, description, time.time()),
+                )
+        self.import_description(bot, digest, description)
         return {"status": "saved", "id": name, "digest": digest}
+
+    def import_description(self, bot, image_digest, description):
+        if bot:
+            from .vault import Vault
+
+            vault = Vault(self.project_root, bot)
+            data = self.description_data(image_digest, description)
+            if vault.get(data["id"]) is None:
+                try:
+                    vault.put(data)
+                except ValueError:
+                    # 其它会话已完成首次建立时沿用新版本，不能用旧描述覆盖。
+                    if vault.get(data["id"]) is None:
+                        raise
 
     def digest(self, name):
         encoded = self.message(name).data["file"].removeprefix("base64://")
         return hashlib.sha256(base64.b64decode(encoded)).hexdigest()
 
-    def recall(self, digest):
+    def recall(self, digest, bot=0):
+        if bot:
+            note = self.description_note(bot, digest, migrate=True)
+            return note["value"] if note and note.get("state") == "active" else None
         with closing(sqlite3.connect(self.memory_path)) as db:
             row = db.execute(
                 "SELECT description FROM emote_memory WHERE digest=?", (digest,)
             ).fetchone()
         return row[0] if row else None
 
-    def remember(self, items, expected, descriptions=None):
+    def remember(self, items, expected, descriptions=None, bot=0):
         if not isinstance(items, list) or not items:
             raise ServiceError("表情记忆参数无效。")
         writes, seen = [], set()
@@ -169,6 +203,24 @@ class Emotes:
                 raise ServiceError("表情图片已变化或本次未查看，请重新检索。")
             seen.add(name)
             writes.append((digest, item["description"].strip(), time.time()))
+        if bot:
+            from .vault import Vault
+
+            vault = Vault(self.project_root, bot)
+            for image_digest, description, _ in writes:
+                old = self.description_note(bot, image_digest, migrate=True)
+                if descriptions is not None and image_digest in descriptions:
+                    if (old["value"] if old else None) != descriptions[image_digest]:
+                        raise ServiceError("表情描述已被修改，请重新查看")
+                if old and old["value"] == description:
+                    continue
+                if old and old.get("fixed"):
+                    raise ServiceError("人工固定的表情描述不能自动修改")
+                vault.put(
+                    self.description_data(image_digest, description),
+                    old["revision"] if old else None,
+                )
+            return seen
         with closing(sqlite3.connect(self.memory_path)) as db, db:
             self.setup_metadata(db)
             for digest, description, stamp in writes:
@@ -192,6 +244,75 @@ class Emotes:
                     )
         return seen
 
+    @staticmethod
+    def description_data(image_digest, value):
+        from .vault import identifier
+
+        return {
+            "id": identifier(0, "表情描述:" + image_digest, "emote"),
+            "kind": "emote",
+            "subject": 0,
+            "field": "表情描述:" + image_digest,
+            "image_digest": image_digest,
+            "title": "表情 · " + value[:32],
+            "value": value,
+            "sources": [],
+        }
+
+    def description_note(self, bot, image_digest, archive=None, migrate=False):
+        """只读默认不迁移；正式使用时将旧描述一次性复制到对应机器人的统一库。"""
+        from .vault import Vault
+
+        vault = Vault(archive.root if archive else self.project_root, bot)
+        data = self.description_data(image_digest, "")
+        note = vault.get(data["id"])
+        if note or not migrate:
+            return note
+        description = self.recall(image_digest)
+        if description is None:
+            return None
+        try:
+            # 旧库无法区分人工修正与自动识图，迁移时保守保护已有描述。
+            return vault.put(
+                {**data, "value": description, "legacy_import": True, "fixed": True},
+                manual=True,
+            )
+        except ValueError:
+            concurrent = vault.get(data["id"])
+            if concurrent is None:
+                raise
+            return concurrent
+
+    def experience(self, bot, image_digest, user=0, archive=None):
+        """反馈跨会话共享；个人停用只约束本人，不扩散为其他人的禁用。"""
+        from .vault import Vault
+
+        vault = Vault(archive.root if archive else self.project_root, bot)
+        notes = [
+            n
+            for n in vault.list(kind="emote")
+            if n.get("image_digest") == image_digest
+            and not n.get("field", "").startswith("表情描述:")
+        ]
+        notes.sort(key=lambda n: (n["subject"] == user, n["updated"]), reverse=True)
+        applicable = [n for n in notes if n["subject"] in (0, user)]
+        score = sum(
+            2
+            if n.get("sentiment") == "positive"
+            else -3
+            if n.get("sentiment") in ("negative", "avoid")
+            else 0
+            for n in applicable
+        )
+        return {
+            "disabled": any(n.get("disabled") for n in applicable),
+            "score": max(-6, min(4, score)),
+            "notes": [
+                {k: n.get(k) for k in ("id", "subject", "value", "sentiment", "sources", "updated")}
+                for n in notes[:8]
+            ],
+        }
+
     def files(self):
         result = {}
         for path in sorted(self.root.iterdir()):
@@ -212,7 +333,7 @@ class Emotes:
             result[path.name] = path
         return result
 
-    def list(self, args, bot=0, scope=0, archive=None):
+    def list(self, args, bot=0, scope=0, archive=None, user=0):
         if (
             not isinstance(args, dict)
             or set(args) != {"query", "offset"}
@@ -224,23 +345,19 @@ class Emotes:
             return {"status": "invalid_arguments"}
         known, unknown = [], []
         usage = self.usage(bot, scope)
-        from .emote_state import states, visible_state
-
-        group_states = {
-            r["digest"]: r for r in states(self) if r["bot"] == bot and r["scope"] == scope
-        }
         query = args["query"].casefold()
         for name in self.files():
             try:
                 digest = self.digest(name)
             except ServiceError:
                 continue
-            state = group_states.get(digest, {})
+            state = self.experience(bot, digest, user, archive) if bot else {}
             if state.get("disabled"):
                 continue
-            description = self.recall(digest)
+            description = self.recall(digest, bot)
             item = {
-                "group_memory": visible_state(archive, state).get("memory", ""),
+                "experience": state.get("notes", []),
+                "feedback_score": state.get("score", 0),
                 "id": name,
                 "digest": digest,
                 "description": description or "尚未识别",
@@ -253,7 +370,12 @@ class Emotes:
             elif description is None:
                 unknown.append(item)
         known.sort(
-            key=lambda x: (-x["score"], x["last_used"] > time.time() - 600, x["use_count"], x["id"])
+            key=lambda x: (
+                -(x["score"] + x["feedback_score"]),
+                x["last_used"] > time.time() - 600,
+                x["use_count"],
+                x["id"],
+            )
         )
         rows = known or unknown
         start = args["offset"]
@@ -281,7 +403,7 @@ class Emotes:
         )
         if not valid or len(data) > self.max_bytes:
             raise ServiceError("表情包格式无效或文件过大。")
-        # Base64 also works when NapCat runs on another machine.
+        # 图片以 Base64 交给平台，发送前已核验文件。
         return MessageSegment.image("base64://" + base64.b64encode(data).decode("ascii"))
 
     def preview(self, name):

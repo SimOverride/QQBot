@@ -17,7 +17,6 @@ from plugins.assistant.knowledge import (
     scope_name,
 )
 from plugins.assistant.prompt_store import (
-    group_knowledge,
     migrate_console,
     module_defaults,
     module_value,
@@ -227,21 +226,12 @@ class ConsoleStore:
         elif kind == "persona":
             value = key.read_text(encoding="utf-8-sig").strip()
         elif kind == "group":
-            data = group_knowledge(*key, self.root)
             settings_file = self.root / "group_chat.json"
-            settings = migration.read_json(settings_file) if settings_file.exists() else {}
+            from plugins.assistant.groupchat import GroupSettings
+
+            settings = GroupSettings(settings_file).read()
             group = settings.get("groups", {}).get(str(key[1]), {})
-            value = {
-                "summary": data.get("summary", ""),
-                "knowledge": data.get("knowledge", ""),
-                "min_participants": group.get("min_participants"),
-                "interests": group.get("interests", []),
-            }
-            vault = Vault(self.root, key[0])
-            extra["note_revisions"] = {
-                field: (vault.field(0, f"{key[1]}:{field}", "context") or {}).get("revision")
-                for field in ("summary", "knowledge")
-            }
+            value = {"min_participants": group.get("min_participants")}
             extra["default_min_participants"] = settings.get(
                 "default_min_participants", DEFAULT_MIN_PARTICIPANTS
             )
@@ -290,10 +280,28 @@ class ConsoleStore:
                     db.close()
             value = {"description": text}
             extra["digest"] = content_hash
-            from plugins.assistant.emote_state import states
             from plugins.assistant.emotes import Emotes
 
-            extra["group_states"] = states(Emotes(key.parent), content_hash)
+            library = Emotes(key.parent, project_root=self.root)
+            try:
+                bot = migration.account(self.root)
+            except ValueError:
+                bot = None
+            note = library.description_note(bot, content_hash) if bot else None
+            if note:
+                value = {"description": note["value"]}
+                extra.pop("proposal", None)
+            extra["note_revision"] = note["revision"] if note else None
+            extra["bot"] = bot
+            extra["experiences"] = [
+                {
+                    **{k: v for k, v in n.items() if k != "history"},
+                    "resource": f"memory:{bot}:{n['id']}",
+                }
+                for n in (Vault(self.root, bot).list(kind="emote") if bot else [])
+                if n.get("image_digest") == content_hash
+                and not n.get("field", "").startswith("表情描述")
+            ]
         result = {
             "resource": resource,
             "value": value,
@@ -339,17 +347,6 @@ class ConsoleStore:
         elif kind == "group":
             if value["min_participants"] is not None:
                 validate_min_participants(value["min_participants"])
-            if any(
-                not isinstance(value[f], str) or len(value[f]) > 6000
-                for f in ("summary", "knowledge")
-            ):
-                raise ValueError("群摘要及认知各最多 6000 字")
-            if (
-                not isinstance(value["interests"], list)
-                or len(value["interests"]) > 20
-                or any(not isinstance(v, str) or len(v) > 100 for v in value["interests"])
-            ):
-                raise ValueError("兴趣最多 20 项，每项最多 100 字")
         elif kind == "emote":
             if (
                 not isinstance(value["description"], str)
@@ -407,18 +404,6 @@ class ConsoleStore:
             if kind == "module":
                 config.setdefault("modules", {})[key] = sparse_module(key, value)
             else:
-                vault = Vault(self.root, key[0])
-                for field in ("summary", "knowledge"):
-                    old = vault.field(0, f"{key[1]}:{field}", "context")
-                    if value[field] != (old["value"] if old else ""):
-                        vault.set_field(
-                            0,
-                            f"{key[1]}:{field}",
-                            value[field],
-                            kind="context",
-                            manual=True,
-                            expected=snapshot["note_revisions"][field],
-                        )
                 settings_path = self.root / "group_chat.json"
                 settings = migration.read_json(settings_path) if settings_path.exists() else {}
                 group = settings.setdefault("groups", {}).setdefault(str(key[1]), {})
@@ -429,7 +414,7 @@ class ConsoleStore:
                     group.pop("min_participants", None)
                 else:
                     group["min_participants"] = value["min_participants"]
-                group["interests"] = value["interests"]
+                group.pop("interests", None)
                 group.pop("persona", None)
                 atomic_json(settings_path, settings)
             atomic_json(self.root / "data/console.json", config)
@@ -465,31 +450,31 @@ class ConsoleStore:
                 manual=True,
             )
         else:
-            db = sqlite3.connect(key.parent / ".memory.sqlite3")
-            try:
-                with db:
-                    db.execute(
-                        "CREATE TABLE IF NOT EXISTS emote_memory(digest TEXT PRIMARY KEY, "
-                        "description TEXT NOT NULL, updated REAL NOT NULL)"
-                    )
-                    db.execute(
-                        "INSERT INTO emote_memory VALUES(?,?,?) ON CONFLICT(digest) "
-                        "DO UPDATE SET description=excluded.description,updated=excluded.updated",
-                        (migration.digest(key), value["description"], time.time()),
-                    )
-            finally:
-                db.close()
+            from plugins.assistant.emotes import Emotes
 
-    def changes(self):
+            library = Emotes(key.parent, project_root=self.root)
+            image_digest = library.digest(key.name)
+            bot = migration.account(self.root)
+            note = library.description_data(image_digest, value["description"])
+            Vault(self.root, bot).put(
+                {**note, "fixed": True}, snapshot.get("note_revision"), manual=True
+            )
+
+    def change_page(self, offset=0, limit=20):
+        """审计只解析当前页，旧版本正文由详情接口按需读取。"""
         files = sorted(
             (self.root / "backups/admin-edits").glob("*.json"),
-            key=lambda p: p.stat().st_mtime,
+            key=lambda p: (p.stat().st_mtime_ns, p.name),
             reverse=True,
-        )[:100]
-        records = [migration.read_json(p) for p in files]
+        )
+        offset, limit = max(0, offset), max(1, min(100, limit))
+        records = [migration.read_json(p) for p in files[offset : offset + limit]]
         for record in records:
             record["retired"] = record.get("resource", "").startswith("prompt:")
-        return records
+        return {"items": records, "total": len(files), "has_more": offset + limit < len(files)}
+
+    def changes(self):
+        return self.change_page(limit=100)["items"]
 
     def undo(self, ident):
         if len(ident) != 32 or any(c not in "0123456789abcdef" for c in ident):
@@ -518,6 +503,61 @@ class ConsoleStore:
                     raise ValueError("原文件备份校验失败")
                 return self.publish_file(record["resource"], path, backup.read_bytes())
         return self.put(record["resource"], record["before"], record["revision"])
+
+    def navigation(self, section="base"):
+        """页面导航只读取所需目录，不扫描记忆正文和个人统计。"""
+        if section not in ("base", "groups", "prompts"):
+            raise ValueError("导航分类无效")
+        if section == "prompts":
+            return {
+                "modules": [
+                    {"resource": "module:" + k, "name": v["title"]} for k, v in modules().items()
+                ],
+                "personas": [
+                    {"resource": "persona:" + p.stem, "name": p.stem}
+                    for p in (self.root / "personas").glob("*.txt")
+                ],
+            }
+        directory = read_directory(self.root)
+        bots = {
+            int(p.name)
+            for p in (self.root / "data/memory-vault").glob("*")
+            if p.is_dir() and p.name.isdigit() and int(p.name) > 0
+        }
+        groups = {}
+        if (self.root / migration.MEMORY).exists():
+            with self.db() as db:
+                if section == "base":
+                    bots.update(r[0] for r in db.execute("SELECT DISTINCT bot FROM messages"))
+                else:
+                    for row in db.execute(
+                        "SELECT bot,grp,COUNT(*) FROM messages WHERE grp>0 GROUP BY bot,grp"
+                    ):
+                        bot, group, count = row
+                        groups[(bot, group)] = {
+                            "bot": bot,
+                            "grp": group,
+                            "count": count,
+                            "name": scope_name(db, bot, group, directory),
+                            "resource": f"group:{bot}:{group}",
+                        }
+        if section == "groups":
+            for bot, item in directory.items():
+                for group, data in item.get("groups", {}).items():
+                    groups.setdefault(
+                        (int(bot), int(group)),
+                        {
+                            "bot": int(bot),
+                            "grp": int(group),
+                            "count": 0,
+                            "name": data.get("name") or f"群名待同步（{group}）",
+                            "resource": f"group:{bot}:{group}",
+                        },
+                    )
+            return {"groups": [groups[key] for key in sorted(groups)]}
+        from memory_upgrade import required
+
+        return {"bots": sorted(bots), "memory_upgrade_required": required(self.root)}
 
     def inventory(self):
         people, groups, memories = [], [], []
@@ -599,6 +639,8 @@ class ConsoleStore:
                         "fixed": note["fixed"],
                         "sources": sorted({r["grp"] for r in note.get("sources", [])}),
                         "updated": note["updated"],
+                        "empty": not bool(note["value"].strip()),
+                        "preview": note["value"][:240],
                     }
                 )
         from memory_upgrade import required
@@ -671,7 +713,12 @@ class ConsoleStore:
         """队列只返回调度元数据，避免批量暴露原文和整理动作。"""
         jobs = []
         for path in sorted((self.root / "data/memory-jobs").glob("*/*.json")):
-            job = migration.read_json(path)
+            try:
+                job = migration.read_json(path)
+                if not isinstance(job, dict) or "id" not in job or "state" not in job:
+                    raise ValueError("任务格式无效")
+            except (OSError, ValueError):
+                job = {"id": path.stem, "state": "failed", "error": "InvalidJob"}
             jobs.append(
                 {
                     "id": job["id"],
@@ -688,7 +735,24 @@ class ConsoleStore:
                     **{key: data.get(key) for key in ("state", "error", "updated", "mode")},
                 }
             )
+        issues = []
+        for bot in self.navigation()["bots"]:
+            vault = Vault(self.root, bot)
+            for note in vault.list(history=True):
+                if note["state"] == "quarantine" or (
+                    note["state"] == "active" and not vault.valid(note)
+                ):
+                    issues.append(
+                        {
+                            "resource": f"memory:{bot}:{note['id']}",
+                            "title": note.get("field", note["kind"]),
+                            "reason": "待核对冲突"
+                            if note["state"] == "quarantine"
+                            else "来源已失效",
+                        }
+                    )
         return {
+            "issues": issues[:100],
             "indexes": indexes,
             "counts": {
                 state: sum(j["state"] == state for j in jobs)
@@ -696,6 +760,55 @@ class ConsoleStore:
             },
             "jobs": [j for j in jobs if j["state"] != "done"][:100],
         }
+
+    def memory_library(self, query="", category="", maintenance=False):
+        """聚合视图只展示有效正文，底层来源与固定空值仍可在维护视图核对。"""
+        inventory = self.navigation()
+        directory = read_directory(self.root)
+        names = {}
+        if (self.root / migration.MEMORY).exists():
+            with self.db() as db:
+                for bot, user in db.execute("SELECT DISTINCT bot,usr FROM messages"):
+                    names[(bot, user)] = display_name(db, bot, user, directory)
+        groups = []
+        query = query[:200].casefold()
+        for bot in inventory["bots"]:
+            vault = Vault(self.root, bot)
+            for entry in vault.overview():
+                if category and entry["category"] != category:
+                    continue
+                entry = dict(entry)
+                entry["bot"] = bot
+                if entry["category"] == "人物":
+                    entry["title"] = names.get((bot, entry["subject"]), str(entry["subject"]))
+                entry["notes"] = [
+                    {
+                        **{k: v for k, v in n.items() if k != "history"},
+                        "resource": f"memory:{bot}:{n['id']}",
+                    }
+                    for n in entry["notes"]
+                ]
+                if query and query not in (entry["title"] + " " + entry["content"]).casefold():
+                    continue
+                groups.append(entry)
+            if maintenance:
+                for note in vault.list(history=True):
+                    if note["value"].strip() and vault.valid(note) and note["kind"] != "index":
+                        continue
+                    if query and query not in (note.get("field", "") + note["value"]).casefold():
+                        continue
+                    groups.append(
+                        {
+                            "key": note["id"],
+                            "bot": bot,
+                            "category": "维护",
+                            "subject": note["subject"],
+                            "title": note.get("field", note["kind"]),
+                            "content": note["value"] or "人工清空保护记录",
+                            "notes": [{**note, "resource": f"memory:{bot}:{note['id']}"}],
+                        }
+                    )
+        return {"groups": groups, "bots": inventory["bots"]}
 
     def knowledge_context(self, resource, cutoff=None):
         """按会话均衡抽取全时间段与近期消息，并说明实际覆盖范围。"""
@@ -887,21 +1000,6 @@ class ConsoleStore:
                     [*args, offset],
                 )
             ]
-
-    def restore_emote(self, resource, bot, group, expected):
-        """后台恢复本群使用，保留原原因、依据和历史。"""
-        from plugins.assistant.emote_state import update
-        from plugins.assistant.emotes import Emotes
-
-        kind, path = self.resolve(resource)
-        if kind != "emote" or type(bot) is not int or type(group) is not int or group <= 0:
-            raise ValueError("表情群范围无效")
-        with migration.project_lock(self.root, name=".migration.lock"):
-            if (self.root / migration.JOURNAL).exists():
-                raise ValueError("导入尚未恢复")
-            library = Emotes(path.parent)
-            update(library, bot, group, library.digest(path.name), expected, disabled=0)
-        return self.get(resource)
 
     def emotes(self):
         root = migration.emote_dir(self.root)

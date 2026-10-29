@@ -85,6 +85,10 @@ def safe_path(root, name):
 
 
 def allowed(name):
+    if re.fullmatch(r"data/memory-obsidian/[1-9][0-9]*/[a-f0-9]{32}\.json", name):
+        return True
+    if re.fullmatch(r"data/memory-vault/[1-9][0-9]*/工作台/[a-f0-9]{32}\.md", name):
+        return True
     if re.fullmatch(r"data/memory-vault/[1-9][0-9]*/[a-f0-9]{32}\.md", name):
         return True
     if re.fullmatch(r"data/memory-jobs/[1-9][0-9]*/[a-f0-9]{32}\.json", name):
@@ -264,6 +268,7 @@ def _export_data(root, output, bot_qq=None):
         task_folders = list((root / "data/task-workspaces").glob("t_*/work"))
         for folder in (
             root / "data/memory-vault",
+            root / "data/memory-obsidian",
             root / "data/memory-jobs",
             root / "data/generated",
             root / "data/agent-events",
@@ -506,10 +511,12 @@ def merge_memory(local, incoming, output):
 
 def merge_emotes(local, incoming, output):
     """表情内容以哈希去重，描述取较新版本，收藏时间取较晚值以保留限额。"""
+    from plugins.assistant.emote_feedback import SEND_SCHEMA
     from plugins.assistant.emote_state import SCHEMA
 
     schemas = {
         "emote_group_state": SCHEMA,
+        "emote_sends": SEND_SCHEMA,
         "emote_memory": "digest TEXT PRIMARY KEY, description TEXT NOT NULL, updated REAL NOT NULL",
         "emote_imports": "digest TEXT PRIMARY KEY, source TEXT NOT NULL, created REAL NOT NULL",
         "emote_usage": (
@@ -543,7 +550,7 @@ def merge_emotes(local, incoming, output):
                         (row["bot"], row["scope"], row["digest"])
                         if table == "emote_group_state"
                         else row["id"]
-                        if table == "emote_usage"
+                        if table in ("emote_usage", "emote_sends")
                         else row["digest"]
                     )
                     previous = records[table].get(key)
@@ -684,6 +691,9 @@ def stage_merge(root, incoming, staged, qq, fresh):
     from memory_upgrade import convert_staged_legacy, merge_artifacts
 
     convert_staged_legacy(staged, plan)
+    from plugins.assistant.memory_drafts import merge as merge_drafts
+
+    merge_drafts(root, staged, plan, qq)
     merge_artifacts(root, staged, plan, qq)
     write_json(staged / IDENTITY, {"bot_qq": qq})
     plan[IDENTITY] = staged / IDENTITY

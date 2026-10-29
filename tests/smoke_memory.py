@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 
 from plugins.assistant.memory_index import Index
+from plugins.assistant.obsidian import Workbench
 from plugins.assistant.vault import Vault
 
 
@@ -14,6 +15,12 @@ async def main():
         root = Path(folder)
         vault = Vault(root, 999)
         note = vault.set_field(123, "测试偏好", "DeploymentTest purple paper airplane", manual=True)
+        workbench = Workbench(root, 999)
+        workbench.prepare()
+        workbench.draft(note["id"])
+        (vault.path / "工作台" / (note["id"] + ".md")).write_text(
+            "OnlyDraftGhost123", encoding="utf-8"
+        )
         index = Index(root, 999, executable)
         try:
             await index.start()
@@ -26,7 +33,8 @@ async def main():
                 await asyncio.sleep(1)
             assert any(n["id"] == note["id"] for n in found), "真实索引未检索到测试笔记"
             assert vault.get(note["id"])["revision"] == note["revision"], "索引意外改写了笔记"
-            print("真实 Basic Memory MCP 启动、索引、检索与原文校验通过")
+            assert not await index.search("OnlyDraftGhost123"), "待审稿不应进入正式检索"
+            print("真实 Basic Memory MCP 启动、检索、原文保护与 Obsidian 草稿排除验证通过")
         finally:
             await index.close()
 

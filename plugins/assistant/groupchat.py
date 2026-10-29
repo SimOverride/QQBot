@@ -47,33 +47,66 @@ class GroupSettings:
                 validate_min_participants(settings["min_participants"])
             if "style" in settings:
                 raise ValueError("群配置仍有独立风格，请先将风格并入人设并移除 style 配置")
-            interests = settings.get("interests", [])
-            if (
-                not isinstance(interests, list)
-                or len(interests) > 20
-                or any(not isinstance(x, str) or len(x) > 100 for x in interests)
-            ):
-                raise ValueError("群兴趣配置错误")
+        interests = data.get("interests", [])
+        if not isinstance(interests, list):
+            raise ValueError("机器人兴趣配置错误")
+        interests = list(interests)
+        for settings in data.get("groups", {}).values():
+            legacy = settings.pop("interests", [])
+            if not isinstance(legacy, list):
+                raise ValueError("旧兴趣配置错误")
+            for item in legacy:
+                if item not in interests:
+                    interests.append(item)
+        data["interests"] = interests
+        if (
+            not isinstance(interests, list)
+            or len(interests) > 100
+            or any(not isinstance(x, str) or not x.strip() or len(x) > 100 for x in interests)
+        ):
+            raise ValueError("机器人兴趣配置错误")
         return data
+
+    def normalize(self):
+        """启动时显式归并旧兴趣并备份，普通后台读取不触发持久化。"""
+        from .vault import atomic, digest
+
+        data = self.read()
+        previous = self.path.read_text(encoding="utf-8-sig")
+        if json.loads(previous) != data:
+            backup = (
+                self.path.parent
+                / "backups/settings"
+                / ("interests-" + digest(previous)[:16] + ".json")
+            )
+            if not backup.exists():
+                atomic(backup, previous)
+            self.write(data)
 
     def get(self, group):
         data = self.read()
         settings = data.get("groups", {}).get(str(group), {})
         return {
-            "interests": settings.get("interests", []),
+            "interests": data.get("interests", []),
             "min_participants": settings.get(
                 "min_participants", data.get("default_min_participants", DEFAULT_MIN_PARTICIPANTS)
             ),
         }
 
     def write(self, data):
+        # 旧群兴趣只在首次规范化时去重合并，之后仅保留全局配置。
+        interests = list(data.get("interests", []))
+        for settings in data.get("groups", {}).values():
+            for value in settings.pop("interests", []):
+                if isinstance(value, str) and value.strip() and value not in interests:
+                    interests.append(value)
+        data["interests"] = interests
         data.pop("default_activity", None)
         for group in data.get("groups", {}).values():
             group.pop("activity", None)
         pending = self.path.with_suffix(".tmp")
         pending.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         pending.replace(self.path)
-
 
 
 @dataclass
@@ -606,8 +639,10 @@ class GroupConversation:
                         first,
                     )
 
+            return result
+
         async def send_emote(emote_id):
-            await send("", emote_id)
+            return await send("", emote_id)
 
         async def send_image(data):
             await send("", image_data=data)

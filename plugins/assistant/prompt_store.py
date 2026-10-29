@@ -225,7 +225,8 @@ def group_knowledge(bot, group, root=None):
     from .vault import Vault
 
     notes = Vault(root or ROOT, bot).list(kind="context")
-    return {field: "\n".join(n["value"] for n in notes
-                            if n.get("field") == f"{group}:{field}")
-            for field in ("summary", "knowledge")
-            if any(n.get("field") == f"{group}:{field}" for n in notes)}
+    return {
+        field: "\n".join(n["value"] for n in notes if n.get("field") == f"{group}:{field}")
+        for field in ("summary", "knowledge", "群背景")
+        if any(n.get("field") == f"{group}:{field}" for n in notes)
+    }

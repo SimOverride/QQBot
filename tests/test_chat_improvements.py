@@ -198,7 +198,11 @@ class Improvements(unittest.IsolatedAsyncioTestCase):
         with closing(sqlite3.connect(self.library.memory_path)) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM emote_proposals").fetchone()[0], 0)
 
-    async def test_model_reinspect_preserves_description(self):
+    async def test_model_reinspect_updates_unified_description_with_history(self):
+        from plugins.assistant.vault import Vault
+
+        image_digest = self.library.digest("a.png")
+        Vault(self.root, 99).put(self.library.description_data(image_digest, "无奈的猫"))
         config = Config(model_trace_enabled=False)
         archive = LongTermMemory(self.root / "memory.db", config)
         self.addCleanup(archive.close)
@@ -223,11 +227,10 @@ class Improvements(unittest.IsolatedAsyncioTestCase):
             )
             result = await llm.reply([], "重新看看", "test", history_tools=tools)
         self.assertEqual(result.emote_id, "a.png")
-        self.assertIn("无奈", self.library.recall(self.library.digest("a.png")))
-        self.assertEqual(
-            ConsoleStore(self.root).get("emote:a.png")["proposal"]["value"]["description"],
-            "修正内容",
-        )
+        note = self.library.description_note(99, self.library.digest("a.png"))
+        self.assertEqual(note["value"], "修正内容")
+        self.assertIn("无奈", note["history"][-1]["value"])
+        self.assertEqual(self.library.recall(self.library.digest("a.png"), 99), "修正内容")
 
     def test_batch_image_limit_keeps_origin(self):
         parts = []

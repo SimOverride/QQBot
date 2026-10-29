@@ -11,9 +11,8 @@ from unittest.mock import AsyncMock
 import httpx
 
 import migration
-from admin.console_store import ConsoleStore
 from plugins.assistant.config import Config
-from plugins.assistant.emote_state import current, execute, states
+from plugins.assistant.emote_state import execute
 from plugins.assistant.emotes import Emotes
 from plugins.assistant.history_tools import HistoryTools
 from plugins.assistant.llm import LLM, Reply, render_reply
@@ -21,6 +20,7 @@ from plugins.assistant.longterm import LongTermMemory
 from plugins.assistant.memory_tools import execute as remember
 from plugins.assistant.prompt_store import group_knowledge
 from plugins.assistant.service import Assistant
+from plugins.assistant.vault import Vault
 from tests.memory_support import write_memory
 from tests.test_emote_collect import PNG
 
@@ -38,6 +38,8 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
         )
         self.session = HistoryTools(self.archive, (99, 10, 2))
         self.session.emotes = self.library
+        self.archive.collect((99, 10, 99), 90, "[表情包：a.png]", ["image"], time.time())
+        self.library.record_sent("a.png", 99, 10, 90, 2, "轻松聊天")
         self.archive.collect(
             (99, 10, 2), 100, "这张图不适合本群，以后别用了", ["text"], time.time()
         )
@@ -47,7 +49,7 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
         self.archive.close()
         self.tmp.cleanup()
 
-    def emote(self, action, revision=0, reason="本群明确要求停用", ids=None):
+    def emote(self, action, revision="", reason="本群明确要求停用", ids=None):
         return execute(
             self.session,
             dict(
@@ -75,40 +77,41 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-    def test_disable_is_group_scoped_and_conflict_checked(self):
+    def test_disable_is_personal_and_shared_across_groups(self):
         self.assertEqual(self.emote("disable", ids=[200])["status"], "invalid_feedback")
         result = self.emote("disable")
         self.assertEqual(result["status"], "saved")
-        self.assertEqual(self.library.list({"query": "", "offset": 0}, 99, 10)["emotes"], [])
-        self.assertEqual(len(self.library.list({"query": "", "offset": 0}, 99, 20)["emotes"]), 1)
-        self.assertEqual(len(self.library.list({"query": "", "offset": 0}, 88, 10)["emotes"]), 1)
+        for scope in (10, 20, -2):
+            self.assertEqual(
+                self.library.list({"query": "", "offset": 0}, 99, scope, self.archive, 2)["emotes"],
+                [],
+            )
+        self.assertEqual(
+            len(self.library.list({"query": "", "offset": 0}, 99, 10, self.archive, 3)["emotes"]), 1
+        )
+        self.assertEqual(
+            len(self.library.list({"query": "", "offset": 0}, 88, 10, self.archive, 2)["emotes"]), 1
+        )
         self.assertEqual(self.emote("remember", reason="适合调侃")["status"], "conflict")
         self.assertTrue((self.library.root / "a.png").exists())
         with self.assertRaises(ValueError):
             self.emote("delete")
 
     def test_deleted_feedback_is_not_reintroduced_to_agent(self):
-        saved = self.emote("remember", reason="适合轻松聊天")
-        self.assertEqual(self.emote("read")["memory"], "适合轻松聊天")
-        self.emote("disable", revision=saved["updated"])
+        self.assertEqual(self.emote("disable")["status"], "saved")
+        self.assertTrue(self.emote("read")["disabled"])
         with self.archive.db:
             self.archive.db.execute("DELETE FROM messages WHERE message_id=100")
         read = self.emote("read")
-        self.assertTrue(read["disabled"])
-        self.assertEqual(read["memory"], "")
-        self.assertEqual(read["evidence"], "[]")
-        self.assertNotIn("history", read)
+        self.assertFalse(read["disabled"])
+        self.assertEqual(read["notes"], [])
 
-    def test_backend_exposes_reason_and_restores_with_revision(self):
+    def test_fixed_feedback_cannot_be_changed_by_model(self):
         saved = self.emote("disable")
-        store = ConsoleStore(self.root)
-        item = store.get("emote:a.png")
-        self.assertEqual(item["group_states"][0]["reason"], "本群明确要求停用")
-        with self.assertRaises(ValueError):
-            store.restore_emote("emote:a.png", 99, 10, 0)
-        restored = store.restore_emote("emote:a.png", 99, 10, saved["updated"])
-        self.assertFalse(restored["group_states"][0]["disabled"])
-        self.assertIn("本群明确要求停用", restored["group_states"][0]["history"])
+        vault = Vault(self.root, 99)
+        note = vault.get(saved["id"])
+        fixed = vault.put({**note, "fixed": True}, note["revision"], manual=True)
+        self.assertEqual(self.emote("remember", fixed["revision"])["status"], "fixed")
 
     async def test_disabled_selection_is_checked_again_before_send(self):
         self.emote("disable")
@@ -121,7 +124,7 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
         send = AsyncMock()
         await service.handle(99, 10, 2, 101, "发图", AsyncMock(), send_emote=send)
         send.assert_not_awaited()
-        self.assertEqual(self.library.usage(99, 10), {})
+        self.assertEqual(sum(r["use_count"] for r in self.library.usage(99, 10).values()), 1)
 
     async def test_multi_image_order_and_sent_usage(self):
         (self.library.root / "b.png").write_bytes(PNG + b"second")
@@ -150,17 +153,19 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
             99, 10, 2, 101, "发几张", AsyncMock(), send_emote=emote, send_image=image
         )
         self.assertEqual(sent, ["a.png", "web", "b.png"])
-        self.assertEqual(sum(r["use_count"] for r in self.library.usage(99, 10).values()), 2)
+        self.assertEqual(sum(r["use_count"] for r in self.library.usage(99, 10).values()), 3)
 
-    def test_emote_migration_preserves_isolation_and_newer_restore(self):
-        self.emote("disable")
+    def test_emote_send_migration_preserves_platform_identity(self):
+        import sqlite3
+        from contextlib import closing
+
         output = self.root / "merged.sqlite3"
-        migration.merge_emotes(self.library.memory_path, self.root / "absent", output)
-        other = Emotes(self.root / "other")
-        other.memory_path = output
-        self.assertTrue(current(other, 99, 10, self.library.digest("a.png"))["disabled"])
-        self.assertFalse(current(other, 99, 20, self.library.digest("a.png"))["disabled"])
-        self.assertEqual(len(states(other)), 1)
+        migration.merge_emotes(self.library.memory_path, self.library.memory_path, output)
+        with closing(sqlite3.connect(output)) as db:
+            self.assertEqual(
+                db.execute("SELECT bot,scope,message_id,subject FROM emote_sends").fetchall(),
+                [(99, 10, 90, 2)],
+            )
 
     def test_person_memory_write_revision_and_pinned_values(self):
         read = self.memory("read")

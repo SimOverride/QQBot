@@ -52,6 +52,12 @@ class Index:
             "log_level": "ERROR",
         }
         atomic(self.state / "config.json", json.dumps(config))
+        ignore_path = self.state / ".bmignore"
+        ignored = ignore_path.read_text(encoding="utf-8") if ignore_path.exists() else ""
+        for pattern in ("工作台/", "导航/", "图谱/", ".obsidian/"):
+            if pattern not in ignored.splitlines():
+                ignored = ignored.rstrip() + "\n" + pattern + "\n"
+        atomic(ignore_path, ignored)
         env = {
             **os.environ,
             "BASIC_MEMORY_CONFIG_DIR": str(self.state.resolve()),

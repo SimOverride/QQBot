@@ -61,7 +61,10 @@ class ProfileStore:
                 )
             values[field] = value
         if self.group_settings is not None:
-            default_persona = self.group_settings.read().get("default_persona", "默认")
+            settings = self.group_settings.read()
+            default_persona = settings.get("default_persona", "默认")
+            if settings.get("interests"):
+                values["interests"] = "、".join(settings["interests"])
             if default_persona != "默认":
                 values["persona"] = self.read_selection("persona", default_persona)
         return values

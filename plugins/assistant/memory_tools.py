@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from .prompt_store import tool_definition
-from .vault import FIELDS, Vault, source
+from .vault import Vault, source
 
 FUNCTION = tool_definition("manage_memory")
 
@@ -27,11 +27,12 @@ def _execute(session, args):
     subject, field = args["subject"], args["field"]
     if type(subject) is not int or subject < 0:
         return {"status": "invalid_subject"}
-    if field not in (*FIELDS, "summary", "knowledge", "自我档案", "想法", "日记"):
+    if not isinstance(field, str) or not 1 <= len(field.strip()) <= 100:
         return {"status": "invalid_field"}
     kind = {
         "summary": "context",
         "knowledge": "context",
+        "群背景": "context",
         "自我档案": "self",
         "想法": "thought",
         "日记": "diary",

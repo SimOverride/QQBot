@@ -273,17 +273,24 @@ class Assistant:
                         ident = item.get("emote_id")
                         try:
                             if ident is not None:
-                                from .emote_state import current
-
                                 if self.emotes is None or send_emote is None:
                                     raise ServiceError("当前会话无法发送表情包。")
-                                if current(
-                                    self.emotes, bot_id, group_id, self.emotes.digest(ident)
+                                if self.emotes.experience(
+                                    bot_id, self.emotes.digest(ident), user_id, self.archive
                                 )["disabled"]:
                                     continue
-                                await asyncio.wait_for(send_emote(ident), 30)
+                                sent = await asyncio.wait_for(send_emote(ident), 30)
                                 try:
-                                    self.emotes.record_sent(ident, bot_id, group_id)
+                                    self.emotes.record_sent(
+                                        ident,
+                                        bot_id,
+                                        group_id,
+                                        message_id=sent.get("message_id")
+                                        if isinstance(sent, dict)
+                                        else None,
+                                        user=user_id,
+                                        context=text[:1000],
+                                    )
                                 except Exception:
                                     logger.warning("emote_usage_write_failed")
                                 saved_reply += f"\n[已发送表情包：{ident}]"

@@ -131,7 +131,6 @@ def setup() -> None:
         from .memory_worker import Worker
 
         worker = Worker(archive, LLM(client, config, Search(client, config)), service.limits)
-        memory_worker = asyncio.create_task(worker.run())
         extensions = ExtensionManager(root, service.commands, [Schedule()], archive)
         service.commands.extensions = extensions
         from ..tasks.generated import load as load_generated
@@ -188,13 +187,22 @@ def setup() -> None:
 
         service.vision = Vision(config, archive)
         service.emotes = Emotes(
-            root / config.emotes_dir, config.emotes_max_bytes, config.emotes_daily_import_limit
+            root / config.emotes_dir,
+            config.emotes_max_bytes,
+            config.emotes_daily_import_limit,
+            project_root=root,
         )
 
         sharing = Sharing(service, contacts)
-        settings = GroupSettings(root / "group_chat.json")
+        import migration
+
+        with migration.project_lock(root, name=".migration.lock"):
+            settings = GroupSettings(root / "group_chat.json")
+            settings.normalize()
         service.commands.group_settings = settings
         profiles.group_settings = settings
+        worker.profiles, worker.emotes = profiles, service.emotes
+        memory_worker = asyncio.create_task(worker.run())
         conversations = GroupConversation(service, contacts, settings)
 
         async def cleanup_loop():
@@ -389,8 +397,10 @@ def setup() -> None:
                     metadata={"response_to": {"message_id": event.message_id, "sender": user_id}},
                 )
 
+            return result
+
         async def send_private_emote(emote_id):
-            await send_private("", emote_id)
+            return await send_private("", emote_id)
 
         async def send_private_image(data):
             await send_private("", image_data=data)

@@ -36,9 +36,16 @@ def image_data(data):
 
 class EmoteCollector:
     def __init__(
-        self, library, review, downloader=download_image, max_bytes=5 * 1024 * 1024, cache_path=None
+        self,
+        library,
+        review,
+        downloader=download_image,
+        max_bytes=5 * 1024 * 1024,
+        cache_path=None,
+        bot=0,
     ):
         self.library, self.review, self.downloader = library, review, downloader
+        self.bot = bot
         self.max_bytes = library.max_bytes if library is not None else max_bytes
         self.candidates, self.inspected = {}, {}
         self.cache_path = cache_path
@@ -153,7 +160,11 @@ class EmoteCollector:
         if "saved_id" in item:
             return {"status": "already_saved", "id": item["saved_id"]}
         result = self.library.import_image(
-            item["data"], item["suffix"], description.strip(), self.candidates[ident]["source"]
+            item["data"],
+            item["suffix"],
+            description.strip(),
+            self.candidates[ident]["source"],
+            self.bot,
         )
         if result.get("status") in ("saved", "already_saved"):
             item["saved_id"] = result["id"]

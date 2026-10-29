@@ -197,7 +197,7 @@ class EmoteTests(unittest.IsolatedAsyncioTestCase):
             if part.get("type") == "image_url"
         ]
         self.assertEqual(len(previews), 1)  # 保存描述不抹掉本轮已查看的原图。
-        self.assertIn("白色小图", self.emotes.recall(self.emotes.digest("开心.png")))
+        self.assertIn("白色小图", self.emotes.recall(self.emotes.digest("开心.png"), 99))
 
     async def test_service_sends_and_saves_image_only(self):
         llm = SimpleNamespace(reply=AsyncMock(return_value=Reply("", emote_id="开心.png")))

@@ -208,9 +208,10 @@ class ToolCallTests(unittest.IsolatedAsyncioTestCase):
         )
         for provider in ("deepseek", "openai"):
             with self.subTest(provider=provider):
+                bot = 99 if provider == "deepseek" else 100
                 emotes = Emotes(Path(self.temp.name) / provider)
                 (emotes.root / "image.png").write_bytes(png)
-                tools = HistoryTools(self.archive, (99, 10, 2))
+                tools = HistoryTools(self.archive, (bot, 10, 2))
                 tools.emotes = emotes
                 seen = []
                 responses = iter(
@@ -246,7 +247,7 @@ class ToolCallTests(unittest.IsolatedAsyncioTestCase):
                     seen.append(payload)
                     if len(seen) == 2:
                         self.assertEqual(tools.selected_emote, "image.png")
-                        self.assertIsNone(emotes.recall(emotes.digest("image.png")))
+                        self.assertIsNone(emotes.recall(emotes.digest("image.png"), bot))
                         messages = payload["input" if provider == "openai" else "messages"]
                         self.assertEqual(tool_results(messages)["choose"]["status"], "queued")
                         self.assertIn(
@@ -265,7 +266,7 @@ class ToolCallTests(unittest.IsolatedAsyncioTestCase):
                     llm = LLM(client, cfg, Search(client, cfg))
                     reply = await llm.reply([], "发个图", "test", history_tools=tools)
                 self.assertEqual(reply.emote_id, "image.png")
-                self.assertEqual(emotes.recall(emotes.digest("image.png")), "白色图案")
+                self.assertEqual(emotes.recall(emotes.digest("image.png"), bot), "白色图案")
 
     async def test_malformed_batch_is_rejected_before_first_side_effect(self):
         self.tools.send_callback = AsyncMock(return_value={"status": "sent"})

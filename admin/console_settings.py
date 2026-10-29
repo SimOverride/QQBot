@@ -160,10 +160,11 @@ class Settings:
             "revision": revision(data),
             "min_participants": data.get("default_min_participants", DEFAULT_MIN_PARTICIPANTS),
             "persona": data.get("default_persona", "默认"),
+            "interests": data.get("interests", []),
             "personas": sorted(p.stem for p in (self.root / "personas").glob("*.txt")),
         }
 
-    def save_defaults(self, persona, min_participants, expected):
+    def save_defaults(self, persona, min_participants, expected, interests=None):
         with migration.project_lock(self.root, name=".migration.lock"):
             self.check()
             current = self.defaults()
@@ -172,10 +173,21 @@ class Settings:
             if persona not in current["personas"]:
                 raise ValueError("默认人设无效")
             validate_min_participants(min_participants)
+            interests = current["interests"] if interests is None else interests
+            if (
+                not isinstance(interests, list)
+                or len(interests) > 20
+                or any(not isinstance(v, str) or not 1 <= len(v.strip()) <= 100 for v in interests)
+            ):
+                raise ValueError("机器人兴趣最多20项，每项1至100字")
             store = GroupSettings(self.root / "group_chat.json")
             data = store.read()
             atomic_json(self.root / "backups/settings" / (uuid.uuid4().hex + ".json"), data)
-            data.update(default_persona=persona, default_min_participants=min_participants)
+            data.update(
+                default_persona=persona,
+                default_min_participants=min_participants,
+                interests=list(dict.fromkeys(v.strip() for v in interests)),
+            )
             store.write(data)
         return {
             "message": "设置已保存；所有群聊和私聊后续请求使用统一人设，参与人数按群配置生效",

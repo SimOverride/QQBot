@@ -50,6 +50,7 @@ class Tools:
                 collector = EmoteCollector(
                     history_tools.emotes,
                     self.llm.review_emote_image,
+                    bot=history_tools.key[0],
                     cache_path=(
                         history_tools.archive.root
                         / "data"
@@ -274,10 +275,12 @@ class Tools:
                     previews.extend([{"type": "text", "text": "重新查看表情：" + ident}, preview])
                     history_tools.offered_emotes.add(ident)
                     pending_memories[ident] = digest
-                    memory_versions[digest] = history_tools.emotes.recall(digest)
+                    memory_versions[digest] = history_tools.emotes.recall(
+                        digest, history_tools.key[0]
+                    )
                     result = {
                         "status": "attached",
-                        "description": history_tools.emotes.recall(digest),
+                        "description": history_tools.emotes.recall(digest, history_tools.key[0]),
                     }
             return result
 
@@ -286,7 +289,11 @@ class Tools:
         async def tool_list_emotes(name, args):
             nonlocal preview_bytes
             result = history_tools.emotes.list(
-                args, history_tools.key[0], history_tools.key[1], history_tools.archive
+                args,
+                history_tools.key[0],
+                history_tools.key[1],
+                history_tools.archive,
+                user=history_tools.key[2],
             )
             for emote in result.get("emotes", []):
                 try:
@@ -321,14 +328,14 @@ class Tools:
             if not isinstance(args, dict) or set(args) != {"items"}:
                 raise ValueError
             remembered = history_tools.emotes.remember(
-                args["items"], pending_memories, memory_versions
+                args["items"], pending_memories, memory_versions, bot=history_tools.key[0]
             )
             history_tools.offered_emotes.update(remembered)
             for emote_id in remembered:
                 pending_memories.pop(emote_id, None)
             result = {
                 "status": "recorded",
-                "hint": "新图保存描述；已有描述只提交待确认修正，原值保留",
+                "hint": "描述已写入统一记忆；修正保留历史，人工固定不可覆盖",
                 "remaining": list(pending_memories),
             }
             return result
@@ -348,14 +355,13 @@ class Tools:
                     args["id"]
                 ):
                     raise ServiceError("表情包已经变化，请重新检索。")
-                from .emote_state import current
-
-                if current(
-                    history_tools.emotes,
-                    *history_tools.key[:2],
+                if history_tools.emotes.experience(
+                    history_tools.key[0],
                     history_tools.emote_hashes[args["id"]],
+                    history_tools.key[2],
+                    history_tools.archive,
                 )["disabled"]:
-                    return {"status": "disabled_in_group"}
+                    return {"status": "disabled_for_user"}
                 history_tools.selected_emote = args["id"]
                 history_tools.selected_media.append({"emote_id": args["id"]})
                 result = {"status": "queued", "hint": "回复完成后发送，可留空文本仅发表情包"}
