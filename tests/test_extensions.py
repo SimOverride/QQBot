@@ -109,7 +109,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("没有有效", await self.confirm(proposal))
 
     async def test_backend_toggle_invalidates_pending_confirmation(self):
-        from console_settings import Settings
+        from admin.console_settings import Settings
 
         proposal = await self.propose()
         settings = Settings(self.root)

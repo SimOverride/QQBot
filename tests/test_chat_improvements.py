@@ -15,7 +15,7 @@ import httpx
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
 
 import migration
-from console_store import ConsoleStore
+from admin.console_store import ConsoleStore
 from plugins.assistant.config import Config
 from plugins.assistant.emotes import Emotes
 from plugins.assistant.forward import ForwardReader

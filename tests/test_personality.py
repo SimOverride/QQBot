@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 from plugins.assistant.commands import Commands
 from plugins.assistant.config import Config
@@ -24,68 +24,29 @@ class PersonalityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/人设", help_text)
         self.assertNotIn("/风格", help_text)
 
-    async def test_group_profiles_permissions_persistence_and_scope(self):
+    async def test_global_profile_applies_to_every_scope(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "groups.json"
             settings = GroupSettings(path)
             personas = Path(directory) / "personas"
             personas.mkdir()
-            for folder in (personas,):
-                (folder / "默认.txt").write_text("本地默认", encoding="utf8")
+            (personas / "默认.txt").write_text("本地默认", encoding="utf8")
             (personas / "幽默群友.txt").write_text("幽默人格", encoding="utf8")
+            settings.write(
+                {"default_persona": "幽默群友", "groups": {"10": {"persona": {"name": "默认"}}}}
+            )
             store = ProfileStore(personas / "默认.txt")
             store.group_settings = settings
-            llm = SimpleNamespace(
-                reply=AsyncMock(return_value=Reply("回答")),
-                rephrase_notice=AsyncMock(return_value="操作完成"),
-            )
-            service = Assistant(Config(bot_owners={1}), llm, store)
-            service.commands.group_settings = settings
-            commands = service.commands
-            original = path.read_text(encoding="utf8")
-            for lookup in (
-                None,
-                AsyncMock(return_value="member"),
-                AsyncMock(side_effect=RuntimeError),
-            ):
-                result = await commands.run((99, 10, 2), "/人设 幽默群友", lookup)
-                self.assertIn("权限不足", result)
-                self.assertEqual(path.read_text(encoding="utf8"), original)
-            for role in ("admin", "owner"):
-                result = await commands.run(
-                    (99, 10, 2), "/人设 切换 幽默群友", AsyncMock(return_value=role)
-                )
-                self.assertIn("已切换", result)
-            self.assertEqual(store.effective(10)["persona"], "幽默人格")
-            self.assertEqual(store.effective(20), store.effective())
-            self.assertEqual(store.effective(-1), store.effective())
-            store.group_settings = GroupSettings(path)
-            await service.handle(99, 10, 3, 1, "你好", AsyncMock())
-            self.assertEqual(llm.reply.call_args.args[3], store.effective(10))
-            await service.notices.render("已更新", 10)
-            self.assertEqual(llm.rephrase_notice.call_args.args[1], store.effective(10))
-            before = path.read_text(encoding="utf8")
-            for command in ("/人设 未知", "/人设 设置 新人设", "/人设 ../persona"):
-                await commands.run((99, 10, 1), command, None)
-                self.assertEqual(path.read_text(encoding="utf8"), before)
-            self.assertIn("私聊", await commands.run((99, -1, 1), "/人设 幽默群友", None))
-            self.assertEqual(path.read_text(encoding="utf8"), before)
-            with patch.object(settings, "write", side_effect=OSError):
-                result = await commands.run((99, 10, 1), "/人设 幽默群友", None)
-                self.assertIn("失败", result)
-            self.assertEqual(path.read_text(encoding="utf8"), before)
-            (personas / "新 人设.txt").write_text("本地新增", encoding="utf8")
-            self.assertIn("新 人设", await commands.run((99, 10, 1), "/人设 列表", None))
-            await commands.run((99, 10, 1), "/人设 切换 新 人设", None)
-            self.assertEqual(store.effective(10)["persona"], "本地新增")
-            (personas / "新 人设.txt").write_text("本地修改", encoding="utf8")
-            self.assertEqual(store.effective(10)["persona"], "本地修改")
-            (personas / "新 人设.txt").unlink()
-            with self.assertRaises(ValueError):
-                store.effective(10)
-            await commands.run((99, 10, 1), "/人设 默认", None)
-            self.assertEqual(store.effective(10), store.effective())
-            self.assertNotIn("activity", settings.get(10))
+            for scope in (10, 20, -1, None):
+                self.assertEqual(store.effective(scope)["persona"], "幽默人格")
+            service = Assistant(Config(bot_owners={1}), SimpleNamespace(), store)
+            before = path.read_bytes()
+            for scope in (10, -1):
+                result = await service.commands.run((99, scope, 1), "/人设 切换 默认", None)
+                self.assertIn("后台", result)
+                self.assertEqual(path.read_bytes(), before)
+            (personas / "幽默群友.txt").write_text("更新后的全局人设", encoding="utf8")
+            self.assertEqual(store.effective(20)["persona"], "更新后的全局人设")
 
     async def test_local_hot_reload_and_request_injection(self):
         with tempfile.TemporaryDirectory() as directory:

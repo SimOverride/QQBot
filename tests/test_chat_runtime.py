@@ -21,7 +21,7 @@ from plugins.assistant.modules import Modules
 from plugins.assistant.search import Search
 from plugins.extensions.manager import Manager
 from plugins.extensions.schedule import Schedule
-from profile_lab import inspect_persona
+from admin.profile_lab import inspect_persona
 from tests.test_extensions import settings
 
 

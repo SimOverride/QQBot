@@ -1,4 +1,3 @@
-import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -49,6 +48,10 @@ class ConsolidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(organized(self.facts(), self.root)), 3)
 
     def test_group_sources_and_manual_override(self):
+        from plugins.assistant.consolidation import automatic_group
+        from plugins.assistant.vault import Vault
+        from plugins.assistant.vault import source as stable_source
+
         self.archive.collect((99, 10, 1), 1, "周末交流编程", ["text"], 1000)
         source = group_source(self.archive.db, 99, 10)
         self.worker.cache["group:99:10"] = {
@@ -57,14 +60,19 @@ class ConsolidationTests(unittest.IsolatedAsyncioTestCase):
             "fingerprint": fingerprint(source),
         }
         self.worker.save()
+        self.assertEqual(automatic_group(self.root, 99, 10)["summary"], "周末交流")
+        row = self.archive.db.execute("SELECT * FROM messages").fetchone()
+        vault = Vault(self.root, 99)
+        note = vault.set_field(
+            0, "10:summary", "周末交流", kind="context", sources=[stable_source(row)]
+        )
         self.assertEqual(group_knowledge(99, 10, self.root)["summary"], "周末交流")
-        self.assertEqual(group_knowledge(98, 10, self.root), {})
-        self.assertEqual(group_knowledge(99, 20, self.root), {})
         with self.archive.db:
             self.archive.db.execute("DELETE FROM messages WHERE message_id=1")
         self.assertEqual(group_knowledge(99, 10, self.root), {})
-        fixed = {"summary": "", "knowledge": "人工固定"}
-        (self.root / "data/console.json").write_text(
-            json.dumps({"groups": {"99:10": fixed}}), encoding="utf-8"
+        self.assertEqual(automatic_group(self.root, 99, 10), {})
+        vault.set_field(0, "10:summary", "", kind="context", manual=True, expected=note["revision"])
+        vault.set_field(0, "10:knowledge", "人工固定", kind="context", manual=True)
+        self.assertEqual(
+            group_knowledge(99, 10, self.root), {"summary": "", "knowledge": "人工固定"}
         )
-        self.assertEqual(group_knowledge(99, 10, self.root), fixed)

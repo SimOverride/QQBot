@@ -147,5 +147,7 @@ class LongTermTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("阿明", await commands.run((99, 10, 2), "/记忆", None))
         await commands.run(self.key, "/忘记 总体认知", None)
         self.assertFalse(self.archive.facts(self.key))
-        self.assertEqual(self.archive.cursor(self.key), 2)
+        from plugins.assistant.vault import Vault
+
+        self.assertTrue(Vault(self.archive.root, 99).field(1, "总体认知")["fixed"])
         self.assertEqual(self.archive.count(self.key), 2)

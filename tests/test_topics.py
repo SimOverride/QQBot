@@ -11,8 +11,8 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
+from admin.console_topics import TopicReader
 from admin_server import create_app
-from console_topics import TopicReader
 from plugins.assistant.config import Config
 from plugins.assistant.groupchat import GroupConversation, GroupSettings, GroupState
 from plugins.assistant.llm import Reply

@@ -44,16 +44,12 @@ class HistoryTests(unittest.IsolatedAsyncioTestCase):
             {r["id"] for r in first["messages"]} & {r["id"] for r in second["messages"]}
         )
         self.assertTrue(all(r["scope"] == 10 for r in second["messages"]))
-        self.assertEqual(
-            self.tools.execute("search_messages", args(scope=-2))["status"], "access_denied"
-        )
+        self.assertEqual(self.tools.execute("search_messages", args(scope=-2))["status"], "ok")
         self.assertEqual(
             self.tools.execute("search_messages", args(start="2026-09-30"))["status"], "no_matches"
         )
         group = HistoryTools(self.archive, (99, 10, 1), [11])
-        self.assertEqual(
-            group.execute("search_messages", args(scope=11))["status"], "access_denied"
-        )
+        self.assertEqual(group.execute("search_messages", args(scope=11))["status"], "ok")
 
     def test_around_and_invalid_dates(self):
         found = self.tools.execute("search_messages", args(query="消息15"))["messages"][0]
@@ -64,11 +60,11 @@ class HistoryTests(unittest.IsolatedAsyncioTestCase):
             self.tools.execute("search_messages", args(start="yesterday"))["status"],
             "invalid_arguments",
         )
-        self.assertEqual(
-            self.tools.execute("read_message_context", {"id": 31})["status"], "not_found"
-        )
+        self.assertEqual(self.tools.execute("read_message_context", {"id": 31})["status"], "ok")
         self.archive.delete(99, 10)
-        self.assertEqual(self.tools.execute("search_messages", args())["status"], "no_matches")
+        self.assertEqual(
+            self.tools.execute("search_messages", args(scope=10))["status"], "no_matches"
+        )
 
     async def test_send_scope_and_once(self):
         callback = AsyncMock(return_value={"status": "sent"})

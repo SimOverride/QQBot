@@ -150,6 +150,7 @@ class HistoryTools:
                 if not (
                     (value is None and "null" in types)
                     or (type(value) is int and "integer" in types)
+                    or (type(value) is bool and "boolean" in types)
                     or (isinstance(value, str) and "string" in types)
                 ):
                     raise ValueError
@@ -164,10 +165,24 @@ class HistoryTools:
                 if "enum" in rule and value not in rule["enum"]:
                     raise ValueError
             scope = args.get("scope", self.key[1])
-            if scope is not None and scope not in self.scopes:
+            memory_scopes = {
+                r[0]
+                for r in self.archive.db.execute(
+                    "SELECT DISTINCT grp FROM messages WHERE bot=?", (self.key[0],)
+                )
+            } | self.scopes
+            from .knowledge import read_directory
+
+            memory_scopes.update(
+                int(g)
+                for g in read_directory(self.archive.root)
+                .get(str(self.key[0]), {})
+                .get("groups", {})
+            )
+            if scope is not None and scope not in memory_scopes:
                 return {"status": "access_denied"}
             scopes = sorted(
-                self.scopes
+                memory_scopes
                 if scope is None or name in ("list_sessions", "read_message_context")
                 else {scope}
             )
@@ -184,25 +199,42 @@ class HistoryTools:
                 if kind == "group":
                     if "subject" in args:
                         raise ValueError
-                    if self.key[1] <= 0:
-                        return {"status": "access_denied"}
+                    if scope is None or scope <= 0:
+                        return {"status": "invalid_arguments"}
                     return {
                         "status": "ok",
                         "scope": self.key[1],
-                        **group_knowledge(self.key[0], self.key[1], self.archive.root),
+                        **group_knowledge(self.key[0], scope, self.archive.root),
                     }
                 subject = args.get("subject", self.key[2])
-                if subject != self.key[2] and not any(
-                    item["qq"] == subject
-                    for item in self.resolve_name("user", str(subject), [self.key[1]], 0)["matches"]
-                ):
-                    return {"status": "access_denied"}
                 key = (self.key[0], self.key[1], subject)
+                history = []
+                if args.get("include_history"):
+                    from .vault import Vault
+
+                    vault = Vault(self.archive.root, self.key[0])
+                    for note in vault.list(subject=subject):
+                        for old in reversed(note.get("history", [])):
+                            if vault.valid(old):
+                                history.append(
+                                    {
+                                        "id": note["id"],
+                                        "value": old["value"][:1200],
+                                        "updated": old["updated"],
+                                        "kind": "history",
+                                        "current": False,
+                                    }
+                                )
+                            if len(history) >= 10:
+                                break
+                        if len(history) >= 10:
+                            break
                 return {
                     "status": "ok",
                     "scope": self.key[1],
                     "subject_qq": subject,
                     "facts": self.archive.facts(key),
+                    "history": history,
                     "shared": self.archive.shared_knowledge(key)[:20],
                 }
             where = "bot=? AND grp IN (" + ",".join("?" for _ in scopes) + ")"

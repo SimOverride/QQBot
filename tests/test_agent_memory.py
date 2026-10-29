@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 import httpx
 
 import migration
-from console_store import ConsoleStore
+from admin.console_store import ConsoleStore
 from plugins.assistant.config import Config
 from plugins.assistant.emote_state import current, execute, states
 from plugins.assistant.emotes import Emotes
@@ -272,7 +272,7 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(any(f"print({i})" in c for c in chunks))
         self.assertTrue(all(c.count("```") == 2 for c in chunks))
 
-    def test_global_read_does_not_expose_other_group(self):
+    def test_global_read_shares_other_group(self):
         write_memory(
             self.archive,
             (99, 20, 2),
@@ -280,4 +280,4 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
             "另一群反馈",
             [{"field": "总体认知", "value": "另一群秘密", "evidence": "另一群反馈"}],
         )
-        self.assertNotIn("秘密", str(self.memory("read", field="总体认知")))
+        self.assertIn("秘密", str(self.memory("read", field="总体认知")))

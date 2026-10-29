@@ -11,9 +11,9 @@ from dotenv import dotenv_values
 from fastapi.testclient import TestClient
 
 import migration
+from admin.console_settings import Settings
+from admin.console_store import ConsoleStore
 from admin_server import create_app
-from console_settings import Settings
-from console_store import ConsoleStore
 from plugins.assistant.config import Config
 from plugins.assistant.groupchat import GroupSettings
 from plugins.assistant.llm import LLM

@@ -9,7 +9,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from admin_server import create_app
-from console_store import atomic_json
+from admin.console_store import atomic_json
 from plugins.assistant.runtime import Runtime, status
 
 

@@ -1,12 +1,14 @@
 // 本地维护界面：草稿与已保存内容分离，模型建议必须经过差异确认。
 let token = '', inventory = {}, page = 'people', current = null, draft = null;
 let chat = [], proposal = null, pending = null, busy = false, deleting = false;
-let personScope='general', peopleGroup='', selectionVersion=0;
+let peopleGroup='', selectionVersion=0;
 const settingsChanged=new Set();
 const $ = s => document.querySelector(s);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const text = v => typeof v === 'string' ? v : JSON.stringify(v, null, 2);
-const labels = {summary:'群摘要',knowledge:'群认知 · 共识与背景',interests:'群兴趣（每行一项）',persona:'群人设',description:'画面、文字、情绪与适用场景',content:'归档消息正文'};
+const memoryKinds={fact:'事实',event:'事件',impression:'个人认知',thought:'想法',diary:'日记',self:'自我档案',index:'索引',context:'会话背景'};
+const memoryStates={active:'生效',archived:'归档',quarantine:'待核对'};
+const labels = {fixed:'人工固定',state:'状态',summary:'群摘要',knowledge:'群认知 · 共识与背景',interests:'群兴趣（每行一项）',persona:'统一人设',description:'画面、文字、情绪与适用场景',content:'记忆正文'};
 // 仅通过文本节点渲染后台返回的名称片段，昵称不能注入 HTML。
 function showNameParts(element,parts,fallback){
   element.replaceChildren();
@@ -17,7 +19,7 @@ function showNameParts(element,parts,fallback){
     }else if(part.kind==='message'){
       const span=document.createElement('span');span.className='message-reference';span.textContent=part.text;
       span.tabIndex=0;span.setAttribute('role','button');span.setAttribute('aria-label','查看引用消息：'+part.text);
-      const resource=current?.resource,scope=resource?.startsWith('person:')&&personScope!=='general'?Number(personScope):null;
+      const resource=current?.resource,scope=null;
       span.onmouseenter=()=>showMessagePreview(span,resource,scope,part.ids);
       span.onfocus=()=>showMessagePreview(span,resource,scope,part.ids);
       span.onclick=()=>showMessagePreview(span,resource,scope,part.ids);
@@ -106,17 +108,20 @@ async function navigate(next){
 async function renderPage(){
   showSelection();
   const container=$('#content');
+  if(inventory.memory_upgrade_required&&['people','groups','memories','robot'].includes(page)){container.innerHTML='<div class="panel panel-body"><p>旧记忆尚未迁移，请先预演并完成统一记忆升级。</p><button id="go-memory-upgrade">打开数据迁移</button></div>';$('#go-memory-upgrade').onclick=()=>navigate('migration');return;}
   if(page==='topics'){await renderTopics();return;}
+  if(page==='memory-status'){await renderMemoryStatus();return;}
   if(page==='settings'){await renderSettings();return;}
   if(page==='migration'){renderMigration();return;}
   if(page==='changes'){await renderChanges();return;}
   container.innerHTML=(page==='prompts'?'<div class="preview"><details><summary>查看完整请求组装预览（不调用模型）</summary><div class="toolbar"><input id="preview-group" placeholder="群号 / 私聊负QQ" aria-label="预览会话"><input id="preview-user" placeholder="当前用户 QQ" aria-label="预览用户"><input id="preview-text" class="wide" placeholder="测试消息" value="你好"><button id="preview-run">组装预览</button></div><pre id="preview-result">选择会话和用户后，可查看 system、背景记忆、历史问答、当前消息及工具。</pre></details></div>':'')+
-  '<div class="workspace"><section class="panel"><div class="panel-title"><input class="search" id="filter" placeholder="搜索 / 筛选" aria-label="筛选资源"><div class="count" id="list-count"></div></div><div id="list" class="listing"></div></section><section class="panel" id="editor"><div class="empty">从左侧选择一项，开始查看与维护</div></section><aside class="panel assistant" id="assistant"><div class="panel-title"><h3>✦ AI 辅助修改</h3><span class="badge">确认后保存</span></div><div class="panel-body"><p class="note">选中资源后，描述你希望如何修改。总体认知整理参考该人的各会话记录，会话印象只参考对应会话，群整理只参考该群；历史按时间段与近期均衡抽样；表情调整会附原图。选中内容将发送给已配置的模型服务。</p><div id="chat" class="chat"></div><textarea id="instruction" placeholder="例如：根据最近聊天整理群摘要，不推断没有依据的事实" aria-label="修改要求" disabled></textarea><button id="suggest" disabled>生成修改建议</button><button id="review-proposal" class="quiet" hidden>查看建议差异</button></div></aside></div>';
+  '<div class="workspace"><section class="panel"><div class="panel-title"><input class="search" id="filter" placeholder="搜索 / 筛选" aria-label="筛选资源"><div class="count" id="list-count"></div></div><div id="list" class="listing"></div></section><section class="panel" id="editor"><div class="empty">从左侧选择一项，开始查看与维护</div></section><aside class="panel assistant" id="assistant"><div class="panel-title"><h3>✦ AI 辅助修改</h3><span class="badge">确认后保存</span></div><div class="panel-body"><p class="note">选中资源后，描述你希望如何修改。个人认知统一参考该人的各群和私聊记录，群背景整理参考来源群；历史按时间段与近期均衡抽样；表情调整会附原图。选中内容将发送给已配置的模型服务。</p><div id="chat" class="chat"></div><textarea id="instruction" placeholder="例如：根据最近聊天整理群摘要，不推断没有依据的事实" aria-label="修改要求" disabled></textarea><button id="suggest" disabled>生成修改建议</button><button id="review-proposal" class="quiet" hidden>查看建议差异</button></div></aside></div>';
   let items=[];
   if(page==='people')items=(inventory.people||[]).map(p=>({...p,name:p.name,subtitle:`QQ ${p.usr} · ${p.scopes} 个会话 · ${p.count} 条`}));
   if(page==='groups')items=(inventory.groups||[]).map(g=>({...g,name:g.name,subtitle:g.count+' 条记录'}));
   if(page==='prompts')items=[...(inventory.personas||[]).map(p=>({...p,name:'人设 · '+p.name})),...(inventory.modules||[])];
   if(page==='emotes')items=await api('/api/emotes');
+  if(page==='memories'||page==='robot')items=(inventory.memories||[]).filter(i=>page!=='robot'||['self','thought','diary'].includes(i.kind)).map(i=>({...i,subtitle:`${memoryKinds[i.kind]} · ${memoryStates[i.state]}${i.fixed?' · 已固定':''} · QQ ${i.subject||'无'} · 来源 ${i.sources.join('、')||'人工'}`}));
   if(page==='people'){
     const filter=document.createElement('select');filter.id='people-group';filter.setAttribute('aria-label','按群筛选个人');
     filter.innerHTML='<option value="">全部群 / 私聊</option>'+(inventory.groups||[]).map(g=>`<option value="${g.bot}:${g.grp}">${esc(g.name)}</option>`).join('');
@@ -124,12 +129,20 @@ async function renderPage(){
     filter.onchange=()=>{if(busy||(dirty()&&!window.confirm('放弃当前草稿并切换群筛选？'))){filter.value=peopleGroup;return;}selectionVersion++;peopleGroup=filter.value;current=null;draft=null;chat=[];proposal=null;renderPage().catch(e=>status(e.message,true));};
     $('#filter').parentElement.prepend(filter);
   }
-  function list(){const query=$('#filter').value.toLowerCase();const found=items.filter(i=>(i.name+' '+i.subtitle+' '+i.resource).toLowerCase().includes(query)&&
+  function list(){const query=$('#filter').value.toLowerCase();const found=items.filter(i=>((page==='memories'||page==='robot')||(i.name+' '+i.subtitle+' '+i.resource).toLowerCase().includes(query))&&
     (page!=='people'||!peopleGroup||(i.groups||[]).some(g=>`${i.bot}:${g}`===peopleGroup)));$('#list-count').textContent=`${found.length} 项`;
     $('#list').className=page==='emotes'?'tiles':'listing';
-    $('#list').innerHTML=found.length?found.map(i=>page==='people'?`<div class="person-item"><button class="list-item" data-id="${esc(i.resource)}" data-scope="general"><strong class="${page==='people'?'name-person':page==='groups'?'name-group':''}">${esc(i.name)}</strong><small>${esc(i.subtitle)}</small></button><div class="person-submenu" data-person="${esc(i.resource)}" ${current?.resource===i.resource?'':'hidden'}>${(i.sessions||[]).map(g=>`<button data-id="${esc(i.resource)}" data-scope="${g.scope}"><span class="${g.scope>0?'name-group':''}">${esc(g.name)}</span></button>`).join('')}</div></div>`:page==='emotes'?`<button class="tile" data-id="${esc(i.resource)}" title="${esc(i.name)}"><img loading="lazy" src="/api/image?name=${encodeURIComponent(i.name)}" alt="${esc(i.name)}"><small>${esc(i.name)}</small></button>`:`<button class="list-item" data-id="${esc(i.resource)}"><strong class="${page==='people'?'name-person':page==='groups'?'name-group':''}">${esc(i.name)}</strong><small>${esc(i.subtitle||i.resource)}</small></button>`).join(''):'<div class="empty">暂无匹配数据</div>';
-    $('#list').querySelectorAll('button').forEach(b=>b.onclick=()=>selectResource(b.dataset.id,b.dataset.scope||'general'));}
-  $('#filter').oninput=list;list();
+    $('#list').innerHTML=found.length?found.map(i=>page==='emotes'?`<button class="tile" data-id="${esc(i.resource)}" title="${esc(i.name)}"><img loading="lazy" src="/api/image?name=${encodeURIComponent(i.name)}" alt="${esc(i.name)}"><small>${esc(i.name)}</small></button>`:`<button class="list-item" data-id="${esc(i.resource)}"><strong class="${page==='people'?'name-person':page==='groups'?'name-group':''}">${esc(i.name)}</strong><small>${esc(i.subtitle||i.resource)}</small></button>`).join(''):'<div class="empty">暂无匹配数据</div>';
+    $('#list').querySelectorAll('button').forEach(b=>b.onclick=()=>selectResource(b.dataset.id));}
+  let filterTimer;
+  $('#filter').oninput=()=>{
+    if(page!=='memories'&&page!=='robot'){list();return;}
+    clearTimeout(filterTimer);const version=selectionVersion,query=$('#filter').value;
+    filterTimer=setTimeout(async()=>{try{const rows=await api('/api/memories?query='+encodeURIComponent(query));if(version!==selectionVersion||$('#filter')?.value!==query)return;items=rows.filter(i=>page!=='robot'||['self','thought','diary'].includes(i.kind)).map(i=>({...i,subtitle:`${memoryKinds[i.kind]} · ${memoryStates[i.state]}${i.fixed?' · 已固定':''} · QQ ${i.subject||'无'} · 来源 ${i.sources.join('、')||'人工'}`}));list();}catch(e){status(e.message,true);}},250);
+  };list();
+  if(page==='memories'||page==='robot'){
+    const add=document.createElement('button');add.textContent='新增记录';add.onclick=openMemoryCreate;container.prepend(add);
+  }
   if(page==='prompts'||page==='emotes'){
     const actions=document.createElement('div');actions.className='toolbar';
     const add=document.createElement('button');add.textContent=page==='prompts'?'新增人设':'上传表情包';
@@ -138,15 +151,15 @@ async function renderPage(){
   $('#suggest').onclick=suggest;$('#review-proposal').onclick=()=>review(proposal.value);
   if(page==='prompts')$('#preview-run').onclick=async()=>{try{$('#preview-result').textContent='正在组装…';$('#preview-result').textContent=text(await api('/api/preview',{group:Number($('#preview-group').value),user:Number($('#preview-user').value),text:$('#preview-text').value}));}catch(e){status(e.message,true);$('#preview-result').textContent=e.message;}};
 }
-async function selectResource(id,scope='general'){
+async function selectResource(id){
   if(busy)return;
   if(dirty()&&!window.confirm('放弃当前未保存草稿？'))return;
   const version=++selectionVersion;
-  try{const loaded=await api('/api/resource?id='+encodeURIComponent(id));if(version!==selectionVersion)return;current=loaded;personScope=scope;draft=structuredClone(current.value);chat=[];proposal=null;renderEditor();
-    document.querySelectorAll('[data-id]').forEach(b=>b.classList.toggle('selected',b.dataset.id===id&&(!b.dataset.scope||b.dataset.scope===personScope)));
+  try{const loaded=await api('/api/resource?id='+encodeURIComponent(id));if(version!==selectionVersion)return;current=loaded;draft=structuredClone(current.value);chat=[];proposal=null;renderEditor();
+    document.querySelectorAll('[data-id]').forEach(b=>b.classList.toggle('selected',b.dataset.id===id));
     document.querySelectorAll('[data-person]').forEach(el=>{el.hidden=el.dataset.person!==id;});
     if($('#instruction')){$('#instruction').disabled=false;$('#suggest').disabled=false;$('#chat').textContent='';$('#review-proposal').hidden=true;}
-    const savedProposal=await api('/api/knowledge-proposal?resource='+encodeURIComponent(id));if(version!==selectionVersion)return;proposal=savedProposal||current.proposal||null;if(proposal&&proposal.scope&&proposal.scope!==personScope)proposal=null;if(proposal){chat=[{role:'assistant',content:JSON.stringify(proposal)}];showChat();$('#review-proposal').hidden=false;}status(proposal?'已载入修改建议，查看差异后确认保存':'已载入保存版本');
+    const savedProposal=await api('/api/knowledge-proposal?resource='+encodeURIComponent(id));if(version!==selectionVersion)return;proposal=savedProposal||current.proposal||null;if(proposal){chat=[{role:'assistant',content:JSON.stringify(proposal)}];showChat();$('#review-proposal').hidden=false;}status(proposal?'已载入修改建议，查看差异后确认保存':'已载入保存版本');
   }catch(e){if(version===selectionVersion)status(e.message,true);}
 }
 function showSelection(){
@@ -154,12 +167,12 @@ function showSelection(){
   el.hidden=page==='topics';
   if(!current){el.textContent=page==='settings'?'当前选择：设置':'尚未选择资源';el.removeAttribute('title');return;}
   const [kind]=current.resource.split(':');
-  const names={person:'个人认知',group:'群管理',emote:'表情包管理',persona:'人设',module:'能力模块'};
+  const names={memory:'记忆管理',person:'个人认知',group:'群管理',emote:'表情包管理',persona:'人设',module:'能力模块'};
   let name=current.title||current.resource.substring(current.resource.indexOf(':')+1),scope='';
   if(kind==='person'){
     const person=(inventory.people||[]).find(p=>p.resource===current.resource);
     name=person?.name||name;
-    scope=personScope==='general'?'总体认知':person?.sessions?.find(s=>String(s.scope)===personScope)?.name||'当前会话';
+    scope='统一档案';
   }else if(kind==='group')name=(inventory.groups||[]).find(g=>g.resource===current.resource)?.name||name;
   el.textContent='当前选择：'+[names[kind]||kind,name,scope].filter(Boolean).join(' / ');
   el.title=current.resource;
@@ -167,17 +180,7 @@ function showSelection(){
 async function saveManual(){
   if(busy||!current)return;
   if(!dirty()){status('内容没有变化');return;}
-  busy=true;
-  const controls=[...$('#editor').querySelectorAll('input,textarea,select,button')].map(el=>({el,disabled:el.disabled}));
-  controls.forEach(({el})=>el.disabled=true);
-  status('正在保存…');
-  try{
-    const saved=await api('/api/resource',{resource:current.resource,value:structuredClone(draft),revision:current.revision});
-    current=saved;draft=structuredClone(saved.value);proposal=null;chat=[];
-    await refreshResources(saved.resource);
-    status('已保存；原值可在操作记录中恢复');
-  }catch(e){status(e.message,true);}
-  finally{busy=false;controls.forEach(({el,disabled})=>el.disabled=disabled);}
+  review(draft);
 }
 // 人数滑块在全局设置和群覆盖中共用；空值表示继续跟随默认值。
 function participantControl(parent,title,value,onchange,defaultValue){
@@ -202,10 +205,11 @@ function participantControl(parent,title,value,onchange,defaultValue){
 }
 function renderEditor(){
   closeMessagePreview();
+  $('#editor').oninput=null;settingsChanged.delete('memory-create');
   const kind=current.resource.split(':')[0];
   const title=current.title||current.resource.substring(current.resource.indexOf(':')+1);
   showSelection();
-  $('#editor').innerHTML=`<div class="panel-body"><div id="fields"></div><div id="evidence"></div><div class="actions">${current.default!==undefined?'<button class="quiet" id="reset-default">载入默认值</button>':''}<button id="save-manual">保存</button></div><p class="note">手动修改点击保存即生效；模型建议须确认差异后保存。</p></div>`;
+  $('#editor').innerHTML=`<div class="panel-body"><div id="fields"></div><div id="evidence"></div><div class="actions">${current.default!==undefined?'<button class="quiet" id="reset-default">载入默认值</button>':''}<button id="save-manual">保存</button></div><p class="note">手动修改与模型建议均在确认差异后保存；修改正文会固定该记忆。</p></div>`;
   if(kind==='emote')$('#fields').innerHTML=`<img class="image-preview" src="/api/image?name=${encodeURIComponent(title)}" alt="当前表情">`;
   function showKnowledge(label,input,display,parts){
     const preview=document.createElement('div');preview.className='knowledge-display';showNameParts(preview,parts,display);
@@ -248,22 +252,18 @@ function renderEditor(){
         if(schema){const note=document.createElement('small');note.textContent=[required?'必填':'可选','类型：'+JSON.stringify(schema.type),schema.enum?'可选值：'+schema.enum.join(' / '):'',schema.minimum!==undefined?'最小值：'+schema.minimum:'',schema.maximum!==undefined?'最大值：'+schema.maximum:''].filter(Boolean).join('；');label.append(note);}
       }
       let input;
-      if(key==='persona'){input=document.createElement('select');for(const item of inventory.personas||[]){const o=document.createElement('option');o.value=item.name;o.textContent=key==='persona'&&item.name==='默认'?'跟随默认人设':item.name;input.append(o);}input.value=value;}
+      if(kind==='memory'&&key==='fixed'){input=document.createElement('input');input.type='checkbox';input.checked=value;}
+      else if(kind==='memory'&&key==='state'){input=document.createElement('select');for(const [key,title] of Object.entries(memoryStates)){const o=document.createElement('option');o.value=key;o.textContent=title;input.append(o);}input.value=value;}
       else{input=document.createElement('textarea');input.value=Array.isArray(value)?value.join('\n'):value;if(key==='__text')input.className='long';}
-      input.oninput=()=>{let v=input.value;if(key==='interests')v=v.split('\n').map(s=>s.trim()).filter(Boolean);if(key==='__text')draft=v;else{let target=draft;for(const part of path)target=target[part];target[key]=v;}status('草稿尚未保存');};if(kind==='group'&&['summary','knowledge'].includes(key))showKnowledge(label,input,current.display_value?.[key]??value,current.display_parts?.[key]);else label.append(input);parent.append(label);
+      input.oninput=()=>{let v=key==='fixed'?input.checked:input.value;if(key==='interests')v=v.split('\n').map(s=>s.trim()).filter(Boolean);if(key==='__text')draft=v;else{let target=draft;for(const part of path)target=target[part];target[key]=v;}status('草稿尚未保存');};if(kind==='group'&&['summary','knowledge'].includes(key))showKnowledge(label,input,current.display_value?.[key]??value,current.display_parts?.[key]);else label.append(input);parent.append(label);
     }
   }
-  if(kind==='person'){
-    const contents=personScope==='general'?{'总体认知':draft['总体认知']}:draft['会话印象'][personScope];
-    const entries=typeof contents==='string'?[['会话印象',contents]]:Object.entries(contents);
-    for(const [field,value] of entries){
-      const label=document.createElement('label');label.className='field';const title=document.createElement('span');
-      title.textContent=field;
-      const input=document.createElement('textarea');if(personScope==='general'||Number(personScope)<0)input.className='long';input.value=value;
-      input.oninput=()=>{if(personScope==='general')draft['总体认知']=input.value;else if(typeof contents==='string')draft['会话印象'][personScope]=input.value;else draft['会话印象'][personScope][field]=input.value;status('草稿尚未保存');};
-      label.append(title);const shown=personScope==='general'?current.display_value?.['总体认知']:typeof contents==='string'?current.display_value?.['会话印象']?.[personScope]:current.display_value?.['会话印象']?.[personScope]?.[field];const parts=personScope==='general'?current.display_parts?.['总体认知']:typeof contents==='string'?current.display_parts?.['会话印象']?.[personScope]:current.display_parts?.['会话印象']?.[personScope]?.[field];showKnowledge(label,input,shown??value,parts);$('#fields').append(label);
-    }
-  }else fields(draft,$('#fields'));
+  fields(draft,$('#fields'));
+  if(kind==='memory'){
+    const info=document.createElement('p');info.className='note';info.textContent=`${memoryKinds[current.kind]} · 主体 QQ ${current.subject||'无'} · 所有群聊和私聊可召回`;
+    $('#fields').prepend(info);
+    if(current.history?.length){const history=document.createElement('details'),title=document.createElement('summary'),body=document.createElement('pre');title.textContent='查看历史版本';body.textContent=text(current.history);history.append(title,body);$('#fields').append(history);}
+  }
   if(kind==='module'){
     const details=document.createElement('details'),summary=document.createElement('summary'),body=document.createElement('pre');summary.textContent='完整工具契约（结构由程序维护）';
     const definitions=structuredClone(current.metadata.tools);
@@ -297,14 +297,14 @@ function renderEditor(){
   if(kind==='persona')renderProfileLab();
   if(kind==='person'||kind==='group'){
     const rebuild=document.createElement('button');rebuild.className='quiet';rebuild.textContent='根据聊天重新整理';
-    rebuild.onclick=()=>{if(busy)return;$('#instruction').value='根据提供的聊天记录重新整理当前认知，合并重复信息，总体认知与私聊印象各用一段文字，群内个人认知保留角色、互动习惯、互动关系、补充认知四类，说明依据与不确定之处。';suggest();};$('#editor .actions').append(rebuild);
+    rebuild.onclick=()=>{if(busy)return;$('#instruction').value='根据提供的各群和私聊记录整理统一档案，保留全部字段，合并重复信息，注明来源语境与不确定之处。';suggest();};$('#editor .actions').append(rebuild);
   }
   if(kind==='group'){
     const holder=document.createElement('section');holder.className='plugin-manager';$('#editor .panel-body').append(holder);
     const [,bot,group]=current.resource.split(':');renderPlugins(holder,Number(bot),Number(group)).catch(e=>status(e.message,true));
   }
   if(current.placeholders?.length){const p=document.createElement('p');p.className='note';p.textContent='请保留动态占位符：'+current.placeholders.map(s=>'{'+s+'}').join('、');$('#fields').append(p);}
-  const sourceEvidence=current.display_evidence||current.evidence;const evidence=current.resource.startsWith('person:')?sourceEvidence?.filter(r=>r.grp===(personScope==='general'?0:Number(personScope))):sourceEvidence;
+  const evidence=current.display_evidence||current.evidence;
   if(evidence?.length)$('#evidence').innerHTML=`<details><summary>查看认知依据与来源</summary><pre>${esc(text(evidence))}</pre></details>`;
   $('#save-manual').onclick=saveManual;
   if($('#reset-default'))$('#reset-default').onclick=()=>{draft=current.default;renderEditor();status('默认值已载入草稿，点击保存后生效');};
@@ -357,7 +357,7 @@ async function refreshResources(id){
   inventory=await api('/api/inventory');await renderPage();
   if(id){current=await api('/api/resource?id='+encodeURIComponent(id));draft=structuredClone(current.value);renderEditor();
     document.querySelectorAll('[data-person]').forEach(el=>{el.hidden=el.dataset.person!==id;});
-    document.querySelectorAll('[data-id]').forEach(b=>b.classList.toggle('selected',b.dataset.id===id&&(!b.dataset.scope||b.dataset.scope===personScope)));
+    document.querySelectorAll('[data-id]').forEach(b=>b.classList.toggle('selected',b.dataset.id===id));
     if($('#instruction')){$('#instruction').disabled=false;$('#suggest').disabled=false;}}
 }
 function openCreate(emote){
@@ -391,6 +391,7 @@ function openCreate(emote){
 }
 function review(value, remove=false){
   if(busy||!current)return;
+  if(!remove&&current.resource.startsWith('memory:')&&value.content!==current.value.content)value={...value,fixed:true};
   deleting=remove;pending=structuredClone(value);
   $('#confirm .diff').hidden=remove;
   $('#confirm h2').textContent=remove?'确认删除 '+current.resource:'确认这次修改';
@@ -399,17 +400,6 @@ function review(value, remove=false){
   const displayBefore=current.display_value??current.value;
   const displayAfter=proposal&&text(proposal.value)===text(value)?proposal.display_value??value:value;
   let before=displayBefore,after=displayAfter;
-  if(current.resource.startsWith('person:')&&!remove){
-    before=[];after=[];
-    if(value['总体认知']!==current.value['总体认知']){before.push({总体认知:displayBefore['总体认知']});after.push({总体认知:displayAfter['总体认知']});}
-    const sessions=(inventory.people||[]).find(p=>p.resource===current.resource)?.sessions||[];
-    for(const [scope,content] of Object.entries(value['会话印象'])){
-      if(text(content)===text(current.value['会话印象'][scope]))continue;
-      const name=sessions.find(s=>String(s.scope)===scope)?.name||'当前会话';
-      before.push({会话:name,印象:displayBefore['会话印象'][scope]});after.push({会话:name,印象:displayAfter['会话印象'][scope]});
-    }
-    if(!after.length){status('内容没有变化');return;}
-  }
   $('#before').textContent=text(before);$('#after').textContent=remove?'删除所选资源':text(after);$('#confirm').showModal();
 }
 $('#cancel-confirm').onclick=()=>$('#confirm').close();
@@ -426,11 +416,14 @@ async function suggest(){
   const instruction=$('#instruction').value.trim();if(!instruction||!current)return;
   if(dirty()){status('请先保存或放弃手动草稿，再让模型基于保存版本提出建议',true);return;}
   busy=true;$('#suggest').disabled=true;chat.push({role:'user',content:instruction});chat=chat.slice(-14);$('#instruction').value='';showChat();status('模型正在提出修改建议，尚未保存…');
-  try{proposal=await api('/api/suggest',{resource:current.resource,revision:current.revision,chat,scope:current.resource.startsWith('person:')?personScope:null});chat.push({role:'assistant',content:JSON.stringify(proposal)});showChat();$('#review-proposal').hidden=false;status('建议已生成，查看前后差异后确认保存');}catch(e){status(e.message,true);}finally{busy=false;$('#suggest').disabled=false;}
+  try{proposal=await api('/api/suggest',{resource:current.resource,revision:current.revision,chat,scope:null});chat.push({role:'assistant',content:JSON.stringify(proposal)});showChat();$('#review-proposal').hidden=false;status('建议已生成，查看前后差异后确认保存');}catch(e){status(e.message,true);}finally{busy=false;$('#suggest').disabled=false;}
 }
 function showChat(){$('#chat').innerHTML=chat.map(m=>{let content=m.content;if(m.role==='assistant'){try{const parsed=JSON.parse(content);content=parsed.display_explanation??parsed.explanation;}catch{}}return `<p class="${m.role==='user'?'user':''}">${esc(content)}</p>`;}).join('');$('#chat').scrollTop=$('#chat').scrollHeight;}
 function renderMigration(){
   $('#content').innerHTML='<div class="two-columns"><section class="panel"><span class="badge">全部数据</span><h2>导出备份</h2><p>聊天与认知、群摘要、表情包、人设、提示词覆盖和 .env 配置，保存在一个普通 ZIP 中。</p><p class="note">备份含明文密钥。数据库快照包含 WAL 中已提交的记录；要求严格一致时，请先停止机器人。</p><button id="export">生成并下载备份 ↓</button></section><section class="panel"><span class="badge">同号合并</span><h2>导入数据</h2><p>先停止机器人进程，后台可以保持打开。导入前自动备份；不同 QQ 拒绝导入。</p><label class="field"><span>目标机器人 QQ（新部署必填）</span><input id="import-qq" inputmode="numeric" placeholder="目标账号"></label><label class="field"><span>迁移 ZIP（最大 512 MiB）</span><input id="import-file" type="file" accept=".zip"></label><button id="import">检查并合并</button><p class="note">已有配置优先，来源缺项补齐。失败回滚，命令行 recover 可恢复中断的导入。</p></section></div>';
+  const upgrade=document.createElement('section');upgrade.className='panel panel-body';upgrade.innerHTML='<div class="actions"><button id="memory-preview">预演统一记忆升级</button><button id="memory-apply" disabled>确认执行升级</button></div><pre id="memory-report">先预演查看转换数量与待核对项目。执行前须停止机器人；会先备份，失败可恢复。</pre>';$('#content').prepend(upgrade);
+  $('#memory-preview').onclick=async()=>{try{$('#memory-report').textContent=text(await api('/api/memory-upgrade'));$('#memory-apply').disabled=false;}catch(e){status(e.message,true);}};
+  $('#memory-apply').onclick=async()=>{if(!window.confirm('按当前预演执行统一记忆迁移？机器人须已停止，原数据将先备份。'))return;const button=$('#memory-apply');button.disabled=true;try{$('#memory-report').textContent=text(await api('/api/memory-upgrade',{confirm:'upgrade_memory'}));inventory=await api('/api/inventory');status('统一记忆升级已完成');}catch(e){status(e.message,true);}};
   $('#export').onclick=async()=>{const b=$('#export');b.disabled=true;status('正在生成备份…');try{const response=await api('/api/export',{}, {blob:true});const blob=await response.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='qqbot-backup.zip';a.click();setTimeout(()=>URL.revokeObjectURL(url),10000);status('备份已生成，浏览器已开始下载；服务器 backups 目录也保留一份');}catch(e){status(e.message,true);}finally{b.disabled=false;}};
   $('#import').onclick=async()=>{const file=$('#import-file').files[0];if(!file){status('请选择 ZIP 文件',true);return;}if(!window.confirm('确认目标机器人已停止，开始同号合并？已有数据会先自动备份。'))return;const b=$('#import');b.disabled=true;status('正在校验并合并…');try{const q=$('#import-qq').value;const result=await api('/api/import'+(q?'?bot_qq='+encodeURIComponent(q):''),undefined,{method:'POST',body:file});inventory=await api('/api/inventory');status(result.message+'；原数据备份：'+result.backup);}catch(e){status(e.message,true);}finally{b.disabled=false;}};
 }
@@ -542,7 +535,7 @@ async function renderSettings(){
   const area=$('#default-settings');
   addAgentReset(area.parentElement);
   const participants=participantControl(area,'默认接话参与人数',defaults.min_participants,()=>settingsChanged.add('defaults'));
-  const persona=control(area,'默认人设',defaults.persona,'select',defaults.personas);
+  const persona=control(area,'统一人设',defaults.persona,'select',defaults.personas);
   persona.onchange=()=>settingsChanged.add('defaults');
   $('#save-defaults').onclick=async()=>{if(busy)return;busy=true;persona.disabled=true;participants.setDisabled(true);try{const saved=await api('/api/defaults',{persona:persona.value,min_participants:participants.value(),revision:defaults.revision});defaults.revision=saved.revision;settingsChanged.delete('defaults');status(saved.message);}catch(e){status(e.message,true);}finally{busy=false;persona.disabled=false;participants.setDisabled(false);}};
   const inputs={},keys={};
@@ -584,4 +577,30 @@ async function renderPlugins(holder,bot=null,group=null){
     table.querySelector('tbody').append(row);
   }
   if(group===null){const button=document.createElement('button');button.className='quiet';button.textContent='卸载选中插件';holder.append(button);button.onclick=async()=>{if(busy)return;if(!selected.size){status('请先选择插件',true);return;}if(!window.confirm(`卸载选中的 ${selected.size} 个插件及其任务、运行数据？请先停止机器人。`))return;busy=true;try{const result=await api('/api/plugins/delete',{items:[...selected.values()],revision:data.revision});await renderPlugins(holder);status(result.message);}catch(e){status(e.message,true);}finally{busy=false;}};}
+}
+
+
+async function renderMemoryStatus(){
+  const data=await api('/api/memory-status');
+  $('#content').innerHTML='<div class="panel panel-body"><div class="toolbar">'+Object.entries({pending:'等待整理',failed:'等待重试',done:'已处理'}).map(([key,title])=>`<span class="badge">${title} ${data.counts[key]}</span>`).join('')+'<button id="refresh-memory-status">刷新</button></div>'+(data.jobs.length?'<table><thead><tr><th>账号 / 任务</th><th>状态</th><th>尝试次数</th><th>下次重试</th><th>错误类型</th></tr></thead><tbody>'+data.jobs.map(j=>`<tr><td>${esc(j.bot)} / ${esc(j.id)}</td><td>${esc(j.state==='failed'?'等待重试':'等待整理')}</td><td>${j.attempts||0}</td><td>${j.retry_at?esc(new Date(j.retry_at*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})):'—'}</td><td>${esc(j.error||'—')}</td></tr>`).join('')+'</tbody></table>':'<p>没有待处理任务</p>')+'</div>';
+  const indexes=document.createElement('section');indexes.className='panel panel-body';
+  const states={starting:'正在准备索引',ready:'可用',degraded:'已降级为本地检索',failed:'索引失败',unavailable:'尚未安装'};
+  indexes.innerHTML=(data.indexes||[]).length?'<table><thead><tr><th>机器人账号</th><th>索引状态</th><th>检索方式</th><th>诊断</th></tr></thead><tbody>'+data.indexes.map(i=>`<tr><td>${i.bot}</td><td>${esc(states[i.state]||i.state)}</td><td>文本检索</td><td>${esc(i.error||'—')}</td></tr>`).join('')+'</tbody></table>':'<p>索引尚未初始化；第一次请求会准备索引。</p>';
+  $('#content').append(indexes);
+  $('#refresh-memory-status').onclick=()=>renderMemoryStatus().catch(e=>status(e.message,true));
+}
+
+function openMemoryCreate(){
+  if(busy||dirty())return status('请先保存或放弃当前草稿');
+  const bots=inventory.bots||[];
+  if(!bots.length)return status('请先运行机器人或导入已指定账号的数据',true);
+  current=null;draft=null;showSelection();
+  $('#editor').innerHTML='<div class="panel-body"><label class="field"><span>机器人账号</span><select id="memory-bot">'+bots.map(b=>`<option value="${b}">${b}</option>`).join('')+'</select></label><label class="field"><span>类别</span><select id="memory-kind">'+Object.entries(memoryKinds).filter(([k])=>page!=='robot'||['self','thought','diary'].includes(k)).map(([key,title])=>`<option value="${key}">${title}</option>`).join('')+'</select></label><label class="field"><span>主体 QQ（无特定人物填 0）</span><input id="memory-subject" inputmode="numeric" value="0"></label><label class="field"><span>名称</span><input id="memory-field" maxlength="100"></label><label class="field"><span>正文</span><textarea id="memory-content" maxlength="16000"></textarea></label><button id="memory-create">确认新增</button></div>';
+  $('#editor').oninput=()=>settingsChanged.add('memory-create');
+  $('#memory-create').onclick=async()=>{
+    const kind=$('#memory-kind').value,bot=Number($('#memory-bot').value),subject=['self','thought','diary'].includes(kind)?bot:Number($('#memory-subject').value),field=$('#memory-field').value.trim(),content=$('#memory-content').value;
+    if(!window.confirm('新增并固定以下记录？\n'+memoryKinds[kind]+' / '+field+' / QQ '+subject+'\n\n'+content))return;
+    busy=true;$('#memory-create').disabled=true;
+    try{const result=await api('/api/memories',{bot,kind,subject,field,content});settingsChanged.delete('memory-create');inventory=await api('/api/inventory');await renderPage();busy=false;await selectResource(result.resource);status('记录已新增并固定');}catch(e){status(e.message,true);}finally{busy=false;if($('#memory-create'))$('#memory-create').disabled=false;}
+  };
 }

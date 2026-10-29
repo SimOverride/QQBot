@@ -196,7 +196,7 @@ class Assistant:
                                 self.profiles.effective(group_id),
                                 json.dumps(
                                     {
-                                        "knowledge": self.archive.context(
+                                        "knowledge": await self.archive.context_async(
                                             key, text, self.archive.recent(key)[1]
                                         )
                                         if self.archive

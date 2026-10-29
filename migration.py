@@ -85,6 +85,12 @@ def safe_path(root, name):
 
 
 def allowed(name):
+    if re.fullmatch(r"data/memory-vault/[1-9][0-9]*/[a-f0-9]{32}\.md", name):
+        return True
+    if re.fullmatch(r"data/memory-jobs/[1-9][0-9]*/[a-f0-9]{32}\.json", name):
+        return True
+    if name == "data/memory-upgraded.json":
+        return True
     if re.fullmatch(r"data/chat-images/[a-f0-9]{64}", name):
         return True
     if re.fullmatch(r"data/agent-events/[1-9][0-9]*/-?[1-9][0-9]*\.(json|epoch)", name):
@@ -248,6 +254,7 @@ def _export_data(root, output, bot_qq=None):
             "group_chat.json",
             "data/console.json",
             "data/plugins.json",
+            "data/memory-upgraded.json",
             MEMORY,
             TASKS,
         ):
@@ -256,6 +263,8 @@ def _export_data(root, output, bot_qq=None):
                 files[name] = source
         task_folders = list((root / "data/task-workspaces").glob("t_*/work"))
         for folder in (
+            root / "data/memory-vault",
+            root / "data/memory-jobs",
             root / "data/generated",
             root / "data/agent-events",
             root / "data/chat-images",
@@ -672,6 +681,10 @@ def stage_merge(root, incoming, staged, qq, fresh):
             out.unlink(missing_ok=True)
             function(root / local_name, incoming / name, out)
             plan[local_name] = out
+    from memory_upgrade import convert_staged_legacy, merge_artifacts
+
+    convert_staged_legacy(staged, plan)
+    merge_artifacts(root, staged, plan, qq)
     write_json(staged / IDENTITY, {"bot_qq": qq})
     plan[IDENTITY] = staged / IDENTITY
     return plan

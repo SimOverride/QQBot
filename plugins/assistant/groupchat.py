@@ -12,7 +12,6 @@ from nonebot.log import logger
 from .forward import ForwardReader
 from .history_tools import HistoryTools
 from .message_context import event_metadata, mentions_all
-from .personality import LIMITS
 from .prompt_store import group_knowledge
 from .repeat import RepeatState, recently_sent
 from .shares import ShareReader, message_text
@@ -48,14 +47,6 @@ class GroupSettings:
                 validate_min_participants(settings["min_participants"])
             if "style" in settings:
                 raise ValueError("群配置仍有独立风格，请先将风格并入人设并移除 style 配置")
-            for profile_field in LIMITS:
-                selection = settings.get(profile_field)
-                if selection is None:
-                    continue
-                if not isinstance(selection, dict) or not isinstance(selection.get("name"), str):
-                    raise ValueError("群人设配置格式错误")
-                if set(selection) != {"name"}:
-                    raise ValueError("群设定只允许保存本地提示词名称")
             interests = settings.get("interests", [])
             if (
                 not isinstance(interests, list)
@@ -83,27 +74,6 @@ class GroupSettings:
         pending.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         pending.replace(self.path)
 
-    def set_profile(self, group, field, name):
-        if group <= 0 or field not in LIMITS:
-            raise ValueError("只能修改当前群的人设")
-        import migration
-
-        # 与后台删除共用锁，不能选中刚刚被移除的提示词。
-        with migration.project_lock(self.path.parent, name=".migration.lock"):
-            if (self.path.parent / migration.JOURNAL).exists():
-                raise ValueError("有未恢复的导入，暂不能切换提示词")
-            selection = None if name == "默认" else {"name": name}
-            if selection is not None:
-                path = migration.safe_path(self.path.parent, f"personas/{name}.txt")
-                if not path.is_file():
-                    raise ValueError("提示词已移除，请重新查看列表")
-            data = self.read()
-            settings = data.setdefault("groups", {}).setdefault(str(group), {})
-            if selection is None:
-                settings.pop(field, None)
-            else:
-                settings[field] = selection
-            self.write(data)
 
 
 @dataclass

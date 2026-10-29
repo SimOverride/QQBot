@@ -4,7 +4,6 @@ import hashlib
 import json
 import re
 import sqlite3
-import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -12,10 +11,8 @@ from pathlib import Path
 
 import migration
 from plugins.assistant.knowledge import (
-    GROUP_FIELDS,
     KNOWLEDGE_LIMIT,
     display_name,
-    person_value,
     read_directory,
     scope_name,
 )
@@ -30,6 +27,7 @@ from plugins.assistant.prompt_store import (
     validate_module,
 )
 from plugins.assistant.topics import DEFAULT_MIN_PARTICIPANTS, validate_min_participants
+from plugins.assistant.vault import FIELDS, KINDS, Vault, identifier
 
 
 def revision(value):
@@ -49,7 +47,6 @@ def atomic_json(path, value):
 class ConsoleStore:
     def __init__(self, root):
         self.root = Path(root).resolve()
-        self.local = threading.local()
         migrate_console(self.root)
 
     def file_target(self, kind, name):
@@ -140,11 +137,6 @@ class ConsoleStore:
                 settings = migration.read_json(settings_path) if settings_path.exists() else {}
                 if settings.get("default_persona", "默认").casefold() == name.casefold():
                     raise ValueError("此人设是全局默认人设，请先切换默认人设")
-                if any(
-                    g.get(kind, {}).get("name", "").casefold() == name.casefold()
-                    for g in settings.get("groups", {}).values()
-                ):
-                    raise ValueError("仍有群正在使用此提示词，请先切换该群设定再删除")
             ident = uuid.uuid4().hex
             audit = self.root / "backups/admin-edits" / (ident + ".json")
             audit.parent.mkdir(parents=True, exist_ok=True)
@@ -170,10 +162,6 @@ class ConsoleStore:
     @contextmanager
     def db(self):
         """后台不能自动创建一个假空数据库。"""
-        active = getattr(self.local, "connection", None)
-        if active is not None:
-            yield active
-            return
         path = self.root / migration.MEMORY
         if not path.exists():
             raise ValueError("还没有聊天数据库，请先运行机器人或导入备份")
@@ -203,6 +191,15 @@ class ConsoleStore:
             if not path.is_file():
                 raise ValueError("文件不存在")
             return kind, path
+        elif kind == "memory":
+            bot, separator, ident = key.partition(":")
+            if not separator or not bot.isdigit() or int(bot) <= 0:
+                raise ValueError("记忆账号无效")
+            migration.account(self.root, int(bot))
+            vault = Vault(self.root, int(bot))
+            if vault.get(ident) is None:
+                raise ValueError("记忆不存在")
+            return kind, (int(bot), ident)
         elif kind in ("person", "group"):
             ids = tuple(int(n) for n in key.split(":"))
             if len(ids) != 2 or ids[0] <= 0 or ids[1] <= 0:
@@ -217,6 +214,11 @@ class ConsoleStore:
 
     def get(self, resource):
         kind, key = self.resolve(resource)
+        if kind in ("person", "group", "memory"):
+            from memory_upgrade import required
+
+            if required(self.root):
+                raise ValueError("旧记忆尚未迁移，请先到数据迁移页面预演并执行统一记忆升级")
         extra = {}
         if kind == "module":
             entry = modules()[key]
@@ -234,17 +236,32 @@ class ConsoleStore:
                 "knowledge": data.get("knowledge", ""),
                 "min_participants": group.get("min_participants"),
                 "interests": group.get("interests", []),
-                "persona": group.get("persona", {}).get("name", "默认"),
+            }
+            vault = Vault(self.root, key[0])
+            extra["note_revisions"] = {
+                field: (vault.field(0, f"{key[1]}:{field}", "context") or {}).get("revision")
+                for field in ("summary", "knowledge")
             }
             extra["default_min_participants"] = settings.get(
                 "default_min_participants", DEFAULT_MIN_PARTICIPANTS
             )
         elif kind == "person":
             with self.db() as db:
-                value, extra["evidence"] = person_value(db, *key, root=self.root)
+                value, extra["evidence"] = Vault(self.root, key[0]).person(key[1])
                 extra["title"] = (
                     f"{display_name(db, *key, read_directory(self.root))} · QQ {key[1]}"
                 )
+        elif kind == "memory":
+            note = Vault(self.root, key[0]).get(key[1])
+            value = {"content": note["value"], "state": note["state"], "fixed": note["fixed"]}
+            extra = {
+                "title": note.get("field", note["kind"]),
+                "kind": note["kind"],
+                "subject": note["subject"],
+                "evidence": note.get("sources", []),
+                "history": note.get("history", []),
+                "note_revision": note["revision"],
+            }
         else:
             content_hash = migration.digest(key)
             db_path = key.parent / ".memory.sqlite3"
@@ -306,27 +323,19 @@ class ConsoleStore:
             if not 1 <= len(value.strip()) <= 12000:
                 raise ValueError("人设须为 1 至 12000 字")
         elif kind == "person":
-            if (
-                not isinstance(value["总体认知"], str)
-                or len(value["总体认知"]) > max(KNOWLEDGE_LIMIT, len(current["总体认知"]))
-                or not isinstance(value["会话印象"], dict)
-                or set(value["会话印象"]) != set(current["会话印象"])
+            if set(value) != set(FIELDS) or any(
+                not isinstance(v, str) or len(v) > max(KNOWLEDGE_LIMIT, len(current[k]))
+                for k, v in value.items()
             ):
-                raise ValueError("须保留一段总体认知和全部会话印象，总体认知最多12000字")
-            for group, entry in value["会话印象"].items():
-                old = current["会话印象"][group]
-                if int(group) > 0:
-                    if not isinstance(entry, dict) or set(entry) != set(GROUP_FIELDS):
-                        raise ValueError("群内个人认知须保留角色、互动习惯、互动关系、补充认知")
-                    fields = entry.items()
-                else:
-                    fields = [("会话印象", entry)]
-                    old = {"会话印象": old}
-                for field, content in fields:
-                    if not isinstance(content, str) or len(content) > max(
-                        KNOWLEDGE_LIMIT, len(old[field])
-                    ):
-                        raise ValueError("每项认知须为文本，最多12000字")
+                raise ValueError("须保留统一个人档案全部字段，每项最多12000字")
+        elif kind == "memory":
+            if (
+                not isinstance(value["content"], str)
+                or len(value["content"]) > 16000
+                or value["state"] not in ("active", "archived", "quarantine")
+                or type(value["fixed"]) is not bool
+            ):
+                raise ValueError("记忆内容、状态或固定设置无效")
         elif kind == "group":
             if value["min_participants"] is not None:
                 validate_min_participants(value["min_participants"])
@@ -341,7 +350,6 @@ class ConsoleStore:
                 or any(not isinstance(v, str) or len(v) > 100 for v in value["interests"])
             ):
                 raise ValueError("兴趣最多 20 项，每项最多 100 字")
-            self.resolve("persona:" + value["persona"])
         elif kind == "emote":
             if (
                 not isinstance(value["description"], str)
@@ -350,16 +358,8 @@ class ConsoleStore:
                 raise ValueError("表情认知最多 1200 字；留空后可重新识别")
 
     def put(self, resource, value, expected):
-        """数据库资源的版本检查与修改共用写事务，避免后台提取抢写。"""
-        if self.resolve(resource)[0] != "person":
-            return self._put(resource, value, expected)
-        with self.db() as db, db:
-            db.execute("BEGIN IMMEDIATE")
-            self.local.connection = db
-            try:
-                return self._put(resource, value, expected)
-            finally:
-                del self.local.connection
+        """全部记忆写入与整理队列、数据迁移共用排他锁。"""
+        return self._put(resource, value, expected)
 
     def _put(self, resource, value, expected):
         """与迁移互斥，持久化旧值后修改；不同版本不能覆盖。"""
@@ -394,24 +394,31 @@ class ConsoleStore:
                     record["basis"] = proposal.get("explanation", "")
                     record["history"] = proposal.get("history")
             atomic_json(audit, record)
-            self._write(resource, value)
+            self._write(resource, value, old)
             result = self.get(resource)
             record.update(status="saved", revision=result["revision"])
             atomic_json(audit, record)
             return result
 
-    def _write(self, resource, value):
+    def _write(self, resource, value, snapshot):
         kind, key = self.resolve(resource)
         if kind in ("module", "group"):
             config = read_console(self.root)
             if kind == "module":
                 config.setdefault("modules", {})[key] = sparse_module(key, value)
             else:
-                current = group_knowledge(*key, self.root)
-                if any(value[f] != current.get(f, "") for f in ("summary", "knowledge")):
-                    config.setdefault("groups", {})[":".join(map(str, key))] = {
-                        f: value[f] for f in ("summary", "knowledge")
-                    }
+                vault = Vault(self.root, key[0])
+                for field in ("summary", "knowledge"):
+                    old = vault.field(0, f"{key[1]}:{field}", "context")
+                    if value[field] != (old["value"] if old else ""):
+                        vault.set_field(
+                            0,
+                            f"{key[1]}:{field}",
+                            value[field],
+                            kind="context",
+                            manual=True,
+                            expected=snapshot["note_revisions"][field],
+                        )
                 settings_path = self.root / "group_chat.json"
                 settings = migration.read_json(settings_path) if settings_path.exists() else {}
                 group = settings.setdefault("groups", {}).setdefault(str(key[1]), {})
@@ -423,10 +430,7 @@ class ConsoleStore:
                 else:
                     group["min_participants"] = value["min_participants"]
                 group["interests"] = value["interests"]
-                if value["persona"] == "默认":
-                    group.pop("persona", None)
-                else:
-                    group["persona"] = {"name": value["persona"]}
+                group.pop("persona", None)
                 atomic_json(settings_path, settings)
             atomic_json(self.root / "data/console.json", config)
         elif kind == "persona":
@@ -434,67 +438,32 @@ class ConsoleStore:
             pending.write_text(value, encoding="utf-8")
             pending.replace(key)
         elif kind == "person":
-            with self.db() as db, db:
-                if not db.in_transaction:
-                    db.execute("BEGIN IMMEDIATE")
-                bot, user = key
-                # 只替换实际修改的段落，保留其他会话的来源与自动处理状态。
-                previous, _ = person_value(db, *key, root=self.root)
-
-                def layers(data):
-                    return {
-                        "0": {"总体认知": data["总体认知"]},
-                        **{
-                            g: v if int(g) > 0 else {"会话印象": v}
-                            for g, v in data["会话印象"].items()
-                        },
-                    }
-
-                old_layers = layers(previous)
-                changed = set()
-                for group, fields in layers(value).items():
-                    for field, content in fields.items():
-                        if old_layers[group][field] == content:
-                            continue
-                        changed.add(int(group))
-                        # 每项独立修正；其余分类保留来源与固定状态。
-                        rows = db.execute(
-                            "SELECT field FROM facts WHERE bot=? AND grp=? AND usr=?",
-                            (bot, int(group), user),
-                        ).fetchall()
-                        for row in rows:
-                            source_field = row["field"].split(":", 1)[0]
-                            target_field = (
-                                source_field if source_field in GROUP_FIELDS else "补充认知"
-                            )
-                            if int(group) <= 0 or target_field == field:
-                                db.execute(
-                                    "DELETE FROM facts WHERE bot=? AND grp=? AND usr=? AND field=?",
-                                    (bot, int(group), user, row["field"]),
-                                )
-                        db.execute(
-                            "INSERT INTO facts VALUES(?,?,?,?,?,?,NULL,?)",
-                            (
-                                bot,
-                                int(group),
-                                user,
-                                field,
-                                content,
-                                "后台维护者修正（固定）",
-                                time.time(),
-                            ),
-                        )
-                for row in db.execute(
-                    "SELECT grp,MAX(id) AS latest FROM messages WHERE bot=? AND usr=? GROUP BY grp",
-                    key,
-                ).fetchall():
-                    if 0 not in changed and row["grp"] not in changed:
-                        continue
-                    db.execute(
-                        "INSERT INTO profile_cursor VALUES(?,?,?,?) ON CONFLICT(bot,grp,usr) "
-                        "DO UPDATE SET last_id=MAX(last_id,excluded.last_id)",
-                        (bot, row["grp"], user, row["latest"]),
-                    )
+            vault = Vault(self.root, key[0])
+            previous = snapshot["value"]
+            versions = {n["id"]: n["revision"] for n in snapshot["evidence"]}
+            for field, content in value.items():
+                if previous[field] == content:
+                    continue
+                vault.set_field(
+                    key[1],
+                    field,
+                    content,
+                    manual=True,
+                    expected=versions.get(identifier(key[1], field)),
+                )
+        elif kind == "memory":
+            vault = Vault(self.root, key[0])
+            old = vault.get(key[1])
+            vault.put(
+                {
+                    **old,
+                    "value": value["content"],
+                    "state": value["state"],
+                    "fixed": True if value["content"] != old["value"] else value["fixed"],
+                },
+                snapshot["note_revision"],
+                manual=True,
+            )
         else:
             db = sqlite3.connect(key.parent / ".memory.sqlite3")
             try:
@@ -530,6 +499,11 @@ class ConsoleStore:
             raise ValueError("旧提示词记录仅保留查阅，请在对应能力模块编辑并保存")
         if record["status"] != "saved":
             raise ValueError("该记录未完成保存，请人工核对")
+        if record.get("action") == "memory_create":
+            current = self.get(record["resource"])
+            return self.put(
+                record["resource"], {**current["value"], "state": "archived"}, record["revision"]
+            )
         if record.get("action") == "create":
             return self.delete_file(record["resource"], record["revision"])
         if record.get("action") == "delete":
@@ -546,64 +520,95 @@ class ConsoleStore:
         return self.put(record["resource"], record["before"], record["revision"])
 
     def inventory(self):
-        people, groups = [], []
+        people, groups, memories = [], [], []
         directory = read_directory(self.root)
+        bots = {
+            int(p.name)
+            for p in (self.root / "data/memory-vault").glob("*")
+            if p.is_dir() and p.name.isdigit() and int(p.name) > 0
+        }
         if (self.root / migration.MEMORY).exists():
             with self.db() as db:
-                for row in db.execute(
-                    "SELECT p.bot,p.usr,COUNT(m.id) AS count,MAX(m.id) AS latest,"
-                    "COUNT(DISTINCT m.grp) AS scopes FROM "
-                    "(SELECT bot,usr FROM messages UNION SELECT bot,usr FROM facts) p "
-                    "LEFT JOIN messages m ON m.bot=p.bot AND m.usr=p.usr "
-                    "WHERE p.usr<>p.bot GROUP BY p.bot,p.usr ORDER BY latest DESC"
-                ):
-                    name = display_name(db, row["bot"], row["usr"], directory)
-                    value, _ = person_value(db, row["bot"], row["usr"], root=self.root)
-                    sessions = [
-                        {"scope": int(g), "name": scope_name(db, row["bot"], int(g), directory)}
-                        for g in value["会话印象"]
-                    ]
-                    member_groups = {
-                        int(g)
-                        for g, data in directory.get(str(row["bot"]), {}).get("groups", {}).items()
-                        if row["usr"] in data.get("members", [])
-                    }
-                    member_groups.update(s["scope"] for s in sessions if s["scope"] > 0)
+                bots.update(r[0] for r in db.execute("SELECT DISTINCT bot FROM messages"))
+                keys = {(r[0], r[1]) for r in db.execute("SELECT DISTINCT bot,usr FROM messages")}
+                for bot in bots:
+                    keys.update(
+                        (bot, n["subject"])
+                        for n in Vault(self.root, bot).list()
+                        if n["subject"] > 0
+                    )
+                for bot, user in sorted(keys):
+                    if bot == user:
+                        continue
+                    rows = db.execute(
+                        "SELECT grp,COUNT(*) AS count FROM messages WHERE bot=? "
+                        "AND usr=? GROUP BY grp",
+                        (bot, user),
+                    ).fetchall()
                     people.append(
                         {
-                            **dict(row),
-                            "name": name,
-                            "sessions": sessions,
-                            "groups": sorted(member_groups),
-                            "resource": f"person:{row['bot']}:{row['usr']}",
+                            "bot": bot,
+                            "usr": user,
+                            "name": display_name(db, bot, user, directory),
+                            "count": sum(r["count"] for r in rows),
+                            "scopes": len(rows),
+                            "groups": sorted(
+                                {r["grp"] for r in rows if r["grp"] > 0}
+                                | {
+                                    int(group)
+                                    for group, item in directory.get(str(bot), {})
+                                    .get("groups", {})
+                                    .items()
+                                    if user in item.get("members", [])
+                                }
+                            ),
+                            "resource": f"person:{bot}:{user}",
                         }
                     )
-                group_keys = {
-                    (r["bot"], r["grp"])
-                    for r in db.execute(
-                        "SELECT bot,grp FROM messages WHERE grp>0 "
-                        "UNION SELECT bot,grp FROM facts WHERE grp>0"
-                    )
+                keys = {
+                    (r[0], r[1])
+                    for r in db.execute("SELECT DISTINCT bot,grp FROM messages WHERE grp>0")
                 }
-                group_keys.update(
-                    (int(bot), int(g))
-                    for bot, data in directory.items()
-                    for g in data.get("groups", {})
+                keys.update(
+                    (int(bot), int(group))
+                    for bot, item in directory.items()
+                    for group in item.get("groups", {})
                 )
-                groups = [
+                for bot, group in sorted(keys):
+                    groups.append(
+                        {
+                            "bot": bot,
+                            "grp": group,
+                            "name": scope_name(db, bot, group, directory),
+                            "count": db.execute(
+                                "SELECT COUNT(*) FROM messages WHERE bot=? AND grp=?", (bot, group)
+                            ).fetchone()[0],
+                            "resource": f"group:{bot}:{group}",
+                        }
+                    )
+        for bot in sorted(bots):
+            for note in Vault(self.root, bot).list(history=True):
+                memories.append(
                     {
+                        "resource": f"memory:{bot}:{note['id']}",
                         "bot": bot,
-                        "grp": group,
-                        "name": scope_name(db, bot, group, directory),
-                        "count": db.execute(
-                            "SELECT COUNT(*) FROM messages WHERE bot=? AND grp=?", (bot, group)
-                        ).fetchone()[0],
+                        "name": note.get("field", note["kind"]),
+                        "kind": note["kind"],
+                        "subject": note["subject"],
+                        "state": note["state"],
+                        "fixed": note["fixed"],
+                        "sources": sorted({r["grp"] for r in note.get("sources", [])}),
+                        "updated": note["updated"],
                     }
-                    for bot, group in sorted(group_keys)
-                ]
+                )
+        from memory_upgrade import required
+
         return {
+            "memory_upgrade_required": required(self.root),
             "people": people,
-            "groups": [{**g, "resource": f"group:{g['bot']}:{g['grp']}"} for g in groups],
+            "groups": groups,
+            "memories": memories,
+            "bots": sorted(bots),
             "modules": [
                 {"resource": "module:" + k, "name": v["title"]} for k, v in modules().items()
             ],
@@ -611,6 +616,85 @@ class ConsoleStore:
                 {"resource": "persona:" + p.stem, "name": p.stem}
                 for p in (self.root / "personas").glob("*.txt")
             ],
+        }
+
+    def create_memory(self, bot, kind, subject, field, content):
+        """只允许维护者显式创建记忆，不让建议请求调用此入口。"""
+        if (
+            type(bot) is not int
+            or type(subject) is not int
+            or subject < 0
+            or kind not in KINDS
+            or not isinstance(field, str)
+            or not 1 <= len(field) <= 100
+            or not isinstance(content, str)
+            or not 1 <= len(content) <= 16000
+        ):
+            raise ValueError("请填写有效的记忆归属、类别、名称和正文")
+        migration.account(self.root, bot)
+        from memory_upgrade import required
+
+        if required(self.root):
+            raise ValueError("请先完成统一记忆迁移，再创建记录")
+        with migration.project_lock(self.root, name=".migration.lock"):
+            self.check_file_mutation()
+            ident = uuid.uuid4().hex
+            resource = f"memory:{bot}:{ident}"
+            audit = self.root / "backups/admin-edits" / (uuid.uuid4().hex + ".json")
+            record = {
+                "id": audit.stem,
+                "resource": resource,
+                "before": None,
+                "after": {"content": content, "fixed": True, "state": "active"},
+                "created": time.time(),
+                "status": "pending",
+                "action": "memory_create",
+            }
+            atomic_json(audit, record)
+            Vault(self.root, bot).put(
+                {
+                    "id": ident,
+                    "kind": kind,
+                    "subject": subject,
+                    "field": field,
+                    "value": content,
+                    "fixed": True,
+                },
+                manual=True,
+            )
+            result = self.get(resource)
+            record.update(status="saved", revision=result["revision"])
+            atomic_json(audit, record)
+            return result
+
+    def memory_status(self):
+        """队列只返回调度元数据，避免批量暴露原文和整理动作。"""
+        jobs = []
+        for path in sorted((self.root / "data/memory-jobs").glob("*/*.json")):
+            job = migration.read_json(path)
+            jobs.append(
+                {
+                    "id": job["id"],
+                    "bot": int(path.parent.name),
+                    **{k: job.get(k) for k in ("state", "attempts", "retry_at", "error", "result")},
+                }
+            )
+        indexes = []
+        for path in sorted((self.root / "data/memory-index").glob("*/status.json")):
+            data = migration.read_json(path)
+            indexes.append(
+                {
+                    "bot": int(path.parent.name),
+                    **{key: data.get(key) for key in ("state", "error", "updated", "mode")},
+                }
+            )
+        return {
+            "indexes": indexes,
+            "counts": {
+                state: sum(j["state"] == state for j in jobs)
+                for state in ("pending", "failed", "done")
+            },
+            "jobs": [j for j in jobs if j["state"] != "done"][:100],
         }
 
     def knowledge_context(self, resource, cutoff=None):
@@ -740,8 +824,17 @@ class ConsoleStore:
             or any(type(n) is not int or not 0 < n < 2**63 for n in ids)
         ):
             raise ValueError("每次最多查询 100 个有效消息编号")
-        current = self.get(resource)["value"]
-        scopes = {key[1]} if kind == "group" else {int(g) for g in current["会话印象"]}
+        with self.db() as db:
+            scopes = (
+                {key[1]}
+                if kind == "group"
+                else {
+                    r[0]
+                    for r in db.execute(
+                        "SELECT DISTINCT grp FROM messages WHERE bot=? AND usr=?", key
+                    )
+                }
+            )
         if scope is not None:
             if type(scope) is not int or scope not in scopes:
                 raise ValueError("消息不属于当前认知的会话")

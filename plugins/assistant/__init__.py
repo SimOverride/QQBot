@@ -96,6 +96,7 @@ def setup() -> None:
     heartbeat_worker: asyncio.Task | None = None
     plugin_worker: asyncio.Task | None = None
     view_worker: asyncio.Task | None = None
+    memory_worker: asyncio.Task | None = None
     extensions = None
     tasks = None
     runtime = Runtime(Path(__file__).resolve().parents[2])
@@ -107,7 +108,7 @@ def setup() -> None:
     async def startup():
         nonlocal service, client, cleaner, archive, sharing, conversations, directory_worker
         nonlocal heartbeat_worker, plugin_worker, extensions, tasks
-        nonlocal view_worker
+        nonlocal view_worker, memory_worker
         config.validate_runtime()
         root = Path(__file__).resolve().parents[2]
         from ..extensions.manager import Manager as ExtensionManager
@@ -121,8 +122,16 @@ def setup() -> None:
         contacts.directory = read_directory(root)
         profiles = ProfileStore(root / "personas" / "默认.txt")
         archive = LongTermMemory(root / "data" / "memory.sqlite3", config)
+        from .memory_index import Indexes
+
+        archive.indexes = Indexes(root)
         client = httpx.AsyncClient(follow_redirects=False)
         service = Assistant(config, Chat(client, config, Search(client, config)), profiles, archive)
+        from .llm import LLM
+        from .memory_worker import Worker
+
+        worker = Worker(archive, LLM(client, config, Search(client, config)), service.limits)
+        memory_worker = asyncio.create_task(worker.run())
         extensions = ExtensionManager(root, service.commands, [Schedule()], archive)
         service.commands.extensions = extensions
         from ..tasks.generated import load as load_generated
@@ -242,6 +251,10 @@ def setup() -> None:
 
     @driver.on_shutdown
     async def shutdown():
+        if memory_worker:
+            memory_worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await memory_worker
         if view_worker:
             view_worker.cancel()
             with suppress(asyncio.CancelledError):
@@ -273,6 +286,8 @@ def setup() -> None:
         if client:
             await client.aclose()
         if archive:
+            if archive.indexes:
+                await archive.indexes.close()
             archive.close()
 
     @event_preprocessor

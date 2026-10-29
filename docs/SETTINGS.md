@@ -10,7 +10,7 @@
 
 ## 开发
 
-`console_settings.py` 维护可编辑字段白名单，提供 `.env`、默认设置及插件管理服务；`admin_server.py` 暴露 `/api/settings`、`/api/defaults`、`/api/plugins`、`/api/plugins/switch` 和 `/api/plugins/delete`，沿用本机访问与令牌校验。设置和插件不属于模型建议资源。
+`admin/console_settings.py` 维护可编辑字段白名单，提供 `.env`、默认设置及插件管理服务；`admin_server.py` 暴露 `/api/settings`、`/api/defaults`、`/api/plugins`、`/api/plugins/switch` 和 `/api/plugins/delete`，沿用本机访问与令牌校验。设置和插件不属于模型建议资源。
 
 `.env` 通过临时文件原子替换，保留其他字段和注释，原文件备份到 `backups/settings/`。响应只含白名单运行字段与密钥是否已配置，不含密钥值。运行中的机器人持有启动时配置，因此保存后需重启；后台后续模型请求重新读取配置。
 

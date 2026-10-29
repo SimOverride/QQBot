@@ -7,7 +7,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from console_endpoint import URL
+from admin.console_endpoint import URL
 
 from .config import Config
 from .identity import permission_level
@@ -91,41 +91,9 @@ class Commands:
                 "双击 start.bat 会启动后台；链接无法打开时请检查启动窗口。"
             )
         if command == "/人设":
-            if group_id <= 0:
-                return "请在要调整的群中 @机器人 使用此指令，私聊不能修改群设定。"
-            if await self.level(user_id, lookup) < 1:
-                return "权限不足，仅本群管理员、群主或机器人所有者可管理本群人设。"
-            if self.group_settings is None or self.profiles is None:
-                return "群配置未启用，未执行。"
-            field = "persona"
-            label = "人设"
-            try:
-                if not args or args == ["列表"]:
-                    selection = self.group_settings.read().get("groups", {}).get(
-                        str(group_id), {}
-                    ).get(field, {"name": "默认"})
-                    return (
-                        f"本群{label}：{selection['name']}\n"
-                        + "可选：默认、" + "、".join(self.profiles.choices(field))
-                        + f"\n{command} 切换 本地文件名（不含.txt）"
-                        + f"\n{command} 默认 恢复本地默认"
-                    )
-                if args[0] == "设置":
-                    return "聊天不能新增或编辑人设，请在后台或本地人设文件夹管理后切换。"
-                name = text.split(maxsplit=1)[1].strip()
-                if args[0] == "切换":
-                    values = text.split(maxsplit=2)
-                    if len(values) != 3:
-                        return f"用法：{command} 切换 本地文件名（不含.txt）。"
-                    name = values[2].strip()
-                if name != "默认":
-                    self.profiles.read_selection(field, name)
-                self.group_settings.set_profile(group_id, field, name)
-            except ValueError as error:
-                return str(error)
-            except (OSError, UnicodeError):
-                return "群设定保存或读取失败，未完成切换，请检查本地配置文件。"
-            return f"本群{label}已切换为{name}，后续请求生效；其他群和私聊不受影响。"
+            if user_id not in self.config.bot_owners:
+                return "统一人设仅由机器人所有者在后台管理。"
+            return "所有群聊和私聊使用同一人设，请在后台设置中选择，或在提示词管理中编辑。"
         if group_id < 0 and command == "/清空" and args:
             return "私聊仅支持 /清空 清除自己的私聊记录；群内操作请在对应群执行。"
         if command == "/ping" and not args:
@@ -135,7 +103,7 @@ class Commands:
             if archive is None:
                 return "长期记忆未启用。"
             facts = archive.facts(key)
-            lines = [f"已保存你在本群的 {archive.count(key)} 条消息。以下为总体及当前会话认知："]
+            lines = [f"已保存你在本群的 {archive.count(key)} 条消息。以下为你的统一认知："]
             lines.extend(f"[{f['layer']}]{f['field']}：{f['value']}" for f in facts)
             if not facts:
                 lines.append("尚未形成长期认知。")
@@ -157,13 +125,13 @@ class Commands:
                     result += "\n/插件 查看插件；/插件 本群 插件ID 开启|关闭"
                     result += "\n/定时 待确认、/定时 确认 确认码（仅已启用定时插件的群）"
                 result += (
-                    "\n/人设 列表 查看本群设定及切换方式（仅群聊）"
+                    "\n/人设 列表 查看统一人设管理方式"
                     "\n/清空 清除自己的会话\n/清空 @某人 清除其本群会话"
                     "\n/清空 本群 清除本群会话（需确认）\n/确认 确认码 执行待确认操作"
                 )
                 result += (
                     "\n/记住 字段 内容 修正本人的认知（群内支持角色、互动习惯、互动关系、补充认知）"
-                    "\n/忘记 字段 删除对应认知（总体认知、会话印象或群内分类）"
+                    "\n/忘记 字段 删除对应认知（总体认知、会话印象或其他统一字段）"
                 )
             if level == 2:
                 if self.extensions is not None:
@@ -182,7 +150,7 @@ class Commands:
             ):
                 return (
                     "用法：/记住 字段 内容，或 /忘记 字段；"
-                    "总体认知跨会话；会话印象仅当前会话；群内还支持角色、互动习惯、互动关系、补充认知。"
+                    "所有认知在群聊和私聊共享；支持总体认知、会话印象、角色、互动习惯、互动关系、补充认知。"
                 )
             try:
                 async with self.memory.locked(key):

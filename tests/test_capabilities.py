@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from console_store import ConsoleStore
+from admin.console_store import ConsoleStore
 from plugins.assistant import prompt_store as store
 from plugins.assistant.config import Config
 from plugins.assistant.history_tools import HistoryTools
@@ -177,16 +177,16 @@ class HistoryContractTests(unittest.TestCase):
         result = self.private.execute("search_messages", {})
         self.assertEqual([m["text"] for m in result["messages"]], ["私聊"])
         result = self.private.execute("search_messages", {"scope": None})
-        self.assertEqual({m["scope"] for m in result["messages"]}, {-1, 10})
+        self.assertEqual({m["scope"] for m in result["messages"]}, {-1, 10, 11})
         listed = self.private.execute("list_sessions", {})
-        self.assertEqual(listed["allowed_scopes"], [-1, 10])
+        self.assertEqual(listed["allowed_scopes"], [-1, 10, 11])
         for row in self.archive.db.execute("SELECT id,bot,grp FROM messages").fetchall():
             result = self.group.execute("read_message_context", {"id": row["id"]})
             self.assertEqual(
-                result["status"], "ok" if row["bot"] == 99 and row["grp"] == 10 else "not_found"
+                result["status"], "ok" if row["bot"] == 99 else "not_found"
             )
         self.assertEqual(
-            self.group.execute("search_messages", {"scope": 11})["status"], "access_denied"
+            self.group.execute("search_messages", {"scope": 11})["status"], "ok"
         )
 
     def test_invalid_arguments_and_removed_dispatch_are_rejected(self):
@@ -210,10 +210,10 @@ class HistoryContractTests(unittest.TestCase):
         self.assertEqual(self.group.execute("read_knowledge", {})["subject_qq"], 1)
         self.assertEqual(self.group.execute("read_knowledge", {"subject": 2})["status"], "ok")
         self.assertEqual(
-            self.group.execute("read_knowledge", {"subject": 3})["status"], "access_denied"
+            self.group.execute("read_knowledge", {"subject": 3})["status"], "ok"
         )
         self.assertEqual(
-            self.private.execute("read_knowledge", {"kind": "group"})["status"], "access_denied"
+            self.private.execute("read_knowledge", {"kind": "group"})["status"], "invalid_arguments"
         )
         with patch.object(
             store, "group_knowledge", return_value={"summary": "群摘要", "knowledge": "群认知"}

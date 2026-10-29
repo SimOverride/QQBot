@@ -85,9 +85,11 @@ class PokeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(rows), 2)
         context = self.archive.message_context(rows[0])
         self.assertEqual(context["poke"]["sender"], 2)
-        text, cursor = self.archive.pending_text((99, 10, 2))
-        self.assertNotIn("平台拍一拍", text)
-        self.assertGreater(cursor, 0)
+        jobs = [
+            json.loads(p.read_text())
+            for p in (self.archive.root / "data/memory-jobs").glob("*/*.json")
+        ]
+        self.assertEqual([j["source"]["message_id"] for j in jobs], [1])
 
     async def test_dispatch_group_private_access_and_echo_suppression(self):
         contacts = SimpleNamespace(private_access=AsyncMock(return_value=(False, [])))

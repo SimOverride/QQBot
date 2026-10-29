@@ -9,8 +9,8 @@ sys.path.insert(0, str(ROOT))
 
 import httpx  # noqa: E402
 
+from admin.console_store import ConsoleStore  # noqa: E402
 from admin_server import create_app  # noqa: E402
-from console_store import ConsoleStore  # noqa: E402
 
 
 async def main():
@@ -41,7 +41,7 @@ async def main():
                                 "role": "user",
                                 "content": "根据聊天重新整理认知，合并重复资料，"
                                 "不以认知生成显示昵称，"
-                                "总体认知与私聊印象各用一段自然文字，群内认知保留角色、互动习惯、互动关系、补充认知四类，"
+                                "个人认知按同一QQ统一整理，保留现有字段及各群与私聊来源，"
                                 "保留固定修正，说明消息依据、冲突与资料不足之处。"
                                 "输出JSON先写explanation键，再写value键，保持所有空字段。",
                             }

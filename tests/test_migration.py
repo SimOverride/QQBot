@@ -97,11 +97,12 @@ class MigrationTests(unittest.TestCase):
             m.import_data(target, output)
             with closing(sqlite3.connect(target / m.MEMORY)) as conn, conn:
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 3)
-                self.assertEqual(
-                    conn.execute(
-                        "SELECT m.message_id FROM facts f JOIN messages m ON f.source_id=m.id"
-                    ).fetchone()[0],
-                    101,
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0], 0)
+                from plugins.assistant.vault import Vault
+
+                notes = Vault(target, 123).list(history=True)
+                self.assertTrue(
+                    any(ref["message_id"] == 101 for note in notes for ref in note["sources"])
                 )
                 self.assertEqual(
                     conn.execute(
@@ -220,7 +221,7 @@ class MigrationTests(unittest.TestCase):
         self.assertIn("ONEBOT_ACCESS_TOKEN=test", (target / ".env").read_text(encoding="utf-8"))
         self.assertIn("EXTRA=value", (target / ".env").read_text(encoding="utf-8"))
         settings = json.loads((target / "group_chat.json").read_text(encoding="utf-8"))
-        self.assertTrue(settings["groups"]["10"]["persona"]["name"].startswith("custom_导入_"))
+        self.assertNotIn("persona", settings["groups"]["10"])
         self.assertEqual(settings["default_min_participants"], 3)
         self.assertEqual(settings["groups"]["10"]["min_participants"], 2)
         self.assertEqual(settings["groups"]["11"]["min_participants"], 5)

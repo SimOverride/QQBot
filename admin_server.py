@@ -19,10 +19,11 @@ from pydantic import SecretStr
 from starlette.concurrency import run_in_threadpool
 
 import migration
-from console_endpoint import HOST, PORT
-from console_settings import Settings
-from console_store import ConsoleStore
-from console_topics import TopicReader
+from admin.console_endpoint import HOST, PORT
+from admin.console_settings import Settings
+from admin.console_store import ConsoleStore
+from admin.console_topics import TopicReader
+from admin.profile_lab import SCENARIOS, inspect_persona
 from plugins.assistant.config import Config
 from plugins.assistant.history_tools import HistoryTools
 from plugins.assistant.http import ServiceError
@@ -34,7 +35,6 @@ from plugins.assistant.prompt_store import prompt_text
 from plugins.assistant.runtime import status as runtime_status
 from plugins.assistant.search import Search
 from plugins.assistant.sessions import reset as reset_sessions
-from profile_lab import SCENARIOS, inspect_persona
 
 ROOT = Path(__file__).resolve().parent
 
@@ -156,6 +156,59 @@ def create_app(root=ROOT):
             }
 
         return await run_in_threadpool(publish)
+
+    @app.get("/api/memory-upgrade")
+    async def preview_memory_upgrade():
+        from memory_upgrade import upgrade
+
+        return await run_in_threadpool(upgrade, store.root)
+
+    @app.post("/api/memory-upgrade")
+    async def apply_memory_upgrade(request: Request):
+        from memory_upgrade import upgrade
+
+        data = await body(request)
+        if data != {"confirm": "upgrade_memory"}:
+            raise ValueError("请先预演并确认升级统一记忆")
+        return await run_in_threadpool(upgrade, store.root, apply=True)
+
+    @app.get("/api/memory-status")
+    def memory_status():
+        return store.memory_status()
+
+    @app.get("/api/memories")
+    def search_memories(query: str = ""):
+        from plugins.assistant.vault import Vault
+
+        query = query[:200].casefold()
+        items = store.inventory()["memories"]
+        return [
+            item
+            for item in items
+            if not query
+            or query
+            in (
+                item["name"]
+                + " "
+                + str(item["subject"])
+                + " "
+                + str(item["sources"])
+                + " "
+                + Vault(store.root, item["bot"]).get(item["resource"].split(":")[2])["value"]
+            ).casefold()
+        ][:200]
+
+    @app.post("/api/memories")
+    async def create_memory(request: Request):
+        data = await body(request)
+        return await run_in_threadpool(
+            store.create_memory,
+            data["bot"],
+            data["kind"],
+            data["subject"],
+            data["field"],
+            data["content"],
+        )
 
     @app.get("/api/bot-avatar")
     async def bot_avatar():
@@ -346,22 +399,12 @@ def create_app(root=ROOT):
         context = []
         history = None
         kind, key = store.resolve(data["resource"])
-        scope = data.get("scope") if kind == "person" else None
+        scope = None
         model_value = current["value"]
         evidence = current.get("evidence", [])
-        if scope is not None:
-            if scope == "general":
-                model_value = {"总体认知": current["value"]["总体认知"]}
-            elif isinstance(scope, str) and scope in current["value"]["会话印象"]:
-                model_value = {"会话印象": {scope: current["value"]["会话印象"][scope]}}
-                evidence = [r for r in evidence if r["grp"] == int(scope)]
-            else:
-                raise ValueError("请选择有效的个人子菜单")
         if kind in ("person", "group"):
             history = store.history_version(data["resource"])
             context = store.knowledge_context(data["resource"], history["last_id"])
-            if scope is not None and scope != "general":
-                context = [r for r in context if r["scope"] == int(scope)]
         messages = [
             {"role": "system", "content": prompt_text("admin.edit", root=store.root)},
             {
@@ -385,15 +428,14 @@ def create_app(root=ROOT):
                 {
                     "role": "system",
                     "content": (
-                        "根据有来源的聊天重新整理认知。个人档案只有一段总体认知，以及按会话"
-                        "保存的会话印象。总体认知与私聊印象使用一段自然文字；群内个人认知必须保留"
-                        "角色、互动习惯、互动关系、补充认知四项结构，每项为文本，无依据留空。总体认知只包含跨会话适用的稳定信息。"
+                        "根据有来源的聊天重新整理统一认知。各群和私聊记忆互通，同一QQ只有一份档案。"
+                        "保留current中的全部字段，每项为文本，无依据留空。保留来源语境和不确定性。"
                         "相同QQ始终是同一个人；平台昵称不是总结目标，不用模型生成显示名称。"
                         "冲突优先明确的新自述；旧后台固定值优先保留，有矛盾在说明中标出。"
                         "关系须注明对象QQ，不把玩笑、转述、引用当本人事实。无依据留空，"
-                        "不推断敏感信息。总体认知、私聊印象及每项群内分类分别最多12000字。"
+                        "不推断敏感信息。每项认知最多12000字。"
                         "群只整理该群主题、规则和互动氛围，不把个人意见当全群共识；"
-                        "群min_participants、interests、persona保持current原值，"
+                        "群min_participants、interests保持current原值，"
                         "除非维护者明确要求修改。"
                         "explanation列出关键依据的scope和消息id、冲突及抽样限制，不能声称读完未提供记录。"
                     ),
@@ -440,20 +482,6 @@ def create_app(root=ROOT):
                         ):
                             raise ValueError()
                         try:
-                            if scope is not None:
-                                value = parsed["value"]
-                                if not isinstance(value, dict) or set(value) != set(model_value):
-                                    raise ValueError("只返回当前子菜单的字段")
-                                merged = json.loads(json.dumps(current["value"]))
-                                if scope == "general":
-                                    merged["总体认知"] = value["总体认知"]
-                                else:
-                                    if not isinstance(value["会话印象"], dict) or set(
-                                        value["会话印象"]
-                                    ) != {scope}:
-                                        raise ValueError("只返回当前会话印象")
-                                    merged["会话印象"][scope] = value["会话印象"][scope]
-                                parsed["value"] = merged
                             store.validate(data["resource"], parsed["value"])
                         except ValueError as error:
                             error_message = str(error)
@@ -489,7 +517,7 @@ def create_app(root=ROOT):
         if history and history != store.history_version(data["resource"], history["last_id"]):
             raise ValueError("生成期间聊天依据已变化，请重新生成")
         if kind in ("person", "group"):
-            from console_store import atomic_json
+            from admin.console_store import atomic_json
 
             atomic_json(store.proposal_path(data["resource"]), proposal)
         return {

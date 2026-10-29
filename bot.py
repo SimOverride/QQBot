@@ -62,8 +62,11 @@ def main():
     if plugin is None:
         raise RuntimeError("无法加载机器人插件")
     # 子模块导入必须在 NoneBot 完成插件加载后，避免提前导入父包。
+    import memory_upgrade
     from plugins.assistant.prompt_store import migrate_console
 
+    if memory_upgrade.required(ROOT):
+        raise RuntimeError("请先在本机后台的数据迁移页面预演并完成统一记忆升级")
     migrate_console(ROOT)
     plugin.module.setup()
     nonebot.run()

@@ -9,7 +9,7 @@ from dotenv import dotenv_values, set_key
 from pydantic import ValidationError
 
 import migration
-from console_store import atomic_json, revision
+from admin.console_store import atomic_json, revision
 from plugins.assistant.config import Config
 from plugins.assistant.groupchat import GroupSettings
 from plugins.assistant.topics import DEFAULT_MIN_PARTICIPANTS, validate_min_participants
@@ -178,7 +178,7 @@ class Settings:
             data.update(default_persona=persona, default_min_participants=min_participants)
             store.write(data)
         return {
-            "message": "默认设置已保存，未单独配置的群及默认人设后续请求生效",
+            "message": "设置已保存；所有群聊和私聊后续请求使用统一人设，参与人数按群配置生效",
             **self.defaults(),
         }
 

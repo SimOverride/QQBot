@@ -167,11 +167,11 @@ plugins/assistant/
 
 ## 长期记忆实现
 
-`longterm.py` 用SQLite的 messages/turns/facts/profile_cursor/profile_retry 表保存消息、完整问答和认知依据；旧提取进度与重试表只保留私有包迁移校验。
+`longterm.py` 保留 SQLite 原始消息、完整问答和发送账本；`vault.py` 的 Markdown 笔记保存统一认知。旧 facts 和整理缓存只用于离线迁移。
 前置事件处理器在@匹配前落库，因此所有已加入的群中未@的消息也被保存；普通消息进入主动参与判断。
 非文本只存类型及占位符。程序发出的回复带关联用户，单用户清空同时删除相关机器人回复。
 
-认知由主agent通过 `manage_memory` 在消息回合中维护，读取消息依据后自主新增或修订；写入校验来源、版本和人工固定内容。`consolidation.py` 仅提供派生视图、来源失效与历史保存，不再执行定时模型请求。详见 [Agent认知与记忆](KNOWLEDGE.md)。
+事实和事件由 `memory_worker.py` 的持久队列根据真实用户消息整理；主 agent 通过 `manage_memory` 维护主观记录。`memory_index.py` 接入独立 Basic Memory 索引，所有写入校验来源、版本和人工固定内容。详见 [Agent认知与记忆](KNOWLEDGE.md)。
 消息原文、问答和认知不进入普通业务日志；开启模型诊断时，会在独立诊断文件保留实际发送给模型的动态内容。任何日志均不作为长期记忆导入。
 
 短期 TTL 控制问答自动恢复的时间范围，过期不删除长期档案。清空必须同时删除数据库，不仅删除缓存，批量清空覆盖磁盘上未加载的用户。

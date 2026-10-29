@@ -1,8 +1,13 @@
-"""统一本地人设与持久化群选择，内容包含性格和表达方式。"""
+"""统一本地人设与全局选择，内容包含性格和表达方式。"""
 
 from pathlib import Path
 
-DEFAULTS = {"persona": "自然参与当前聊天，有自己的兴趣与态度。合理求助通常愿意帮忙，过分要求可以拒绝；决定回答时讲清楚，不编造事实或执行结果。"}
+DEFAULTS = {
+    "persona": (
+        "自然参与当前聊天，有自己的兴趣与态度。合理求助通常愿意帮忙，过分要求可以拒绝；"
+        "决定回答时讲清楚，不编造事实或执行结果。"
+    )
+}
 LIMITS = {"persona": 12000}
 
 
@@ -59,10 +64,4 @@ class ProfileStore:
             default_persona = self.group_settings.read().get("default_persona", "默认")
             if default_persona != "默认":
                 values["persona"] = self.read_selection("persona", default_persona)
-        if group_id is not None and group_id > 0 and self.group_settings is not None:
-            settings = self.group_settings.read().get("groups", {}).get(str(group_id), {})
-            for field in LIMITS:
-                selection = settings.get(field)
-                if selection:
-                    values[field] = self.read_selection(field, selection["name"])
         return values

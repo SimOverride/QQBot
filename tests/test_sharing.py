@@ -16,7 +16,7 @@ class SharingTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.cfg = Config()
-        self.archive = LongTermMemory(Path(self.temp.name) / "memory.db", self.cfg)
+        self.archive = LongTermMemory(Path(self.temp.name) / "data/memory.sqlite3", self.cfg)
         self.llm = SimpleNamespace(
             screen_disclosure=AsyncMock(return_value={"safe": True, "group_id": 10})
         )
@@ -50,7 +50,7 @@ class SharingTests(unittest.IsolatedAsyncioTestCase):
             "我喜欢研究天文摄影",
             [{"field": "总体认知", "value": "天文摄影", "evidence": "喜欢研究天文摄影"}],
         )
-        self.assertEqual(self.archive.facts((99, 10, 2)), [])
+        self.assertEqual(self.archive.facts((99, 10, 2))[0]["value"], "天文摄影")
         await self.sharing.review(self.bot, source)
         self.bot.send_group_forward_msg.assert_awaited_once()
         self.assertIn("天文摄影", self.archive.context((99, 10, 2), "兴趣", set()))

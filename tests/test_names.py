@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from console_store import ConsoleStore, atomic_json
+from admin.console_store import ConsoleStore, atomic_json
 from plugins.assistant.config import Config
 from plugins.assistant.history_tools import HistoryTools
 from plugins.assistant.identity import identity_context
@@ -116,15 +116,15 @@ class NamesTests(unittest.IsolatedAsyncioTestCase):
         result = tools.execute("resolve_entity", args)
         self.assertEqual(result["status"], "ambiguous")
         self.assertEqual({v["qq"] for v in result["matches"]}, {20, 30})
-        self.assertEqual(tools.execute("resolve_entity", {**args, "name": "外部人"})["matches"], [])
         self.assertEqual(
-            tools.execute("resolve_entity", {**args, "scope": 11})["status"], "access_denied"
+            tools.execute("resolve_entity", {**args, "name": "外部人"})["matches"][0]["qq"], 40
         )
+        self.assertEqual(tools.execute("resolve_entity", {**args, "scope": 11})["status"], "ok")
         self.assertEqual(
             tools.execute("resolve_entity", {**args, "name": ""})["status"], "invalid_arguments"
         )
         result = tools.execute("resolve_entity", {**args, "kind": "group", "name": "测试群"})
-        self.assertEqual(result["matches"], [{"group_id": 10, "name": "测试群"}])
+        self.assertEqual({v["group_id"] for v in result["matches"]}, {10, 11})
         private = HistoryTools(self.archive, (99, -20, 20), groups=(10, 11))
         self.assertEqual(
             private.execute("resolve_entity", {**args, "kind": "group", "name": "测试群"})[

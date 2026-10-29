@@ -56,7 +56,7 @@
 
 注入位置：主聊天 system：获准历史查询能力总说明
 
-历史查询使用独立工具：list_sessions、search_messages、read_message_context、resolve_entity、read_knowledge。默认当前会话，显式跨会话查询仍受权限限制。搜索返回 messages 与 next_offset，按需连续查询、调整关键词、分页或读取前后文。只覆盖本地现存记录。sender 是发送者；mentions 是被@对象；reply_to 是被引用的话；response_to 是机器人回应的触发消息，related_user 不代表发送者。同名用 resolve_entity 查候选，不猜账号。
+历史查询使用独立工具：list_sessions、search_messages、read_message_context、resolve_entity、read_knowledge。默认当前会话，可显式查询同一机器人其他群聊和私聊的历史；发送权限仍独立校验。搜索返回 messages 与 next_offset，按需连续查询、调整关键词、分页或读取前后文。只覆盖本地现存记录。sender 是发送者；mentions 是被@对象；reply_to 是被引用的话；response_to 是机器人回应的触发消息，related_user 不代表发送者。同名用 resolve_entity 查候选，不猜账号。
 
 正文：人物与群名解析（history.names）
 
@@ -71,7 +71,7 @@
 {
   "manage_memory": {
     "name": "manage_memory",
-    "description": "读取或修正当前会话个人认知、群摘要与群认知。先read取得revision；write须提供消息内部id作为sources。只记录有依据的信息，矛盾保留不确定性；不能覆盖人工固定值。个人field为总体认知、群内角色/互动习惯/互动关系/补充认知或私聊会话印象；群field为summary/knowledge，subject为0。",
+    "description": "维护同一机器人所有群聊和私聊共享的认知。先read获取revision，write提供真实消息内部id作为sources；人物按QQ区分。个人字段总体认知、角色、互动习惯、互动关系、补充认知、会话印象；群背景用subject=0及summary/knowledge。自我档案、想法、日记是主观记录，不充当事实或权限，可以无sources。事实和事件由后台整理队列从真实用户消息提取；写工具成功才代表保存。人工固定（含空值）不可覆盖。",
     "parameters": {
       "type": "object",
       "properties": {

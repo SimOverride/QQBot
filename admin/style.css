@@ -360,3 +360,8 @@ dialog h2{font-size:18px}
 .participants-field>label:first-child{display:block}.participants-field input[type="range"]{display:block;width:100%;margin:10px 0}
 .participants-inherit{display:flex;align-items:center;gap:7px;margin:8px 0;font-size:12px}.participants-field small{display:block;line-height:1.6}
 @media(max-width:900px){.topic-layout{grid-template-columns:minmax(0,1fr)}.topic-list{max-height:230px}.topic-chat{padding:12px}.topic-chat .message-preview-column{max-width:calc(100% - 38px)}}
+
+/* 新增记忆菜单后，短窗口仍保持左侧导航可滚动。 */
+#nav{overflow-y:auto;min-height:0}
+#nav button{flex-shrink:0}
+.rail-footer{flex-shrink:0}

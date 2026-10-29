@@ -221,11 +221,11 @@ def refresh_tools(functions, root=None):
 
 
 def group_knowledge(bot, group, root=None):
-    """仅向当前群注入该群认知，避免跨群传播。"""
-    fixed = read_console(root).get("groups", {})
-    key = f"{bot}:{group}"
-    if key in fixed:
-        return fixed[key]
-    from .consolidation import automatic_group
+    """群号用于保留来源；全部上下文均可被同一机器人的对话引用。"""
+    from .vault import Vault
 
-    return automatic_group(root or ROOT, bot, group)
+    notes = Vault(root or ROOT, bot).list(kind="context")
+    return {field: "\n".join(n["value"] for n in notes
+                            if n.get("field") == f"{group}:{field}")
+            for field in ("summary", "knowledge")
+            if any(n.get("field") == f"{group}:{field}" for n in notes)}
