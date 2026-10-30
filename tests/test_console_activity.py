@@ -32,6 +32,15 @@ class ActivityTests(unittest.TestCase):
         (self.folder / (value["id"] + ".json")).write_text(json.dumps(value), encoding="utf-8")
         return value["id"]
 
+    def test_same_job_failure_coalesces_and_success_resolves(self):
+        self.event(1, "processing_failed", job="job-one")
+        latest = self.event(2, "processing_failed", job="job-one", retry_exhausted=True)
+        items = activity_page(self.root)["items"]
+        self.assertEqual([i["id"] for i in items], [latest])
+        self.assertIn("自动重试", items[0]["summary"])
+        self.event(3, "processing_completed", job="job-one", result="no_durable_facts", notes=[])
+        self.assertEqual(activity_page(self.root)["items"], [])
+
     def test_filter_before_paging_and_new_insert_preserves_cursor(self):
         self.event(1)
         self.event(2)
@@ -86,12 +95,10 @@ class ActivityTests(unittest.TestCase):
         self.assertEqual(len(page["items"]), 2)
         self.assertTrue(page["items"][0]["title"].startswith("旧记录："))
 
-    def test_state_and_fixed_changes_visible_without_body_change(self):
+    def test_state_changes_visible_without_body_change(self):
         for number, attributes, title in (
             (1, {"before_state": "active", "after_state": "archived"}, "归档"),
             (2, {"before_state": "archived", "after_state": "active"}, "恢复"),
-            (3, {"before_fixed": False, "after_fixed": True}, "固定"),
-            (4, {"before_fixed": True, "after_fixed": False}, "解除固定"),
         ):
             ident = self.event(
                 number,
@@ -108,7 +115,7 @@ class ActivityTests(unittest.TestCase):
             detail = activity_detail(self.root, 99, ident)
             self.assertIn(title, detail["title"])
             self.assertTrue(detail["reasons"])
-        self.assertEqual(len(activity_page(self.root)["items"]), 4)
+        self.assertEqual(len(activity_page(self.root)["items"]), 2)
 
     def test_internal_and_unchanged_hidden_failure_remains(self):
         self.event(1, internal=True)

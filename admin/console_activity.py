@@ -24,10 +24,17 @@ def _events(root):
     # 生产端每个账号有容量上限；这里不扫描记忆库和任务目录。
     events = recent(root, limit=None)
     used = set()
+    latest_jobs = {}
+    for item in events:
+        if item.get("job") and item.get("kind") in ("processing_failed", "processing_completed"):
+            latest_jobs.setdefault((item["bot"], item["job"]), item["id"])
     result = []
     for event in events:
         if event["id"] in used or not _visible(event):
             continue
+        if event.get("kind") == "processing_failed" and event.get("job"):
+            if latest_jobs.get((event["bot"], event["job"])) != event["id"]:
+                continue
         event = dict(event)
         if event.get("kind") in ("processing_completed", "emote_feedback"):
             attached = []
@@ -74,7 +81,7 @@ def _summary(item, directory):
     kind = item.get("kind")
     if kind == "processing_failed":
         title = "记忆整理失败，需要检查"
-        summary = "这次整理未能完成，可展开查看原因。"
+        summary = "这次整理未能完成，将按退避间隔自动重试。"
     else:
         action = "新增" if first.get("before") is None and changes else "更新"
         title = f"{action}了{name + '的' if name else ''}{topic}"
@@ -114,10 +121,6 @@ def _state_action(change):
         return {"archived": "归档", "active": "恢复", "quarantine": "隔离"}.get(
             change.get("after_state"), ""
         )
-    if change.get("before_fixed") is not None and change.get("before_fixed") != change.get(
-        "after_fixed"
-    ):
-        return "固定" if change.get("after_fixed") else "解除固定"
     return ""
 
 
@@ -187,11 +190,6 @@ def activity_detail(root, bot, ident):
         if before is not None and before != after:
             reasons.append(
                 f"{label}：状态由{states.get(before, '未知')}改为{states.get(after, '未知')}。"
-            )
-        before, after = change.get("before_fixed"), change.get("after_fixed")
-        if before is not None and before != after:
-            reasons.append(
-                f"{label}：{'已人工固定，自动整理不能覆盖。' if after else '已解除人工固定。'}"
             )
     if item.get("kind") == "processing_failed":
         reasons.append(

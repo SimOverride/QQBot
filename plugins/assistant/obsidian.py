@@ -298,7 +298,7 @@ class Workbench:
             raise ValueError("记忆版本冲突，请重新核对")
         saved = store.put(
             resource,
-            {**current["value"], "content": review["after"], "fixed": True},
+            {**current["value"], "content": review["after"]},
             current["revision"],
         )
         # 保存后重置对应稿件基线；若并发人工编辑已变化，保留为下一次待审修改。

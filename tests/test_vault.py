@@ -40,17 +40,13 @@ class VaultTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(Vault(self.root, 100).list(), [])
         self.assertEqual(self.archive.facts((99, 30, 3)), [])
 
-    def test_fixed_empty_suppresses_other_notes_and_auto_write(self):
+    def test_manual_empty_does_not_lock_future_updates(self):
+        old = self.vault.set_field(2, "总体认知", "", manual=True)
         row = self.message()
-        self.vault.put(
-            {"subject": 2, "field": "总体认知", "value": "旧值", "sources": [source(row)]}
+        saved = self.vault.set_field(
+            2, "总体认知", "喜欢紫色纸飞机", sources=[source(row)], expected=old["revision"]
         )
-        self.vault.set_field(2, "总体认知", "", manual=True)
-        self.assertEqual(self.vault.person(2)[0]["总体认知"], "")
-        with self.assertRaisesRegex(ValueError, "固定"):
-            self.vault.put(
-                {"subject": 2, "field": "总体认知", "value": "旧值", "sources": [source(row)]}
-            )
+        self.assertEqual(saved["value"], "喜欢紫色纸飞机")
 
     def test_source_modified_invalidates_global_note(self):
         row = self.message()
@@ -67,7 +63,7 @@ class VaultTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "版本冲突"):
             self.vault.set_field(99, "自我档案", "旧回合", kind="self", expected=old["revision"])
 
-    def test_tool_uses_cross_scope_evidence_but_not_other_person(self):
+    def test_tool_uses_cross_scope_and_third_party_evidence(self):
         row = self.message(-2)
         session = SimpleNamespace(archive=self.archive, key=(99, 20, 3))
         args = dict(
@@ -80,7 +76,7 @@ class VaultTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(execute(session, args)["status"], "saved")
         args.update(subject=3)
-        self.assertEqual(execute(session, args)["status"], "invalid_evidence")
+        self.assertEqual(execute(session, args)["status"], "saved")
 
     async def test_worker_restarts_without_duplicate_and_no_wrapped_context(self):
         row = self.message()
@@ -136,6 +132,44 @@ class VaultTests(unittest.IsolatedAsyncioTestCase):
         await Worker(self.archive, llm).tick()
         self.assertEqual(self.vault.list(), [])
 
+    async def test_rejected_evidence_finishes_without_retry_or_memory(self):
+        self.message(content="他说“喜欢紫色纸飞机”")
+        action = dict(
+            action="ADD",
+            target="",
+            kind="fact",
+            field="偏好",
+            value="喜欢紫色纸飞机",
+            evidence="不存在的原文",
+        )
+        llm = SimpleNamespace(
+            step=AsyncMock(return_value=(json.dumps({"actions": [action]}), [], []))
+        )
+        worker = Worker(self.archive, llm)
+        await worker.tick()
+        await worker.tick()
+        job = json.loads(next((self.root / "data/memory-jobs/99").glob("*.json")).read_text())
+        self.assertEqual(job["state"], "done")
+        self.assertEqual(job["rejected_actions"], 1)
+        self.assertEqual(llm.step.await_count, 1)
+        self.assertEqual(self.vault.list(), [])
+
+    async def test_runtime_failures_keep_retrying_and_resume_legacy_pause(self):
+        self.message()
+        llm = SimpleNamespace(step=AsyncMock(side_effect=TimeoutError))
+        worker = Worker(self.archive, llm)
+        path = next((self.root / "data/memory-jobs/99").glob("*.json"))
+        for _ in range(5):
+            job = json.loads(path.read_text())
+            job["retry_at"] = 0
+            job["retry_exhausted"] = True
+            path.write_text(json.dumps(job))
+            await worker.tick()
+        job = json.loads(path.read_text())
+        self.assertEqual(llm.step.await_count, 5)
+        self.assertNotIn("retry_exhausted", job)
+        self.assertEqual(job["state"], "failed")
+
     def test_decay_does_not_delete_or_reinforce_on_read(self):
         row = self.message()
         note = self.vault.put(
@@ -187,35 +221,27 @@ class VaultTests(unittest.IsolatedAsyncioTestCase):
         await Worker(self.archive, llm).tick()
         self.assertEqual(self.vault.get(note["id"])["revision"], note["revision"])
 
-    async def test_quoted_examples_cannot_become_facts(self):
-        self.message(content="举例：“我喜欢紫色纸飞机”，这是示例。")
+    async def test_quoted_title_is_not_rejected_by_program(self):
+        self.message(content="我喜欢“紫色纸飞机”")
         action = dict(
             action="ADD",
             target="",
             kind="fact",
             field="偏好",
             value="喜欢紫色纸飞机",
-            evidence="我喜欢紫色纸飞机",
+            evidence="我喜欢“紫色纸飞机”",
         )
         llm = SimpleNamespace(
             step=AsyncMock(return_value=(json.dumps({"actions": [action]}), [], []))
         )
         await Worker(self.archive, llm).tick()
-        self.assertEqual(self.vault.list(), [])
+        self.assertEqual(len(self.vault.list(kind="fact")), 1)
 
-    def test_quarantined_manual_conflict_blocks_automatic_replacement(self):
+    def test_quarantined_manual_note_does_not_lock_new_evidence(self):
         self.vault.put(
-            {
-                "subject": 2,
-                "field": "偏好",
-                "value": "冲突待处理",
-                "fixed": True,
-                "state": "quarantine",
-            },
+            {"subject": 2, "field": "偏好", "value": "冲突待处理", "state": "quarantine"},
             manual=True,
         )
         row = self.message()
-        with self.assertRaisesRegex(ValueError, "固定"):
-            self.vault.put(
-                {"subject": 2, "field": "偏好", "value": "新猜测", "sources": [source(row)]}
-            )
+        self.vault.put({"subject": 2, "field": "偏好", "value": "新认识", "sources": [source(row)]})
+        self.assertEqual(len(self.vault.list()), 1)

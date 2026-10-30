@@ -253,7 +253,7 @@ def merge_artifacts(root, staged, plan, qq):
             if (
                 note["kind"] not in KINDS
                 or type(note.get("subject")) is not int
-                or type(note.get("fixed")) is not bool
+                or type(note.get("manual", False)) is not bool
                 or note.get("state") not in ("active", "archived", "quarantine")
             ):
                 raise ValueError("记忆字段无效")
@@ -275,7 +275,7 @@ def merge_artifacts(root, staged, plan, qq):
                 for ref in old.get("sources", []):
                     validate_reference(ref, qq)
             if target.exists() and target.read_bytes() != path.read_bytes():
-                # 不覆盖本机人工固定；冲突全文留在隔离笔记中等待维护者处理。
+                # 导入冲突不直接覆盖本机版本；冲突全文留在隔离笔记中等待维护者处理。
                 conflict = dict(note)
                 conflict["id"] = digest([note["id"], note["revision"]])[:32]
                 conflict["state"] = "quarantine"
@@ -354,6 +354,8 @@ def validate_job(job, qq):
     ):
         raise ValueError("记忆版本无效")
     for item in actions:
+        if "subject" in item and (type(item["subject"]) is not int or item["subject"] < 0):
+            raise ValueError("记忆归属无效")
         if (
             not isinstance(item, dict)
             or item.get("action") not in ("ADD", "UPDATE", "CORRECT", "REINFORCE")

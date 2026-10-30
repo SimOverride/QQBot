@@ -243,7 +243,7 @@ class ConsoleStore:
                 )
         elif kind == "memory":
             note = Vault(self.root, key[0]).get(key[1])
-            value = {"content": note["value"], "state": note["state"], "fixed": note["fixed"]}
+            value = {"content": note["value"], "state": note["state"]}
             extra = {
                 "title": note.get("field", note["kind"]),
                 "kind": note["kind"],
@@ -341,9 +341,8 @@ class ConsoleStore:
                 not isinstance(value["content"], str)
                 or len(value["content"]) > 16000
                 or value["state"] not in ("active", "archived", "quarantine")
-                or type(value["fixed"]) is not bool
             ):
-                raise ValueError("记忆内容、状态或固定设置无效")
+                raise ValueError("记忆内容或状态无效")
         elif kind == "group":
             if value["min_participants"] is not None:
                 validate_min_participants(value["min_participants"])
@@ -444,7 +443,6 @@ class ConsoleStore:
                     **old,
                     "value": value["content"],
                     "state": value["state"],
-                    "fixed": True if value["content"] != old["value"] else value["fixed"],
                 },
                 snapshot["note_revision"],
                 manual=True,
@@ -456,9 +454,7 @@ class ConsoleStore:
             image_digest = library.digest(key.name)
             bot = migration.account(self.root)
             note = library.description_data(image_digest, value["description"])
-            Vault(self.root, bot).put(
-                {**note, "fixed": True}, snapshot.get("note_revision"), manual=True
-            )
+            Vault(self.root, bot).put(note, snapshot.get("note_revision"), manual=True)
 
     def change_page(self, offset=0, limit=20):
         """审计只解析当前页，旧版本正文由详情接口按需读取。"""
@@ -502,7 +498,10 @@ class ConsoleStore:
                 if migration.digest(backup) != record["digest"]:
                     raise ValueError("原文件备份校验失败")
                 return self.publish_file(record["resource"], path, backup.read_bytes())
-        return self.put(record["resource"], record["before"], record["revision"])
+        value = record["before"]
+        if record["resource"].startswith("memory:") and isinstance(value, dict):
+            value = {k: v for k, v in value.items() if k != "fixed"}
+        return self.put(record["resource"], value, record["revision"])
 
     def navigation(self, section="base"):
         """页面导航只读取所需目录，不扫描记忆正文和个人统计。"""
@@ -636,7 +635,6 @@ class ConsoleStore:
                         "kind": note["kind"],
                         "subject": note["subject"],
                         "state": note["state"],
-                        "fixed": note["fixed"],
                         "sources": sorted({r["grp"] for r in note.get("sources", [])}),
                         "updated": note["updated"],
                         "empty": not bool(note["value"].strip()),
@@ -687,7 +685,7 @@ class ConsoleStore:
                 "id": audit.stem,
                 "resource": resource,
                 "before": None,
-                "after": {"content": content, "fixed": True, "state": "active"},
+                "after": {"content": content, "state": "active"},
                 "created": time.time(),
                 "status": "pending",
                 "action": "memory_create",
@@ -700,7 +698,6 @@ class ConsoleStore:
                     "subject": subject,
                     "field": field,
                     "value": content,
-                    "fixed": True,
                 },
                 manual=True,
             )
@@ -723,7 +720,16 @@ class ConsoleStore:
                 {
                     "id": job["id"],
                     "bot": int(path.parent.name),
-                    **{k: job.get(k) for k in ("state", "attempts", "retry_at", "error", "result")},
+                    **{
+                        k: job.get(k)
+                        for k in (
+                            "state",
+                            "attempts",
+                            "retry_at",
+                            "error",
+                            "result",
+                            )
+                    },
                 }
             )
         indexes = []
@@ -762,7 +768,7 @@ class ConsoleStore:
         }
 
     def memory_library(self, query="", category="", maintenance=False):
-        """聚合视图只展示有效正文，底层来源与固定空值仍可在维护视图核对。"""
+        """聚合视图只展示有效正文，底层来源与空白记录仍可在维护视图核对。"""
         inventory = self.navigation()
         directory = read_directory(self.root)
         names = {}
@@ -804,7 +810,7 @@ class ConsoleStore:
                             "category": "维护",
                             "subject": note["subject"],
                             "title": note.get("field", note["kind"]),
-                            "content": note["value"] or "人工清空保护记录",
+                            "content": note["value"] or "空白记忆记录",
                             "notes": [{**note, "resource": f"memory:{bot}:{note['id']}"}],
                         }
                     )

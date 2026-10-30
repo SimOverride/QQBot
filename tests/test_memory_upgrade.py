@@ -27,7 +27,7 @@ class UpgradeTests(unittest.TestCase):
             self.assertEqual(Vault(root, 99).list(), [])
             self.assertEqual(upgrade(root, apply=True)["state"], "upgraded")
             note = Vault(root, 99).list()[0]
-            self.assertTrue(note["fixed"])
+            self.assertTrue(note["manual"])
             self.assertEqual(note["value"], "")
             self.assertFalse(required(root))
             self.assertEqual(upgrade(root, apply=True)["state"], "already_upgraded")

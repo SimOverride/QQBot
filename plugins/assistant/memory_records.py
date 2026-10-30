@@ -15,7 +15,7 @@ def seed_profile(vault, profiles):
         body += "\n\n自身兴趣：" + interests
     body = body[:12000].strip()
     old = vault.field(vault.bot, "自我档案", "self")
-    if not body or (old and (old.get("fixed") or not old.get("profile_baseline"))):
+    if not body or (old and not old.get("profile_baseline")):
         return
     fingerprint = digest(baseline)
     if old and old.get("profile_baseline") == fingerprint:
@@ -41,8 +41,6 @@ def journal(vault, row, note_ids):
     day = datetime.fromtimestamp(row["created"], timezone(timedelta(hours=8))).date().isoformat()
     field = "记忆变化：" + day
     old = vault.field(vault.bot, field, "diary")
-    if old and old.get("fixed"):
-        return
     entries = dict((old or {}).get("entries", {}))
     for ident in note_ids:
         note = vault.get(ident)

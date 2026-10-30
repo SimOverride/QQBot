@@ -58,7 +58,7 @@ def merge(root, staged, plan, bot):
                         "subject": 0,
                         "field": "Obsidian 待审稿冲突：" + original["title"][:70],
                         "state": "quarantine",
-                        "fixed": True,
+                        "manual": True,
                         "value": value,
                         "draft_origin": {"id": ident, "base": original},
                     },

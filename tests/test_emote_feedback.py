@@ -1,4 +1,4 @@
-"""表情统一经验的真实发送归因、纠正、去重与人工保护。"""
+"""表情经验由模型调用工具，验证跨会话来源和版本边界。"""
 
 import tempfile
 import time
@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from plugins.assistant.config import Config
-from plugins.assistant.emote_feedback import collect_feedback, migrate_legacy
+from plugins.assistant.emote_feedback import migrate_legacy
 from plugins.assistant.emotes import Emotes
 from plugins.assistant.longterm import LongTermMemory
 from plugins.assistant.vault import Vault
@@ -43,136 +43,98 @@ class FeedbackTests(unittest.TestCase):
             "SELECT * FROM messages WHERE message_id=?", (self.seq,)
         ).fetchone()
 
-    def test_reply_feedback_shared_private_and_other_group(self):
-        self.send()
-        result = collect_feedback(self.archive, self.row("不要再发这张图", 10), self.library)
-        self.assertEqual(result["status"], "saved")
-        self.assertTrue(self.library.experience(99, self.image, 2)["disabled"])
-        self.assertFalse(self.library.experience(99, self.image, 3)["disabled"])
-        self.assertFalse(self.library.experience(100, self.image, 2)["disabled"])
-        self.assertEqual(
-            self.library.list({"query": "", "offset": 0}, 99, -2, self.archive, 2)["emotes"][0][
-                "id"
-            ],
-            "b.png",
+    def call(
+        self,
+        action="remember",
+        subject=2,
+        revision="",
+        rows=(),
+        reason="模型判断的使用经验",
+        sentiment="uncertain",
+    ):
+        from types import SimpleNamespace
+
+        from plugins.assistant.emote_state import execute
+
+        session = SimpleNamespace(key=(99, 20, 2), archive=self.archive, emotes=self.library)
+        return execute(
+            session,
+            dict(
+                action=action,
+                id="a.png",
+                subject=subject,
+                revision=revision,
+                reason=reason,
+                sentiment=sentiment,
+                message_ids=[row["id"] for row in rows],
+            ),
         )
 
-    def test_silence_unrelated_and_ambiguous_feedback_do_not_learn(self):
-        self.send()
-        for text in (
-            "哈哈",
-            "这个游戏好有趣",
-            "假如这张图不好笑呢",
-            "> 这张图别用了",
-            "这张图我不是不喜欢",
-        ):
-            self.assertEqual(
-                collect_feedback(self.archive, self.row(text), self.library)["status"],
-                "not_feedback",
-            )
-        self.send(11, "b.png")
-        self.assertEqual(
-            collect_feedback(self.archive, self.row("这张图很可爱"), self.library)["status"],
-            "not_feedback",
-        )
-        self.assertEqual(Vault(self.root, 99).list(kind="emote"), [])
-
-    def test_only_confirmed_send_can_receive_feedback(self):
-        self.library.record_sent("a.png", 99, 20)
-        self.assertEqual(
-            collect_feedback(self.archive, self.row("这张图很好笑", 10), self.library)["status"],
-            "not_feedback",
-        )
-
-    def test_platform_second_precision_and_repeated_send_receipt(self):
-        self.send()
-        self.library.record_sent("a.png", 99, 20, 10, 2, "重复回执")
-        self.assertEqual(self.library.usage(99, 20)[self.image]["use_count"], 1)
-        self.archive.collect(
-            (99, 20, 2),
-            501,
-            "这张图很合适",
-            ["text"],
-            int(time.time()),
-            metadata={"reply_to": {"message_id": 10}},
-        )
-        row = self.archive.db.execute("SELECT * FROM messages WHERE message_id=501").fetchone()
-        self.assertEqual(collect_feedback(self.archive, row, self.library)["status"], "saved")
-
-    def test_retry_idempotent_and_explicit_correction_retains_history(self):
-        self.send()
-        first = self.row("以后别发这张图了", 10)
-        saved = collect_feedback(self.archive, first, self.library)
-        self.assertEqual(collect_feedback(self.archive, first, self.library)["status"], "unchanged")
-        self.assertEqual(len(Vault(self.root, 99).get(saved["id"])["history"]), 0)
-        result = collect_feedback(self.archive, self.row("这张图可以再发了", 10), self.library)
+    def test_cross_person_cross_scope_multiple_sources_without_send(self):
+        first = self.row("他说“这也太逆天了？”", user=3, scope=-3)
+        second = self.row("哈哈", user=4, scope=30)
+        result = self.call("disable", subject=8, rows=[first, second])
         self.assertEqual(result["status"], "saved")
         note = Vault(self.root, 99).get(result["id"])
-        self.assertEqual(len(note["history"]), 1)
-        self.assertFalse(note["disabled"])
-        self.assertTrue(note["history"][0]["disabled"])
+        self.assertEqual(note["subject"], 8)
+        self.assertEqual({ref["usr"] for ref in note["sources"]}, {3, 4})
+        self.assertTrue(self.library.experience(99, self.image, 8)["disabled"])
+        self.assertFalse(self.library.experience(99, self.image, 2)["disabled"])
 
-    def test_source_removal_invalidates_feedback(self):
-        self.send()
-        row = self.row("这张图好笑", 10)
-        collect_feedback(self.archive, row, self.library)
+    def test_subjective_global_experience_without_source_and_explicit_enable(self):
+        result = self.call("disable", subject=0)
+        self.assertEqual(result["status"], "saved")
+        note = Vault(self.root, 99).get(result["id"])
+        self.assertEqual(note["authored"], "model")
+        self.assertEqual(note["sources"], [])
+        self.assertTrue(self.library.experience(99, self.image, 15)["disabled"])
+        self.assertEqual(
+            self.call("enable", subject=0, revision=result["revision"])["status"], "saved"
+        )
+        self.assertFalse(self.library.experience(99, self.image, 15)["disabled"])
+        self.assertFalse(self.library.experience(100, self.image, 15)["disabled"])
+
+    def test_old_feedback_can_revise_and_version_conflict_still_rejects(self):
+        older = self.row("以前的意见", user=3)
+        newer = self.row("新的意见", user=4)
+        first = self.call(rows=[newer])
+        self.assertEqual(self.call(rows=[older])["status"], "conflict")
+        second = self.call(rows=[older], revision=first["revision"], reason="综合旧资料修正")
+        self.assertEqual(second["status"], "saved")
+        note = Vault(self.root, 99).get(second["id"])
+        self.assertEqual(note["sources"][0]["usr"], 3)
+        self.assertEqual(len(note["history"]), 1)
+
+    def test_source_removal_invalidates_evidenced_experience(self):
+        row = self.row("反馈")
+        self.call(rows=[row], sentiment="positive")
         self.assertGreater(self.library.experience(99, self.image, 2)["score"], 0)
         with self.archive.db:
-            self.archive.db.execute("DELETE FROM messages WHERE message_id=10")
+            self.archive.db.execute("DELETE FROM messages WHERE id=?", (row["id"],))
         self.assertEqual(self.library.experience(99, self.image, 2)["notes"], [])
 
-    def test_fixed_feedback_cannot_be_overwritten(self):
+    def test_other_account_evidence_rejected(self):
+        self.archive.collect((100, 30, 2), 777, "其他机器人资料", ["text"], time.time())
+        row = self.archive.db.execute("SELECT * FROM messages WHERE bot=100").fetchone()
+        self.assertEqual(self.call(rows=[row])["status"], "invalid_evidence")
+        self.assertEqual(Vault(self.root, 99).list(kind="emote"), [])
+
+    def test_sends_are_reference_not_write_prerequisite(self):
         self.send()
-        saved = collect_feedback(self.archive, self.row("不要再发", 10), self.library)
-        vault = Vault(self.root, 99)
-        note = vault.get(saved["id"])
-        vault.put({**note, "fixed": True}, note["revision"], manual=True)
-        self.assertEqual(
-            collect_feedback(self.archive, self.row("可以再发", 10), self.library)["status"],
-            "fixed",
-        )
+        self.library.record_sent("a.png", 99, 20, 10, 2, "重复回执")
+        read = self.call("read")
+        self.assertEqual(len(read["sends"]), 1)
+        self.assertEqual(read["sends"][0]["message_id"], 10)
+        self.assertEqual(self.library.usage(99, 20)[self.image]["use_count"], 1)
 
-    def test_description_uses_vault_after_first_import(self):
+    def test_legacy_description_can_be_updated_with_current_version(self):
+        self.library.remember([{"id": "a.png", "description": "旧描述"}], {"a.png": self.image})
+        self.assertEqual(self.library.recall(self.image, 99), "旧描述")
         self.library.remember(
-            [{"id": "a.png", "description": "画面是一只猫"}], {"a.png": self.image}
+            [{"id": "a.png", "description": "新的解读"}], {"a.png": self.image}, bot=99
         )
-        self.assertEqual(self.library.recall(self.image, 99), "画面是一只猫")
-        note = self.library.description_note(99, self.image)
-        vault = Vault(self.root, 99)
-        vault.put({**note, "value": "人工确认的猫", "fixed": True}, note["revision"], manual=True)
-        self.assertEqual(self.library.recall(self.image, 99), "人工确认的猫")
-        self.assertEqual(self.library.recall(self.image, 100), "画面是一只猫")
-
-    def test_feedback_changes_ranking_without_cross_person_ban(self):
-        self.send()
-        collect_feedback(self.archive, self.row("这张图不好笑", 10), self.library)
-        result = self.library.list({"query": "", "offset": 0}, 99, 30, self.archive, 2)
-        self.assertEqual(result["emotes"][0]["id"], "b.png")
-        self.assertEqual(len(result["emotes"]), 2)
-
-    def test_legacy_description_is_fixed_until_maintainer_unpins_it(self):
-        from plugins.assistant.http import ServiceError
-
-        self.library.remember([{"id": "a.png", "description": "旧人工描述"}], {"a.png": self.image})
-        self.assertEqual(self.library.recall(self.image, 99), "旧人工描述")
-        note = self.library.description_note(99, self.image)
-        self.assertTrue(note["fixed"])
-        self.assertTrue(note["legacy_import"])
-        with self.assertRaises(ServiceError):
-            self.library.remember(
-                [{"id": "a.png", "description": "新的自动解读"}],
-                {"a.png": self.image},
-                bot=99,
-            )
-        vault = Vault(self.root, 99)
-        vault.put({**note, "fixed": False}, note["revision"], manual=True)
-        self.library.remember(
-            [{"id": "a.png", "description": "新的自动解读"}],
-            {"a.png": self.image},
-            bot=99,
-        )
-        self.assertEqual(self.library.recall(self.image, 99), "新的自动解读")
-        self.assertEqual(self.library.recall(self.image, 100), "旧人工描述")
+        self.assertEqual(self.library.recall(self.image, 99), "新的解读")
+        self.assertEqual(self.library.recall(self.image, 100), "旧描述")
 
     def test_legacy_group_experience_is_quarantined_without_expanding_ban(self):
         import json

@@ -1,4 +1,4 @@
-"""表情反馈归因：只学习可追溯的成功发送，不从沉默推断反响。"""
+"""模型调用的表情经验存储与发送参考，不执行语义规则判断。"""
 
 import json
 import re
@@ -39,101 +39,57 @@ def sent(library, bot, scope, image_digest, message_id, subject, context):
         )
 
 
-def associated(library, row, image_digest=None):
-    """明确引用优先；无引用仅接收短时间内唯一发送的明确表情指代。"""
-    metadata = json.loads(row["metadata"] or "{}")
-    reply_id = (metadata.get("reply_to") or {}).get("message_id")
-    with closing(sqlite3.connect(library.memory_path)) as db:
-        db.row_factory = sqlite3.Row
-        setup(db)
-        rows = [
-            dict(r)
-            for r in db.execute(
-                "SELECT * FROM emote_sends WHERE bot=? AND scope=? "
-                "AND created<=? ORDER BY created DESC LIMIT 30",
-                (row["bot"], row["grp"], row["created"] + 1),
-            )
-        ]
-    if reply_id is not None:
-        rows = [r for r in rows if r["message_id"] == reply_id]
-    else:
-        if not re.search(r"这[张个幅]?(?:表情|图)|刚[才刚].*(?:表情|图)", row["content"]):
-            return None
-        rows = [
-            r
-            for r in rows
-            if -1 <= row["created"] - r["created"] <= 120 and r["subject"] == row["usr"]
-        ]
-    if len(rows) != 1 or (image_digest and rows[0]["digest"] != image_digest):
-        return None
-    return rows[0]
-
-
-def verdict(text):
-    """保守识别直接反响；含否定的好评、引用及不确定表达留给模型核实。"""
-    if any(
-        word in text
-        for word in ("如果", "假如", "比如", "他说", "她说", "“", "「", "『", '"', "```")
-    ) or re.search(r"(?m)^\s*>|不是不|并非不|没有不|不讨厌|难道|[？?]", text):
-        return None
-    if re.search(r"可以再发|可以发了|恢复使用|以后可以发", text):
-        return "allow", False
-    if re.search(r"别再发|不要再发|以后别用|以后别发|别给我发|不要给我发|别用了", text):
-        return "avoid", True
-    if re.search(r"不合适|不适合|讨厌|冒犯|很烦|不好笑|不喜欢", text):
-        return "negative", False
-    if re.search(r"不|没|别|并非|不是|未必", text):
-        return None
-    if re.search(r"喜欢|合适|好笑|可爱|有趣|贴切|好用|哈哈", text):
-        return "positive", False
-    return None
-
-
 def feedback_note(library, bot, image_digest, subject):
     vault = Vault(library.project_root, bot)
     return vault.get(identifier(subject, "表情反馈:" + image_digest, "emote"))
 
 
-def save_feedback(library, archive, row, send, value, sentiment, disabled=False, revision=None):
-    """同一发送者可修正自己的经验，固定记录、旧消息及重复消息不覆盖当前认识。"""
-    vault = Vault(archive.root, row["bot"])
-    ident = identifier(row["usr"], "表情反馈:" + send["digest"], "emote")
+def recent_sends(library, bot, image_digest):
+    """发送流水供模型阅读，不据时间或回复关系限制反馈写入。"""
+    with closing(sqlite3.connect(library.memory_path)) as db:
+        db.row_factory = sqlite3.Row
+        setup(db)
+        return [
+            dict(row)
+            for row in db.execute(
+                "SELECT scope,message_id,subject,context,created FROM emote_sends "
+                "WHERE bot=? AND digest=? ORDER BY created DESC LIMIT 30",
+                (bot, image_digest),
+            )
+        ]
+
+
+def save_feedback(
+    library, archive, bot, subject, image_digest, value, sentiment, disabled, revision, message_ids
+):
+    """模型决定反馈含义与归属；程序只校验来源身份、版本及存储参数。"""
+    vault = Vault(archive.root, bot)
+    ident = identifier(subject, "表情反馈:" + image_digest, "emote")
     old = vault.get(ident)
-    current = archive.db.execute("SELECT * FROM messages WHERE id=?", (row["id"],)).fetchone()
-    sent_row = archive.db.execute(
-        "SELECT * FROM messages WHERE bot=? AND grp=? AND usr=? AND message_id=?",
-        (row["bot"], row["grp"], row["bot"], send["message_id"]),
-    ).fetchone()
-    if (
-        current is None
-        or source(current) != source(row)
-        or sent_row is None
-        or sent_row["id"] >= row["id"]
-    ):
-        return {"status": "source_removed"}
-    if old and old.get("fixed"):
-        return {"status": "fixed"}
-    if revision is not None and revision != (old["revision"] if old else ""):
+    if revision != (old["revision"] if old else ""):
         return {"status": "conflict"}
-    ref = source(row)
-    if old and ref in old.get("sources", []):
-        return {"status": "unchanged", "id": ident}
-    if old and any(s["created"] > row["created"] for s in old.get("sources", [])):
-        return {"status": "older_feedback"}
+    evidence = []
+    for message_id in dict.fromkeys(message_ids):
+        row = archive.db.execute(
+            "SELECT * FROM messages WHERE bot=? AND id=?", (bot, message_id)
+        ).fetchone()
+        if row is None:
+            return {"status": "invalid_evidence"}
+        evidence.append(source(row))
     activity_events = []
     note = vault.put(
         {
             "id": ident,
             "kind": "emote",
-            "subject": row["usr"],
-            "field": "表情反馈:" + send["digest"],
-            "image_digest": send["digest"],
-            "title": f"{row['usr']} · 表情使用反馈",
+            "subject": subject,
+            "field": "表情反馈:" + image_digest,
+            "image_digest": image_digest,
+            "title": f"{'全局' if subject == 0 else subject} · 表情使用经验",
             "value": value,
-            "sources": [ref, source(sent_row)],
+            "sources": evidence,
+            "authored": "model",
             "sentiment": sentiment,
-            "disabled": disabled or bool(old and old.get("disabled") and sentiment != "allow"),
-            "send": send,
+            "disabled": disabled,
         },
         old["revision"] if old else None,
         activity_events=activity_events,
@@ -142,7 +98,7 @@ def save_feedback(library, archive, row, send, value, sentiment, disabled=False,
 
     emit(
         archive.root,
-        row["bot"],
+        bot,
         "emote_feedback",
         notes=[note["id"]],
         result="saved",
@@ -150,28 +106,6 @@ def save_feedback(library, archive, row, send, value, sentiment, disabled=False,
         change_event_ids=activity_events,
     )
     return {"status": "saved", "id": note["id"], "revision": note["revision"]}
-
-
-def collect_feedback(archive, row, library):
-    if library is None or row["usr"] == row["bot"]:
-        return {"status": "not_feedback"}
-    send = associated(library, row)
-    decision = verdict(row["content"])
-    if send is None or decision is None:
-        return {"status": "not_feedback"}
-    sentiment, disabled = decision
-    result = save_feedback(
-        library,
-        archive,
-        row,
-        send,
-        f"用户 {row['usr']} 对实际发送表情的反馈：{row['content'][:1200]}\n"
-        f"发送时语境：{send['context'] or '未记录'}\n"
-        "适用范围：该用户的反馈，不代表其他人的偏好。",
-        sentiment,
-        disabled,
-    )
-    return result
 
 
 def migrate_legacy(library, archive, bot):

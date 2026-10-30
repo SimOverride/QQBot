@@ -335,7 +335,7 @@ class Tools:
                 pending_memories.pop(emote_id, None)
             result = {
                 "status": "recorded",
-                "hint": "描述已写入统一记忆；修正保留历史，人工固定不可覆盖",
+                "hint": "描述已写入统一记忆；修正保留历史并检查版本",
                 "remaining": list(pending_memories),
             }
             return result

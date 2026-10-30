@@ -1,4 +1,4 @@
-"""统一 Markdown 记忆库：来源校验、乐观并发、人工固定与历史保留。"""
+"""统一 Markdown 记忆库：来源校验、乐观并发、人工来源与历史保留。"""
 
 import hashlib
 import json
@@ -23,7 +23,7 @@ def digest(value):
 
 
 def weight(note):
-    if note.get("fixed") or note["kind"] == "self":
+    if note["kind"] == "self":
         return 1
     age = max(0, time.time() - note["reinforced"])
     return max(0.01, note.get("weight", 1) * 2 ** (-age / 2592000))
@@ -57,7 +57,6 @@ def references(notes, budget=2400):
             | {
                 "value": text,
                 "truncated": len(text) < len(note["value"]),
-                "fixed": note.get("fixed", False),
                 "field": note.get("field", ""),
             }
         )
@@ -122,13 +121,14 @@ class Vault:
         note = deepcopy(_parse(raw))
         if note.get("bot") != self.bot or note.get("id") != ident:
             raise ValueError("记忆归属无效")
+        # 旧固定标记仅保留人工来源，不再代表覆盖权限或召回优先级。
+        if note.pop("fixed", False):
+            note.setdefault("manual", True)
         return note
 
     def valid(self, note, trail=(), db=None):
         if note.get("state") != "active" or note.get("bot") != self.bot:
             return False
-        if note.get("fixed"):
-            return True
         if note["id"] in trail:
             return False
         for ident, revision in note.get("dependencies", {}).items():
@@ -141,10 +141,15 @@ class Vault:
                 return False
         sources = note.get("sources", [])
         if not sources:
-            return note["kind"] in ("self", "thought", "diary", "index") or (
-                note["kind"] == "emote"
-                and note.get("field") == "表情描述:" + str(note.get("image_digest", ""))
-                and bool(re.fullmatch(r"[a-f0-9]{64}", str(note.get("image_digest", ""))))
+            return (
+                note.get("manual", False)
+                or (note["kind"] == "emote" and note.get("authored") == "model")
+                or note["kind"] in ("self", "thought", "diary", "index")
+                or (
+                    note["kind"] == "emote"
+                    and note.get("field") == "表情描述:" + str(note.get("image_digest", ""))
+                    and bool(re.fullmatch(r"[a-f0-9]{64}", str(note.get("image_digest", ""))))
+                )
             )
         path = self.root / "data/memory.sqlite3"
         if not path.exists():
@@ -190,11 +195,6 @@ class Vault:
         finally:
             if db is not None:
                 db.close()
-        if not history:
-            fixed = {(n["subject"], n.get("field")) for n in result if n.get("fixed")}
-            result = [
-                n for n in result if n.get("fixed") or (n["subject"], n.get("field")) not in fixed
-            ]
         return result
 
     def put(self, note, expected=None, *, manual=False, activity_events=None):
@@ -205,8 +205,6 @@ class Vault:
             old = self.get(ident)
             if (old or {}).get("revision") != expected:
                 raise ValueError("记忆版本冲突，请重新读取")
-            if old and old.get("fixed") and not manual:
-                raise ValueError("人工固定内容不可自动修改")
             kind = note.get("kind", (old or {}).get("kind", "impression"))
             value = note.get("value")
             if kind not in KINDS or not isinstance(value, str) or len(value) > 16000:
@@ -231,15 +229,15 @@ class Vault:
             result.setdefault("reinforced", now)
             result.setdefault("state", "active")
             result.setdefault("sources", [])
-            result.setdefault("fixed", False)
+            result.pop("fixed", None)
+            result["manual"] = manual
             result.setdefault("title", f"{subject} · {result.get('field', kind)}")
             result.setdefault("aliases", [result["title"]])
             result.setdefault("type", "note")
             result.setdefault("permalink", ident)
             result.setdefault("tags", ["qqbot-memory", kind])
             if (
-                type(result["fixed"]) is not bool
-                or type(result["weight"]) not in (int, float)
+                type(result["weight"]) not in (int, float)
                 or not math.isfinite(result["weight"])
                 or not 0 <= result["weight"] <= 1
                 or not isinstance(result["sources"], list)
@@ -257,15 +255,6 @@ class Vault:
                     raise ValueError("记忆依据无效")
             if result["state"] not in ("active", "archived", "quarantine"):
                 raise ValueError("记忆状态无效")
-            if not manual:
-                result["fixed"] = False
-                for fixed in self.list(subject=subject, history=True):
-                    if (
-                        fixed.get("fixed")
-                        and fixed.get("state") != "archived"
-                        and fixed.get("field") == result.get("field")
-                    ):
-                        raise ValueError("该字段已人工固定")
             history = list((old or {}).get("history", []))
             if old:
                 history.append({k: v for k, v in old.items() if k != "history"})
@@ -296,8 +285,6 @@ class Vault:
                         "after": result["value"],
                         "before_state": old.get("state") if old else None,
                         "after_state": result.get("state"),
-                        "before_fixed": old.get("fixed") if old else None,
-                        "after_fixed": result.get("fixed"),
                         "before_revision": old["revision"] if old else None,
                         "after_revision": self.get(ident)["revision"],
                         "sources": result.get("sources", []),
@@ -322,7 +309,6 @@ class Vault:
                 "kind": kind,
                 "value": value,
                 "sources": list(sources),
-                "fixed": manual,
                 **({"profile_baseline": None} if kind == "self" else {}),
             },
             expected,

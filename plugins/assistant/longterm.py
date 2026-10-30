@@ -232,7 +232,6 @@ class LongTermMemory:
                 "field": n.get("field", n["kind"]),
                 "value": n["value"],
                 "layer": "总体",
-                "fixed": n["fixed"],
                 "evidence": n["sources"],
                 "updated": n["updated"],
             }

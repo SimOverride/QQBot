@@ -21,9 +21,7 @@ def durable_activity(item):
         return False
     changes = [c for c in item.get("changes", []) if isinstance(c, dict)]
     if changes and all(
-        c.get("before") == c.get("after")
-        and c.get("before_state") == c.get("after_state")
-        and c.get("before_fixed") == c.get("after_fixed")
+        c.get("before") == c.get("after") and c.get("before_state") == c.get("after_state")
         for c in changes
     ):
         return False
@@ -99,12 +97,10 @@ def recall(vault, query, subject=None, indexed=(), budget=2400):
             if note.get("state") == "archived"
             else "quarantine"
             if note.get("state") == "quarantine"
-            else "empty_protection"
+            else "empty"
             if not note["value"].strip()
             else "source_invalid"
             if not vault.valid(note)
-            else "fixed_override"
-            if note["id"] not in effective
             else "decayed"
             if weight(note) < 0.1
             else "budget"

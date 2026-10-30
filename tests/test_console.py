@@ -104,7 +104,6 @@ class ConsoleTests(unittest.TestCase):
                 "field": "表情反馈",
                 "image_digest": library.digest("test.png"),
                 "value": "该用户认为严肃讨论不适用",
-                "fixed": True,
             },
             manual=True,
         )
@@ -306,7 +305,7 @@ class ConsoleTests(unittest.TestCase):
         self.assertNotIn("test-key", self.client.get("/api/inventory").text)
         self.assertEqual(self.client.get("/api/image?name=../.env").status_code, 400)
 
-    def test_person_pinned_and_stale_revision(self):
+    def test_manual_person_can_update_and_rejects_stale_revision(self):
         key = "person:123:20"
         old = self.store.get(key)
         value = old["value"]
@@ -319,7 +318,7 @@ class ConsoleTests(unittest.TestCase):
             "喜欢游戏",
             [{"field": "总体认知", "value": "游戏", "evidence": "喜欢游戏"}],
         )
-        self.assertEqual(self.store.get(key)["value"]["总体认知"], "绘画")
+        self.assertEqual(self.store.get(key)["value"]["总体认知"], "游戏")
         with self.assertRaisesRegex(ValueError, "重新载入"):
             self.store.put(key, value, old["revision"])
 
@@ -685,12 +684,12 @@ class ConsoleTests(unittest.TestCase):
         self.store.put(old["resource"], response.json()["value"], old["revision"])
         self.assertEqual(vault.field(20, "总体认知"), original)
 
-    def test_unified_categories_preserve_sources_and_pin_independently(self):
+    def test_unified_categories_preserve_sources_and_allow_updates(self):
         vault = Vault(self.root, 123)
         row = self.archive.db.execute("SELECT * FROM messages WHERE id=1").fetchone()
         original = vault.set_field(20, "角色", "组织者", sources=[source(row)])
         before = self.store.get("person:123:20")
-        before["value"]["互动习惯"] = "固定修正"
+        before["value"]["互动习惯"] = "人工修正"
         self.store.put(before["resource"], before["value"], before["revision"])
         self.assertEqual(vault.field(20, "角色"), original)
         write_memory(
@@ -699,16 +698,16 @@ class ConsoleTests(unittest.TestCase):
             1,
             "喜欢游戏",
             [
-                {"field": "互动习惯", "value": "不应覆盖", "evidence": "喜欢游戏"},
+                {"field": "互动习惯", "value": "新的认识", "evidence": "喜欢游戏"},
                 {"field": "互动关系", "value": "一起游戏", "evidence": "喜欢游戏"},
             ],
         )
         current = self.store.get(before["resource"])["value"]
-        self.assertEqual(current["互动习惯"], "固定修正")
+        self.assertEqual(current["互动习惯"], "新的认识")
         self.assertEqual(current["互动关系"], "一起游戏")
         self.archive.remember((123, 11, 20), "角色", "参与者")
         self.archive.forget((123, -20, 20), "补充认知")
         current = self.store.get(before["resource"])["value"]
         self.assertEqual(current["角色"], "参与者")
         self.assertEqual(current["补充认知"], "")
-        self.assertEqual(current["互动习惯"], "固定修正")
+        self.assertEqual(current["互动习惯"], "新的认识")

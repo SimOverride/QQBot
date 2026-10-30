@@ -57,7 +57,17 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
                 id="a.png",
                 revision=revision,
                 reason=reason,
-                message_ids=ids or [100],
+                subject=2,
+                sentiment="uncertain",
+                message_ids=[
+                    row[0]
+                    for row in self.archive.db.execute(
+                        "SELECT id FROM messages WHERE bot=99 AND message_id IN ("
+                        + ",".join("?" for _ in (ids or [100]))
+                        + ")",
+                        ids or [100],
+                    )
+                ],
             ),
         )
 
@@ -78,7 +88,6 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
         )
 
     def test_disable_is_personal_and_shared_across_groups(self):
-        self.assertEqual(self.emote("disable", ids=[200])["status"], "invalid_feedback")
         result = self.emote("disable")
         self.assertEqual(result["status"], "saved")
         for scope in (10, 20, -2):
@@ -106,12 +115,12 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(read["disabled"])
         self.assertEqual(read["notes"], [])
 
-    def test_fixed_feedback_cannot_be_changed_by_model(self):
+    def test_manual_feedback_can_be_changed_by_model(self):
         saved = self.emote("disable")
         vault = Vault(self.root, 99)
         note = vault.get(saved["id"])
         fixed = vault.put({**note, "fixed": True}, note["revision"], manual=True)
-        self.assertEqual(self.emote("remember", fixed["revision"])["status"], "fixed")
+        self.assertEqual(self.emote("remember", fixed["revision"])["status"], "saved")
 
     async def test_disabled_selection_is_checked_again_before_send(self):
         self.emote("disable")
@@ -167,15 +176,15 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
                 [(99, 10, 90, 2)],
             )
 
-    def test_person_memory_write_revision_and_pinned_values(self):
+    def test_person_memory_write_revision_and_manual_updates(self):
         read = self.memory("read")
         self.assertEqual(self.memory("write", read["revision"])["status"], "saved")
         self.assertEqual(self.memory("write", read["revision"])["status"], "conflict")
         self.archive.remember((99, 10, 2), "补充认知", "人工指定")
         read = self.memory("read")
-        self.assertTrue(read["fixed"])
-        self.assertEqual(self.memory("write", read["revision"])["status"], "fixed")
-        self.assertEqual(self.memory("read")["value"], "人工指定")
+        self.assertNotIn("fixed", read)
+        self.assertEqual(self.memory("write", read["revision"])["status"], "saved")
+        self.assertEqual(self.memory("read")["value"], "喜欢编程")
 
     def test_group_memory_invalidates_when_evidence_deleted(self):
         read = self.memory("read", subject=0, field="summary")
@@ -190,19 +199,19 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
             self.archive.db.execute("DELETE FROM messages WHERE message_id=100")
         self.assertEqual(group_knowledge(99, 10, self.root), {})
 
-    def test_person_memory_rejects_other_person_evidence(self):
+    def test_person_memory_accepts_other_person_evidence(self):
         read = self.memory("read", subject=3)
         self.assertEqual(
-            self.memory("write", read["revision"], subject=3)["status"], "invalid_evidence"
+            self.memory("write", read["revision"], subject=3)["status"], "saved"
         )
 
-    def test_explicit_forget_cannot_be_recreated_from_old_messages(self):
+    def test_explicit_forget_does_not_lock_future_updates(self):
         self.archive.forget((99, 10, 2), "补充认知")
         read = self.memory("read")
-        self.assertTrue(read["fixed"])
+        self.assertNotIn("fixed", read)
         self.assertEqual(read["value"], "")
-        self.assertEqual(self.memory("write", read["revision"])["status"], "fixed")
-        self.assertEqual(self.archive.facts((99, 10, 2)), [])
+        self.assertEqual(self.memory("write", read["revision"])["status"], "saved")
+        self.assertTrue(self.archive.facts((99, 10, 2)))
 
     async def test_inspection_is_independent_and_more_than_two_can_be_saved(self):
         from plugins.assistant.emote_collect import EmoteCollector

@@ -33,7 +33,7 @@ class ExperienceTests(unittest.IsolatedAsyncioTestCase):
         self.archive.collect((99, scope, user), ident, content, ["text"], time.time())
         return self.archive.db.execute("SELECT * FROM messages ORDER BY id DESC").fetchone()
 
-    def test_overview_omits_empty_protection_and_deduplicates_reading(self):
+    def test_overview_omits_empty_and_deduplicates_reading(self):
         self.vault.set_field(2, "角色", "", manual=True)
         for field in ("兴趣", "偏好"):
             self.vault.set_field(2, field, "喜欢蓝色纸飞机", manual=True)
@@ -42,7 +42,7 @@ class ExperienceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(groups[0]["category"], "人物")
         self.assertEqual(groups[0]["content"].count("喜欢蓝色纸飞机"), 1)
         self.assertEqual(len(groups[0]["notes"]), 2)
-        self.assertTrue(self.vault.field(2, "角色")["fixed"])
+        self.assertTrue(self.vault.field(2, "角色")["manual"])
 
     async def test_budget_includes_actual_cross_scope_continuity(self):
         self.message(scope=-2, content="旧的请求：" + "蓝色" * 400)
@@ -60,7 +60,7 @@ class ExperienceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event["kind"], "recall")
         self.assertNotIn("旧的请求", json.dumps(event, ensure_ascii=False))
 
-    def test_diagnostic_explains_invalid_and_fixed_empty(self):
+    def test_diagnostic_explains_invalid_and_empty(self):
         row = self.message()
         note = self.vault.set_field(2, "偏好", "蓝色纸飞机", sources=[source(row)])
         empty = self.vault.set_field(3, "偏好", "", manual=True)
@@ -69,7 +69,7 @@ class ExperienceTests(unittest.IsolatedAsyncioTestCase):
         report = recall(self.vault, "蓝色", 2)
         reasons = {n["id"]: n["reason"] for n in report["excluded"]}
         self.assertEqual(reasons[note["id"]], "source_invalid")
-        self.assertEqual(reasons[empty["id"]], "empty_protection")
+        self.assertEqual(reasons[empty["id"]], "empty")
         self.assertEqual(report["selected"], [])
 
     def test_index_cannot_retain_deleted_or_revised_source_text(self):
@@ -125,7 +125,7 @@ class ExperienceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(completed["model_calls"], 1)
         self.assertEqual(len(completed["notes"]), 1)
 
-    async def test_fixed_skip_is_not_reported_saved(self):
+    async def test_manual_empty_does_not_block_automatic_fact(self):
         row = self.message()
         self.vault.set_field(2, "偏好", "", kind="fact", manual=True)
         action = dict(
@@ -141,9 +141,9 @@ class ExperienceTests(unittest.IsolatedAsyncioTestCase):
         )
         await Worker(self.archive, llm).tick()
         event = next(n for n in recent(self.root) if n["kind"] == "processing_completed")
-        self.assertEqual(event["result"], "skipped")
-        self.assertEqual(event["outcomes"][0]["result"], "fixed")
-        self.assertFalse(self.vault.list(kind="diary"))
+        self.assertEqual(event["result"], "saved")
+        self.assertEqual(event["outcomes"][0]["result"], "saved")
+        self.assertTrue(self.vault.list(kind="diary"))
 
     def test_profile_seed_does_not_overwrite_learned_or_manual_profile(self):
         seed_profile(self.vault, ProfileStore())

@@ -214,8 +214,6 @@ class Emotes:
                         raise ServiceError("表情描述已被修改，请重新查看")
                 if old and old["value"] == description:
                     continue
-                if old and old.get("fixed"):
-                    raise ServiceError("人工固定的表情描述不能自动修改")
                 vault.put(
                     self.description_data(image_digest, description),
                     old["revision"] if old else None,
@@ -272,9 +270,9 @@ class Emotes:
         if description is None:
             return None
         try:
-            # 旧库无法区分人工修正与自动识图，迁移时保守保护已有描述。
+            # 保留旧描述及导入来源，后续按当前版本继续维护。
             return vault.put(
-                {**data, "value": description, "legacy_import": True, "fixed": True},
+                {**data, "value": description, "legacy_import": True},
                 manual=True,
             )
         except ValueError:

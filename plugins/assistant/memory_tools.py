@@ -1,4 +1,4 @@
-"""统一记忆工具：共享读取，证据检查，版本冲突与人工固定保护。"""
+"""统一记忆工具：共享读取，证据检查，版本冲突校验。"""
 
 import json
 from datetime import datetime, timedelta, timezone
@@ -50,15 +50,12 @@ def _execute(session, args):
         "status": "ok",
         "revision": old["revision"] if old else "",
         "value": old["value"] if old and vault.valid(old) else "",
-        "fixed": bool(old and old.get("fixed")),
         "sources": old.get("sources", []) if old else [],
     }
     if args["action"] == "read":
         return current
     if args["action"] != "write" or not isinstance(args["value"], str):
         raise ValueError("记忆操作无效")
-    if current["fixed"]:
-        return {"status": "fixed"}
     if current["revision"] != args["revision"]:
         return {"status": "conflict"}
     if kind == "diary" and old and len(old.get("history", [])) >= 2:
@@ -75,12 +72,7 @@ def _execute(session, args):
         row = session.archive.db.execute(
             "SELECT * FROM messages WHERE bot=? AND id=?", (bot, ident)
         ).fetchone()
-        if (
-            row is None
-            or row["usr"] == bot
-            or (kind == "impression" and row["usr"] != subject)
-            or json.loads(row["metadata"] or "{}").get("poke")
-        ):
+        if row is None or row["usr"] == bot or json.loads(row["metadata"] or "{}").get("poke"):
             return {"status": "invalid_evidence"}
         evidence.append(source(row))
     saved = vault.set_field(

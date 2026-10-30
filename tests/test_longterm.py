@@ -149,5 +149,5 @@ class LongTermTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.archive.facts(self.key))
         from plugins.assistant.vault import Vault
 
-        self.assertTrue(Vault(self.archive.root, 99).field(1, "总体认知")["fixed"])
+        self.assertTrue(Vault(self.archive.root, 99).field(1, "总体认知")["manual"])
         self.assertEqual(self.archive.count(self.key), 2)

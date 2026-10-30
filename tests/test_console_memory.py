@@ -64,14 +64,15 @@ class UnifiedConsoleTests(unittest.TestCase):
             {x["scope"] for x in self.store.knowledge_context("person:99:20")}, {10, -20}
         )
 
-    def test_manual_clear_pins_empty_and_rejects_stale_revision(self):
+    def test_manual_clear_retains_history_and_rejects_stale_revision(self):
         old = self.vault.set_field(20, "总体认知", "旧内容", manual=True)
         current = self.store.get("person:99:20")
         value = {**current["value"], "总体认知": ""}
         self.store.put(current["resource"], value, current["revision"])
         note = self.vault.field(20, "总体认知")
         self.assertEqual(note["value"], "")
-        self.assertTrue(note["fixed"])
+        self.assertTrue(note["manual"])
+        self.assertNotIn("fixed", note)
         self.assertEqual(note["history"][-1]["value"], old["value"])
         with self.assertRaises(ValueError):
             self.store.put(current["resource"], value, current["revision"])
@@ -80,7 +81,7 @@ class UnifiedConsoleTests(unittest.TestCase):
         created = self.create()
         self.assertEqual(created.status_code, 200, created.text)
         current = created.json()
-        self.assertTrue(current["value"]["fixed"])
+        self.assertNotIn("fixed", current["value"])
         saved = self.store.put(
             current["resource"],
             {**current["value"], "content": "修改后的想法"},
