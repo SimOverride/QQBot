@@ -168,6 +168,33 @@ class UpgradeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 migration.import_data(local, package, 88)
 
+    def test_import_legacy_note_without_fixed_preserves_bytes(self):
+        import migration
+
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            incoming, target = base / "incoming", base / "target"
+            archive = LongTermMemory(incoming / "data/memory.sqlite3", Config())
+            archive.close()
+            migration.write_json(incoming / "data/identity.json", {"bot_qq": 99})
+            note = Vault(incoming, 99).put({"kind": "diary", "subject": 2, "value": "legacy note"})
+            path = Vault(incoming, 99).target(note["id"])
+            raw = path.read_bytes().replace(b"fixed: false\r\n", b"")
+            self.assertNotEqual(raw, path.read_bytes())
+            path.write_bytes(raw)
+            package = base / "source.zip"
+            migration.export_data(incoming, package, 99)
+            migration.import_data(target, package, 99)
+            imported = Vault(target, 99).get(note["id"])
+            self.assertFalse(imported["fixed"])
+            self.assertEqual(imported["value"], "legacy note")
+            self.assertEqual(Vault(target, 99).target(note["id"]).read_bytes(), raw)
+            path.write_bytes(raw.replace(b"state: active\r\n", b"state: active\r\nfixed: null\r\n"))
+            invalid = base / "invalid.zip"
+            migration.export_data(incoming, invalid, 99)
+            with self.assertRaisesRegex(ValueError, "记忆字段无效"):
+                migration.import_data(base / "other", invalid, 99)
+
     def test_configuration_only_upgrade(self):
         import migration
 

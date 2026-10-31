@@ -120,6 +120,8 @@ class Vault:
             return None
         raw = path.read_text(encoding="utf-8")
         note = deepcopy(_parse(raw))
+        # 旧版自动记忆可能没有固定标记；按既有读取语义视为未固定，不改写原文。
+        note.setdefault("fixed", False)
         if note.get("bot") != self.bot or note.get("id") != ident:
             raise ValueError("记忆归属无效")
         return note
