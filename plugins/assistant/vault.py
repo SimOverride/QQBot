@@ -119,6 +119,9 @@ class Vault:
             return None
         raw = path.read_text(encoding="utf-8")
         note = deepcopy(_parse(raw))
+        # 旧标记可缺省；存在时校验类型，避免无效数据被当作人工来源。
+        if "fixed" in note and type(note["fixed"]) is not bool:
+            raise ValueError("记忆字段无效")
         if note.get("bot") != self.bot or note.get("id") != ident:
             raise ValueError("记忆归属无效")
         # 旧固定标记仅保留人工来源，不再代表覆盖权限或召回优先级。

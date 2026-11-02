@@ -1,4 +1,4 @@
-# 安装独立记忆引擎，不修改机器人依赖与现有 Basic Memory 全局配置。
+﻿# 安装独立记忆引擎，不修改机器人依赖与现有 Basic Memory 全局配置。
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $python = Join-Path $projectRoot '.venv/Scripts/python.exe'
