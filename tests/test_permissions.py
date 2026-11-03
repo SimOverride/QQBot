@@ -158,3 +158,6 @@ class PermissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("http://127.0.0.1:8090", await self.run_command((99, -1, 1), "/后台"))
         self.assertIn("用法", await self.run_command(self.owner, "/后台 extra"))
         self.assertEqual(Commands.entry_command("后台任务为什么失败"), "后台任务为什么失败")
+        self.config.console_public_url = "https://example.com:4321"
+        self.assertIn(self.config.console_public_url, await self.run_command((99, -1, 1), "/后台"))
+        self.assertNotIn(self.config.console_public_url, await self.run_command(self.owner, "/后台"))

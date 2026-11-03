@@ -19,7 +19,7 @@ from pydantic import SecretStr
 from starlette.concurrency import run_in_threadpool
 
 import migration
-from admin.console_endpoint import HOST, PORT
+from admin.console_endpoint import HOST, PORT, URL, external_origin
 from admin.console_settings import Settings
 from admin.console_store import ConsoleStore
 from admin.console_topics import TopicReader
@@ -59,18 +59,25 @@ def create_app(root=ROOT):
     app.state.token = token
     app.state.store = store
 
+    origins = {f"{HOST}:{PORT}": URL, f"localhost:{PORT}": f"http://localhost:{PORT}"}
+    external = external_origin(dotenv_values(root / ".env").get("CONSOLE_PUBLIC_URL") or "")
+    if external:
+        authority = external.removeprefix("https://")
+        if authority in origins:
+            raise ValueError("外部域名不能与本机后台地址相同")
+        origins[authority] = external
+
     @app.middleware("http")
     async def local_only(request, call_next):
         # 防止 DNS rebinding、跨站表单或外部页面操作本机维护接口。
         host = request.headers.get("host", "")
-        allowed_hosts = {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}
         origin = request.headers.get("origin")
         if (
-            host not in allowed_hosts
+            host not in origins
             or request.headers.get("sec-fetch-site") == "cross-site"
-            or (origin is not None and origin != "http://" + host)
+            or (origin is not None and origin != origins[host])
         ):
-            return JSONResponse({"detail": "仅允许本机后台页面访问"}, status_code=403)
+            return JSONResponse({"detail": "后台请求的地址或来源未获准"}, status_code=403)
         if request.method not in ("GET", "HEAD") and not secrets.compare_digest(
             request.headers.get("x-console-token", ""), token
         ):

@@ -18,6 +18,7 @@ from nonebot.adapters.onebot.v11 import (
 from nonebot.log import logger
 from nonebot.message import event_preprocessor
 
+from . import sakura
 from .config import Config
 from .contacts import Contacts
 from .emotes import Emotes
@@ -300,7 +301,7 @@ def setup() -> None:
 
     @event_preprocessor
     async def collect(bot: Bot, event: GroupMessageEvent):
-        if archive is None:
+        if archive is None or sakura.sensitive(event):
             return
         # Capture all group messages before participation decisions.
         try:
@@ -319,7 +320,7 @@ def setup() -> None:
 
     @matcher.handle()
     async def handle(bot: Bot, event: GroupMessageEvent):
-        if conversations is None:
+        if conversations is None or sakura.sensitive(event):
             return
         if any(
             seg.type == "text" and any(c in str(seg.data.get("text", "")) for c in "@＠")
@@ -349,6 +350,14 @@ def setup() -> None:
         if service is None or archive is None:
             return
         bot_id, user_id = int(bot.self_id), event.user_id
+        if sakura.sensitive(event):
+            # 密钥消息及其引用绕开归档、模型、自动分享与普通指令历史。
+            text = extract_text(bot, event)
+            pure_text = all(seg.type == "text" for seg in event.original_message)
+            if sakura.is_command(text) and pure_text:
+                result = await sakura.login(text, user_id in config.bot_owners)
+                await bot.send_private_msg(user_id=user_id, message=MessageSegment.text(result))
+            return
         allowed, groups = await contacts.private_access(bot, user_id)
         allowed = allowed or user_id in config.bot_owners
         if not allowed:

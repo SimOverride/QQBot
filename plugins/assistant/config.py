@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, PositiveFloat, PositiveInt, S
 
 class Config(BaseModel):
     model_config = ConfigDict(hide_input_in_errors=True, allow_inf_nan=False)
+    console_public_url: str = ""
     bot_owners: set[PositiveInt] = Field(default_factory=set)
     user_names: dict[PositiveInt, Annotated[str, Field(max_length=80)]] = Field(
         default_factory=dict,

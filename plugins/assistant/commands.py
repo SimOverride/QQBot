@@ -7,7 +7,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from admin.console_endpoint import URL
+from admin.console_endpoint import URL, external_origin
 
 from .config import Config
 from .identity import permission_level
@@ -84,10 +84,13 @@ class Commands:
                 return "权限不足，仅机器人所有者可查询后台入口。"
             if args:
                 return "用法：/后台"
+            if group_id < 0 and self.config.console_public_url:
+                remote = external_origin(self.config.console_public_url)
+                return f"后台远程入口：{remote}\n本机入口：{URL}"
             return (
                 "本机后台入口：\n"
                 f"{URL}\n"
-                "仅能在运行机器人的电脑上用浏览器打开，手机或其他电脑无法访问。\n"
+                "此地址仅能在运行机器人的电脑上打开。\n"
                 "双击 start.bat 会启动后台；链接无法打开时请检查启动窗口。"
             )
         if command == "/人设":
@@ -136,7 +139,9 @@ class Commands:
             if level == 2:
                 if self.extensions is not None:
                     result += "\n/插件 全局 插件ID 开启|关闭"
-                result += "\n/后台 查询本机后台入口（仅所有者）"
+                result += "\n/后台 查询后台入口（仅所有者）"
+                if group_id < 0:
+                    result += "\n/樱花登录 访问密钥 下载并登录官方 Sakura Frp"
                 result += "\n/清空全部 清除本机器人所有群及私聊的会话（需确认）"
             return result
         if level < 1 or (command == "/清空全部" and level < 2):

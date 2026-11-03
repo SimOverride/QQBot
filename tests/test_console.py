@@ -23,6 +23,24 @@ from tests.memory_support import write_memory
 
 
 class ConsoleTests(unittest.TestCase):
+    def test_remote_console_checks_authority_origin_and_write_token(self):
+        url = "https://example.com:4321"
+        denied = self.client.get("/", headers={"host": "example.com:4321"})
+        self.assertEqual(denied.status_code, 403)
+        with (self.root / ".env").open("a", encoding="utf-8") as file:
+            file.write(f"CONSOLE_PUBLIC_URL={url}\n")
+        with TestClient(create_app(self.root), base_url=url) as client:
+            token = client.get("/api/session").json()["token"]
+            path = "/api/agent/reset"
+            for headers in (
+                {"origin": "https://example.com"}, {"origin": "http://example.com:4321"},
+                {"origin": url, "host": "localhost:8090"}, {"sec-fetch-site": "cross-site"},
+            ):
+                self.assertEqual(client.get("/api/session", headers=headers).status_code, 403)
+            self.assertEqual(client.post(path, json={}, headers={"origin": url}).status_code, 403)
+            headers = {"origin": url, "x-console-token": token}
+            self.assertEqual(client.post(path, json={}, headers=headers).status_code, 400)
+
     def test_reset_all_requires_confirmation_and_preserves_data(self):
         before = epoch(self.root, 123, 10)
         files = {}
