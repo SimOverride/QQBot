@@ -1,6 +1,7 @@
 """本机后台的固定监听地址。"""
 
 import re
+from pathlib import Path
 from urllib.parse import urlsplit
 
 
@@ -15,6 +16,18 @@ def external_origin(value: str) -> str:
         raise ValueError("后台外部端口无效")
     port = f":{url.port}" if url.port not in (443, None) else ""
     return f"https://{url.hostname}{port}"
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def console_origin(root, manual):
+    """自动配置只保存已校验的公网入口，两进程共享同一个文件。"""
+    try:
+        value = (root / "data/sakura-console.url").read_text(encoding="ascii").strip()
+    except FileNotFoundError:
+        value = manual
+    return external_origin(value)
 
 
 HOST = "127.0.0.1"

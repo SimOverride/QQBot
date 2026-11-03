@@ -7,7 +7,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from admin.console_endpoint import URL, external_origin
+from admin.console_endpoint import ROOT, URL, console_origin
 
 from .config import Config
 from .identity import permission_level
@@ -82,10 +82,15 @@ class Commands:
         if command == "/后台":
             if await self.level(user_id, lookup) < 2:
                 return "权限不足，仅机器人所有者可查询后台入口。"
+            if (group_id < 0 and len(args) == 2 and args[0] == "配置"
+                    and re.fullmatch(r"[0-9]{1,12}", args[1])):
+                from .sakura import configure_console
+
+                return await configure_console(ROOT, int(args[1]))
             if args:
-                return "用法：/后台"
-            if group_id < 0 and self.config.console_public_url:
-                remote = external_origin(self.config.console_public_url)
+                return "用法：/后台；主人私聊可发送 /后台 配置 隧道ID"
+            remote = console_origin(ROOT, self.config.console_public_url) if group_id < 0 else ""
+            if remote:
                 return f"后台远程入口：{remote}\n本机入口：{URL}"
             return (
                 "本机后台入口：\n"

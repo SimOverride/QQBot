@@ -4,11 +4,14 @@ import asyncio
 import json
 import os
 import re
+import secrets
 import subprocess
 import tempfile
 from pathlib import Path
 
 import httpx
+
+from admin.console_endpoint import HOST, PORT, external_origin
 
 COMMAND = "/樱花登录"
 BUSY = asyncio.Lock()
@@ -119,8 +122,12 @@ def launch(token):
     with tempfile.TemporaryFile() as errors:
         process = subprocess.Popen(
             [core, "--config", profile, "--daemon"],
-            cwd=installed, env=env, stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL, stderr=errors, creationflags=subprocess.CREATE_NO_WINDOW,
+            cwd=installed,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=errors,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         try:
             code = process.wait(timeout=2)
@@ -162,3 +169,87 @@ async def login(text, private_owner):
             subprocess.SubprocessError,
         ):
             return "操作失败，请检查官方网络连接、安装包签名、安装权限及本机配置。"
+
+
+async def configure_console(root, tunnel_id):
+    """通过官方接口配置主人选中的 TCP 隧道，复核后原子发布后台入口。"""
+    if BUSY.locked():
+        return "另一项 Sakura Frp 操作正在进行，请稍后重试。"
+    async with BUSY:
+        try:
+            profile = Path(os.environ["LOCALAPPDATA"]) / "QQBot/SakuraFrp/config.json"
+            token = json.loads(profile.read_text(encoding="utf-8-sig"))["token"]
+            if not token:
+                return "请先通过主人私聊完成 /樱花登录。"
+            async with httpx.AsyncClient(
+                base_url="https://api.natfrp.com/v4/",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=15,
+            ) as client:
+
+                async def lookup():
+                    rows = (await client.get("tunnels")).raise_for_status().json()
+                    return next((row for row in rows if row["id"] == tunnel_id), None)
+
+                row = await lookup()
+                if not row or row["type"] != "tcp" or row["status"] != 0:
+                    return "该账号没有这条可用的 TCP 隧道，请核对 ID 和隧道状态。"
+                nodes = (await client.get("nodes")).raise_for_status().json()
+                node = nodes[str(row["node"])]
+                url = external_origin(f"https://{node['host']}:{int(row['remote'])}")
+                extra = {}
+                for line in row["extra"].splitlines():
+                    if not line.strip():
+                        continue
+                    key, sep, value = line.partition("=")
+                    if not sep or key.strip() in extra:
+                        return "已有高级配置无法安全合并，请先在网页端核对。"
+                    extra[key.strip()] = value.strip()
+                desired = dict(extra, auto_https="auto")
+                if not (extra.get("auth_pass") or extra.get("auth_totp")):
+                    desired["auth_pass"] = secrets.token_urlsafe(32)
+                if extra.get("auth_mode") == "standalone" and not extra.get("auth_pass"):
+                    return "该隧道使用独立认证，请先在网页端设置访问密码。"
+                changed = row["local_ip"] != HOST or row["local_port"] != PORT or desired != extra
+                if changed:
+                    if row["online"]:
+                        return "请先停止这条隧道，再发送配置指令，让新认证配置在下次启动时生效。"
+                    payload = {
+                        "id": tunnel_id,
+                        "local_ip": HOST,
+                        "local_port": PORT,
+                        "extra": "\n".join(f"{k} = {v}" for k, v in desired.items()),
+                    }
+                    (await client.post("tunnel/edit", json=payload)).raise_for_status()
+                    row = await lookup()
+                verified = dict(
+                    line.split("=", 1) for line in row["extra"].splitlines() if "=" in line
+                )
+                options = {k.strip(): v.strip() for k, v in verified.items()}
+                if (
+                    row["local_ip"] != HOST
+                    or row["local_port"] != PORT
+                    or options.get("auto_https") != "auto"
+                    or not (options.get("auth_pass") or options.get("auth_totp"))
+                    or options.get("plugin_host_header_rewrite")
+                    or options.get("auto_https_mode", "") not in ("", "http", "passthrough")
+                ):
+                    return "隧道目标、HTTPS 或认证配置未能核实，未发布后台入口。"
+                url = external_origin(
+                    f"https://{nodes[str(row['node'])]['host']}:{int(row['remote'])}"
+                )
+            directory = root / "data"
+            directory.mkdir(exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=directory, delete=False) as file:
+                temporary = Path(file.name)
+            try:
+                temporary.write_text(url, encoding="ascii")
+                temporary.replace(directory / "sakura-console.url")
+            finally:
+                temporary.unlink(missing_ok=True)
+            state = "隧道在线。" if row["online"] else "请在宿主机 Sakura 启动器启用这条隧道。"
+            return f"已配置后台入口：{url}。{state}首次访问需完成 Sakura 访问认证。"
+        except FileNotFoundError:
+            return "未找到 Sakura 登录配置，请先在主人私聊完成 /樱花登录。"
+        except (OSError, ValueError, KeyError, TypeError, httpx.HTTPError):
+            return "未能完成配置，请核对 Sakura 登录、隧道编辑权限和网络后重试。"

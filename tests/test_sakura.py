@@ -9,6 +9,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import httpx
+
+from admin.console_endpoint import console_origin
 from plugins.assistant import sakura
 
 
@@ -21,6 +24,37 @@ class SakuraTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(sakura.os, "name", "nt"):
                 self.assertEqual(await sakura.login("/樱花登录 example", True), "已提交")
             launch.assert_called_once_with("example")
+
+    async def test_configure_offline_tunnel_and_publish_verified_url(self):
+        row = dict(id=10, type="tcp", status=0, node=2, remote="28660", local_ip="localhost",
+                   local_port=80, online=False, extra="other = keep")
+
+        def respond(request):
+            if request.url.path.endswith("/nodes"):
+                data = {"2": {"host": "node.example"}}
+            elif request.method == "POST":
+                row.update(json.loads(request.content))
+                data = {"extra": row["extra"]}
+            else:
+                data = [row]
+            return httpx.Response(200, json=data)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            profile = root / "QQBot/SakuraFrp/config.json"
+            profile.parent.mkdir(parents=True)
+            profile.write_text('{"token":"test"}', encoding="utf-8")
+            client = httpx.AsyncClient(base_url="https://example.test/v4/",
+                                       transport=httpx.MockTransport(respond))
+            with patch.dict(os.environ, LOCALAPPDATA=directory), patch.object(
+                sakura.httpx, "AsyncClient", return_value=client
+            ):
+                result = await sakura.configure_console(root, 10)
+            self.assertIn("启用", result)
+            self.assertEqual(console_origin(root, ""), "https://node.example:28660")
+            self.assertEqual(row["local_port"], 8090)
+            self.assertIn("auth_pass = ", row["extra"])
+            self.assertIn("other = keep", row["extra"])
 
     def test_sensitive_messages_and_replies(self):
         message = "/樱花登录 example"
