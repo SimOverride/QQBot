@@ -41,12 +41,14 @@ class SakuraTests(unittest.IsolatedAsyncioTestCase):
                 patch.dict(os.environ, env),
                 patch.object(subprocess, "run", return_value=SimpleNamespace(stdout=b"")),
                 patch.object(subprocess, "Popen") as start,
-                patch.object(os, "startfile") as show,
             ):
                 start.return_value.wait.side_effect = subprocess.TimeoutExpired("core", 2)
                 self.assertIn("提交", sakura.launch("test-only-key"))
-                args = start.call_args.args[0]
-                self.assertNotIn("test-only-key", str(start.call_args))
+                core, gui = start.call_args_list
+                args = core.args[0]
+                self.assertNotIn("test-only-key", str(start.call_args_list))
                 profile = json.loads(args[2].read_text(encoding="utf-8"))
                 self.assertEqual(profile["token"], "test-only-key")
-                show.assert_called_once_with(installed / "SakuraLauncher.exe")
+                self.assertEqual(gui.args[0], [installed / "SakuraLauncher.exe"])
+                self.assertEqual(core.kwargs["env"]["ProgramData"], str(args[2].parent))
+                self.assertEqual(core.kwargs["env"], gui.kwargs["env"])

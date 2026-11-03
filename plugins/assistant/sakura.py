@@ -114,19 +114,26 @@ def launch(token):
         temporary.replace(profile)
     finally:
         temporary.unlink(missing_ok=True)
-    process = subprocess.Popen(
-        [core, "--config", profile, "--daemon"],
-        cwd=installed,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=subprocess.CREATE_NO_WINDOW,
-    )
-    try:
-        process.wait(timeout=2)
-        return "官方核心启动后已退出，请检查宿主机启动器状态。"
-    except subprocess.TimeoutExpired:
-        os.startfile(launcher)
+    # 核心在解析 --config 前已按 ProgramData 初始化工作目录，界面需使用相同环境。
+    env = {**os.environ, "ProgramData": str(folder)}
+    with tempfile.TemporaryFile() as errors:
+        process = subprocess.Popen(
+            [core, "--config", profile, "--daemon"],
+            cwd=installed, env=env, stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=errors, creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        try:
+            code = process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            subprocess.Popen([launcher], cwd=installed, env=env)
+        else:
+            errors.seek(0)
+            detail = errors.read(16384).decode("utf-8", errors="replace")
+            if "签名" in detail or "文件不存在" in detail:
+                return "官方核心报告安装文件缺失或签名无效，请使用官方安装程序修复。"
+            if "Access is denied" in detail:
+                return "官方核心无法访问工作目录，请检查当前 Windows 用户的写入权限。"
+            return f"官方核心已退出（退出码 {code}），请查看配置目录中的 SakuraFrpService/Logs。"
     return "已启动官方客户端并提交密钥，登录结果请在宿主机启动器查看。"
 
 
