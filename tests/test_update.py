@@ -15,7 +15,7 @@ from plugins.assistant.maintenance import Maintenance
 class AuthorizationTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         # 聊天授权测试不得检查或更新真实工作仓库。
-        self.check = patch("updater.check", return_value="origin").start()
+        self.check = patch("updater.preview", return_value={"commit_count": 1}).start()
         self.addCleanup(patch.stopall)
 
     def session(self, user=1):
@@ -139,8 +139,12 @@ class RepositoryTests(unittest.TestCase):
 
     def test_fast_forward_and_dependency_sync(self):
         self.upstream_change()
+        pending = updater.preview(self.root)
+        self.assertEqual(pending["commit_count"], 1)
+        self.assertTrue(pending["commits"][0].endswith(" new"))
         success, admin = self.invoke()
         self.assertTrue(success)
+        self.assertEqual(updater.last_result(self.root)["target"], pending["target"])
         self.assertEqual(self.call(self.root, "rev-parse", "HEAD"),
                          self.call(self.source, "rev-parse", "HEAD"))
         self.assertEqual([c.args[1] for c in admin.call_args_list], ["stop", "start"])
